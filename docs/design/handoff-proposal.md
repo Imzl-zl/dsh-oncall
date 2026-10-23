@@ -10,7 +10,7 @@ last_updated: "2026-10-23"
 ## 摘要
 
 **这不是判断器，是委派基础设施。** 插件不判断任务做没做完——那件事在 DSH 里没有真值，任何"判据表"最后都会退化成
-枚举加关键词。插件只做四件机器能做的事：给模型一张**用户预设的名册**、一个**派人/收工/重启**的工具、按名册
+枚举加关键词。插件只做四件机器能做的事：给模型一张**用户预设的名册**、一个**派人 / 收工 / 开新会话 / 看事实**的工具、按名册
 **自动备料**（会话事实，不是模型自述）、以及**在原生唤醒之上不添乱**。
 
 模型的判断权一条不少：什么时候派、派谁、派去干什么、复核结论算不算过、要不要开新会话重来，全由模型决定。
@@ -43,7 +43,7 @@ last_updated: "2026-10-23"
 | 有缺口要不要继续 | 主模型（门在 `finish`） | 有缺口时 `finish{done}` 被拒：只能修完再复核，或交人；预算见 §8 |
 | 这一轮是不是收工了 | 主模型（签 `finish`） | 回执是它自己写的 |
 | 没签字就停了怎么办 | 用户（闸门） | `nudgeWhenUnreceipted` / `delegateTo` |
-| 该不该开新会话 | 主模型 | 它调 `restart`，并说明理由 |
+| 该不该开新会话 | 主模型 | 它调 `newSession`，并说明理由 |
 
 **唯一的边界**：插件只碰"能被机器数出来或从日志折叠出来的事实"，以及"协议是否被遵守"。它不读模型话里的意思。
 
@@ -138,7 +138,7 @@ roster[] ──编译──┬─→ handoff.description（有谁可派 + 每条
 
 - `delegate{rosterId, task, focusPaths?}` → 派名册里的人，立刻返回回执，**不阻塞回合**。
 - `finish{outcome, report, handoffNote?, reviewId?, reviewOverride?}` → 收工回执：`done` / `needs_user`（要人拍板）/ `abandoned`（放弃）。
-- `restart{reason, handoffNote}` → 按配置开新会话接力。
+- `newSession{reason, handoffNote}` → 按配置开新会话接力。
 - `facts{}` → 返回可数事实（压缩次数、轮次、工具失败数、goal、todos、已派次数），给模型决策用。
 
 工具注册在插件自己的 ctx 上（注册表层面全局可见，具体 agent 还受 preset 的 `toolFilter` 影响），**按会话过滤放在
@@ -159,7 +159,7 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 | `stats` | 压缩次数、轮次、工具失败数、已派名单 | `session/event` 折叠 |
 | `notes` | 模型在 `task` 里写的说明 | 工具参数 |
 
-重启简报另有一项 `lastReview`：最近一条 `subagent-settled` 的正文与结构化结论。它只用于接力，不参与 `delegate`。
+开新会话的简报另有一项 `lastReview`：最近一条 `subagent-settled` 的正文与结构化结论。它只用于接力，不参与 `delegate`。
 
 **不给**主模型的总结、自述、结论——复核者一旦拿到这些，只会复述它。文件内容、diff、测试输出由复核者**自己的
 工具**去读去跑（那是它的 preset 的事），插件不代劳、也不假装代劳。
@@ -171,7 +171,7 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 | 问题 | 取值 | 谁答 |
 |---|---|---|
 | 还要不要有下一步 | 要 / 不要 | 模型（`finish` 三选一，或者干脆继续干） |
-| 下一步在哪个场地 | 本会话 / 新会话 | 模型（调不调 `restart`） |
+| 下一步在哪个场地 | 本会话 / 新会话 | 模型（调不调 `newSession`） |
 | 下一步谁来做 | 主会话 / 派的子会话 | 模型（调不调 `delegate`） |
 
 `finish` 的三种落点属于第一个问题：
@@ -219,15 +219,15 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 **钉死 route 与链的关系**：第一跳已在链上时，从它在链上的位置之后开始降级；不在链上时，从候选首位开始。
 两条路都不改第一跳。
 
-### 4.6 重启：开新会话
+### 4.6 开新会话：接力，不是重启插件
 
 **模型开不了会话**——它能做的只有说话和调工具；`ctx.agents.createSession` 是宿主服务，只有插件代码能调。
 所以形态是**模型给指令、插件代劳**，入口两条，执行的是同一个函数：
 
 | 入口 | 什么时候 | 谁决定 |
 |---|---|---|
-| 工具 `handoff{action:'restart', reason, handoffNote}` | 模型觉得这个会话跑偏了 / 该换场了，随时可调 | 模型 |
-| 收工后的自动接力（`restart.onFinish`） | 模型刚写完 `finish{outcome}` 回执 | 用户配置的 outcome 列表 |
+| 工具 `handoff{action:'newSession', reason, handoffNote}` | 模型觉得这个会话跑偏了 / 该换场了，随时可调 | 模型 |
+| 收工后的自动接力（`newSession.onFinish`） | 模型刚写完 `finish{outcome}` 回执 | 用户配置的 outcome 列表 |
 
 自动那条**不是判断任务完成**，而是对一份刚写完的回执做固定后续——触发点是模型自己写下的声明，不是插件采样出来的状态。
 
@@ -240,6 +240,9 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 【工件】goal / todos / 最近一次复核结论 / stats
 ```
 
+首条消息用**普通用户消息**（`source.kind: 'user'`），正文第一行写明"由插件按接力配置生成"——新会话必须把它当任务执行，
+notice 形式会让模型只当背景。代价是 UI 上它看起来像用户打的字，用第一行说明来补。
+
 执行步骤：
 
 1. 读旧会话的选择（`selectionFor(agent).current`，回退最后一条 `request/header`）。
@@ -250,7 +253,7 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 6. `keepGoal` 为真时，用原 objective 在新会话 `create` 一个 goal（失败则把目标写进简报，由模型用 goal 工具重建）。
 7. 旧会话：active goal 用 `ctx.goals.clear(agent, ref)` 作废；记一条中文 notice 指向新会话；不自动归档。
 
-**闸门**：`limits.maxRestartsPerUserMessage`（默认 2）**随会话复制、不因开新会话而重置**，防止"每次收工都开一个新会话"滚成爆炸。
+**闸门**：`limits.maxNewSessionsPerUserMessage`（默认 2）**随会话复制、不因开新会话而重置**，防止"每次收工都开一个新会话"滚成爆炸。
 `onFinish` 非空时，`finish` 必须带 `handoffNote`——否则新会话拿到的只有工件、没有"下一步"，接力等于把问题原样搬过去。
 这条也写进工具描述，模型不必靠试错发现。
 
@@ -280,7 +283,7 @@ handoff:
       outputSchema:               # 可选：结构化结论（需要 provider 支持 outputSchema）
         verdict: done | gaps
         gaps: [string]
-        recommend: continue | restart | done
+        recommend: continue | newSession | done
       maxRunsPerUserMessage: 6    # 本角色自最近一条用户消息以来的上限
 
   protocol:
@@ -294,16 +297,16 @@ handoff:
     maxDelegationsPerTurn: 1      # 一个回合内最多派几次（防同轮爆发）
     maxDelegationsPerUserMessage: 8   # 自最近一条用户消息以来；复核也计入
     maxReviewsPerUserMessage: 1   # 复核上限：第一次就通过就收工
-    maxRestartsPerUserMessage: 2  # 开新会话上限
+    maxNewSessionsPerUserMessage: 2  # 开新会话上限
     maxDelegationsPerDay: 24      # 进程内计数，重启归零
-    nudgeWhenUnreceipted: true    # 没交回执就停时追问一次
+    nudgeWhenUnreceipted: false   # 没交回执就停时追问一次（默认关：会触发真实调用）
     maxNudgesPerTurn: 1           # 每回合最多追问几次
 
   onUnreceiptedStop:
     delegateTo: ""                # 空 = 只报告；填 roster id = 自动派它兜底
     reportToUser: true
 
-  restart:
+  newSession:
     onFinish: []                  # finish 的哪些 outcome 之后自动开新会话；空 = 不自动
     nextAction: continue          # continue | review | review-then-continue
     briefing: [goal, todos, userRequest, lastReview, stats]
@@ -312,18 +315,18 @@ handoff:
     carryChainBinding: true       # 链绑定与预算计数跟过去
 ```
 
-字段的存在理由只有三类：**决定菜单**（roster）、**决定协议**（protocol）、**决定闸门**（limits / onUnreceiptedStop / restart）。
+字段的存在理由只有三类：**决定菜单**（roster）、**决定协议**（protocol）、**决定闸门**（limits / onUnreceiptedStop / newSession）。
 没有任何字段用来描述"任务状态"。
 
 ## 六、工具契约（参考形状）
 
-参数名与拒绝文案在实现时可以改；四个动作的**职责划分**（派人 / 签字 / 重启 / 看事实）与"拒绝写在返回值里"不变。
+参数名与拒绝文案在实现时可以改；四个动作的**职责划分**（派人 / 签字 / 开新会话 / 看事实）与"拒绝写在返回值里"不变。
 
 | 动作 | 参数 | 成功返回 | 拒绝条件 |
 |---|---|---|---|
 | `delegate` | `rosterId`、`task`（string）、`focusPaths?`（文件路径数组） | 回执：`{child:<SessionId>, rosterId, attached:[…]}` | 名册无此项 / 该角色 `maxRunsPerUserMessage` 用尽 / 本回合或本区间超限 / 后端不支持所需 capability |
-| `finish` | `outcome`（`done` / `needs_user` / `abandoned`）、`report`、`handoffNote?`、`reviewId?`、`reviewOverride?` | `{recorded:true, outcome, restarted?}` | 有 active goal 却报 `done` / 自最近一条用户消息以来未复核或最近一次不是通过且未 `reviewOverride` / `onFinish` 非空却没写 `handoffNote` / 工具未启用 |
-| `restart` | `reason`、`handoffNote` | `{newSession:<SessionId>}` | 超限 / 建会话失败 / `handoffNote` 为空 |
+| `finish` | `outcome`（`done` / `needs_user` / `abandoned`）、`report`、`handoffNote?`、`reviewId?`、`reviewOverride?` | `{recorded:true, outcome, newSessionId?}` | 有 active goal 却报 `done` / 自最近一条用户消息以来未复核或最近一次不是通过且未 `reviewOverride` / `onFinish` 非空却没写 `handoffNote` / 工具未启用 |
+| `newSession` | `reason`、`handoffNote` | `{newSession:<SessionId>}` | 超限 / 建会话失败 / `handoffNote` 为空 |
 | `facts` | — | 可数事实的 JSON | 工具未启用 |
 
 ## 七、时序
@@ -353,7 +356,7 @@ turn 内
 
 ```
 agent/turn-stopping(turn N)
-  ├─ 非顶层会话 / 未启用 / 本回合已调过 delegate·finish·restart / goal armed active → 直接返回
+  ├─ 非顶层会话 / 未启用 / 本回合已调过 delegate·finish·newSession / goal armed active → 直接返回
   ├─ 本回合无回执 && todos 有 pending|in_progress && nudge 未用完
   │     → agent.steer("还有 N 项未完成：要么继续，要么 handoff finish（done/needs_user/abandoned），要么 delegate")
   ├─ 模型继续或签字 → 正常结束
@@ -362,11 +365,11 @@ agent/turn-stopping(turn N)
         └─ 否则 → 放行停止 + 中文 notice（剩余项、最后一句、可一键重跑）
 ```
 
-### C. 重启
+### C. 开新会话
 
 ```
 turn 内
-  ├─ 主模型调用 handoff{action:'restart', reason:'…', handoffNote:'…'}
+  ├─ 主模型调用 handoff{action:'newSession', reason:'…', handoffNote:'…'}
   ├─ 插件：读旧选择 → createSession(cwd) → selectForNextRequest(新agent, 旧选择)
   ├─ 复制链绑定 → 拼首条消息（配置的 nextAction + 模型写的 handoffNote + 工件）
   ├─ 新会话 followup(首条消息)
@@ -375,7 +378,7 @@ turn 内
 新会话
   └─ 首跳 = 旧会话选中的模型；链绑定同旧会话；熔断/失败切换照旧
 
-自动那条（restart.onFinish 命中）：
+自动那条（newSession.onFinish 命中）：
   finish 成功落账 → 插件直接用 finish 的 handoffNote 执行上面第 2–6 步 → 旧会话记 notice
 ```
 
@@ -391,7 +394,7 @@ turn 内
   └─ 复核预算用完 → 只能 finish{needs_user}，缺口清单一并交出去
 ```
 
-**预算按"人说话"计，这是唯一的重置开关**：真人一发消息，这些计数全部清零；人不在，三本账（派发 / 复核 / 重启）
+**预算按"人说话"计，这是唯一的重置开关**：真人一发消息，这些计数全部清零；人不在，三本账（派发 / 复核 / 开新会话）
 只减不增。**开新会话不重置**——计数随绑定复制过去，否则"收工→开新会话→再收工"就能靠换会话刷满预算。
 所以"审 → 改 → 审 → 改"必然收敛到一个落点，不靠模型自觉。
 
@@ -399,6 +402,10 @@ turn 内
 
 - **默认全关**（`enabled: false`）：装好不改任何现有行为，工具不注册、名册不出现。开启后名册为空则工具描述为空，
   模型不会调用；设置页给一条"先建一个角色"的提示。
+- **会花钱的自动动作默认全关**：`nudgeWhenUnreceipted: false`（追问会触发一次真实模型调用）、
+  `onUnreceiptedStop.delegateTo: ""`（不自动派）、`newSession.onFinish: []`（收工后不自动开新会话）、
+  `requireReviewFor: []`（不强制复核）。打开交接后，**只有模型自己调工具才会发生事**；没签字就停只写一条 notice，
+  不叫醒模型、不派子会话。
 - **名册的 `failover` 默认 `inherit`**：子会话失败后跟父会话绑定的链走。想钉死就让填 `none`，想换一条就填链 id。
 - **闸门按三个时间尺度计**：每回合（`maxDelegationsPerTurn`）、自最近一条用户消息以来（三个 `max…PerUserMessage`）、
   每天（`maxDelegationsPerDay`），外加每角色的 `maxRunsPerUserMessage`。**人一说话，三本 `…PerUserMessage` 清零**——这是循环收敛的唯一开关；
@@ -409,7 +416,8 @@ turn 内
   计数随链绑定一起复制到新会话，所以**"开新会话"不重置**——只有人真的说话才重置。否则"收工→开新会话→再收工"
   就能靠换会话把预算刷满，闸门形同虚设。
 - **到顶就停并说明**：中文 notice 写清"哪个闸、已用多少、在哪一步停"，不做静默降级。
-- **追问只一次**：`maxNudgesPerTurn: 1`。第二次停就放行——无限追问是另一种廉价。
+- **追问默认关，打开也只一次**：默认 `nudgeWhenUnreceipted: false`；打开后 `maxNudgesPerTurn: 1` 保证只问一次，
+  第二次停就放行——无限追问是另一种廉价。
 
 ## 九、做不到
 
@@ -424,6 +432,7 @@ turn 内
 8. **复核质量**：取决于 preset、模型与工件完整度，插件不承诺"一定发现缺口"。
 9. **复核账本随会话**：fork 不继承账本（与链绑定同因），新 fork 的会话里 `finish{done}` 会要求重新复核或说明理由——
    失败关闭，不会默认放行。
+10. **接力首条消息的身份**：它在 UI 上是一条用户消息（模型必须把它当任务执行），只能靠正文第一行注明来源。
 
 ## 十、被否方案
 
@@ -476,18 +485,24 @@ turn 内
 | 7 | roster 指定 preset/route 时 provider capability 满足 | 加载期校验 + 组合场景断言 start 被拒的文案 | 保存期拒绝该组合，要求换 preset 或 provider |
 | 8 | 子会话请求按"自己 → `parentSession` → 默认链"解析绑定 | 组合场景：父会话绑 `coding` 链，子会话的请求失败后走 `coding` 的候选 | 派发时记 `childId → 父会话 id` 的内存映射（子会话不跨进程存活） |
 
-## 十二、待确认（用户）
+## 十二、默认值（2026-10-23 已定）
 
-已定（2026-10-23）：`maxReviewsPerUserMessage` 默认 `1`，可配；**是上限不是配额**，第一次就通过就收工，不强制跑满。
+用户裁定：**会真实跑的一律默认关**。下面全部是默认值，不再作为待决项；想开哪个就单独打开，各字段互相独立。
 
-1. **默认闸门**：`requireReviewFor` 默认 `[]`（不强制）还是 `[done]`（完成必复核）？前者不花钱，后者正好对上
-   "完成也要复核"的诉求。
-2. **没签字就停的兜底**：默认只报告，还是默认派一个"收尾复核"角色？人不在场时只有后者能接住。
-3. **重启的首条消息身份**：用普通用户消息（模型会当任务执行，UI 上看起来像用户说的），还是用 notice
-   （诚实地标明是插件写的，但模型可能只当背景）？本文取前者。
-4. **`purpose` 必填**：本文按必填处理（空则拒绝保存）。若你希望允许留空、由 `name` 兜底，就改成可选。
-5. **收工后自动开新会话**：`restart.onFinish` 默认 `[]`（不自动）。要"每次收工都开新会话（复核 / 继续 / 复核完再继续）"
-   就填 `[done]`，会话数会涨，受 `maxRestartsPerUserMessage: 2` 约束。这条默认值等你定。
+| 字段 | 默认 | 含义 |
+|---|---|---|
+| `enabled` | `false` | 整个交接关着：不注册工具、不出名册 |
+| `requireReviewFor` | `[]` | 不强制复核；想强制就写 `[done]` |
+| `nudgeWhenUnreceipted` | `false` | 没签字就停时不追问（追问会触发一次真实模型调用） |
+| `maxNudgesPerTurn` | `1` | 即使打开追问，每回合也只问一次 |
+| `onUnreceiptedStop.delegateTo` | `""` | 不自动派兜底角色 |
+| `onUnreceiptedStop.reportToUser` | `true` | 只写一条 notice 告诉你 |
+| `newSession.onFinish` | `[]` | 收工后不自动开新会话 |
+| `roster[].purpose` | 必填 | 空则拒绝保存 |
+| `maxReviewsPerUserMessage` | `1` | 复核上限，**不是配额**：通过即收工 |
+
+`newSession.onFinish` 的场景：一个大任务分多段交付，每段做完都换一个干净会话继续下一段（避免上下文越压越乱）。
+填 `[done]` 才会发生；不填就什么都不做——模型想换场时自己调 `newSession`。
 
 ## 十三、约束分级：哪些不能动，哪些实施时可以改
 
