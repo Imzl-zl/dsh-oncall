@@ -152,3 +152,21 @@ last_updated: "2026-10-19"
 |---|---|---|---|
 | 1 | 不同会话不同任务需要不同模型 | **命名链 + 面板按会话选**：工作台列出全部会话（`session.list` + `title` 投影给名字），选一条命名链；绑定存 `ctx.storageDomain` 会话侧车（`bundle/base` 已挂载 storage 家族），写操作走插件自有 Remote。不需要 slash 命令。熔断规则跟链、状态仍全局。见[按会话选择降级链](per-session-chains.md) | 绑定开关注释：无 storage 时内存 + 可见 notice；fork 默认不继承 |
 | 2 | 配 10 次只发生 6 次（`1 + min(10, 5)`） | **已实施（2026-10-21）**：插件独占重试。勾选的码由插件自己退避（曲线照抄 DSH：`initialDelayMs`/`maxDelayMs`/`jitterRatio`/`Retry-After`）并返回 `{kind:'retry'}`，次数就是 `maxRetries + 1`；未勾的码仍 `next()` 交给 DSH。见[重试预算归属](retry-budget-ownership.md)、`.agents/notes/implemented/2026-10-21-plugin-owns-retries.md` | 不伪造 `llm/retry`：轨迹里没有 `llm/retry` 行，但每次尝试的 `assistant/attempt` 一条不少 |
+
+## 十、交接（handoff）设计（2026-10-23，部分待决）
+
+形态已定为**委派基础设施**（名册 + 单工具四动作 + 插件备料 + 原生结算唤醒），不做任务状态判断；设计与源码依据见
+[交接提案](handoff-proposal.md)，取舍理由见 `.agents/notes/proposed/2026-10-23-handoff-as-delegation-infrastructure.md`。
+
+已裁定（2026-10-23）：`limits.maxReviewsPerUserMessage` 默认 `1`，可配；**是上限不是配额**——第一次就通过就收工，不强制跑满。
+下面除第 3 条外仍待拍板。
+
+| # | 待决 | 建议取值 | 备选 |
+|---|---|---|---|
+| 1 | 完成是否强制复核（`requireReviewFor`） | `[]`，不强制 | `[done]`：正好对上"完成也要复核"，每次收工多一次子会话 |
+| 2 | 未交回执就停的兜底 | 只写 notice，不自动派 | 自动派一个 `role: review` 的角色，人不在场也能接住 |
+| 3 | 复核轮数上限（`limits.maxReviewsPerUserMessage`） | **已定 `1`**，可配 | `2`+：允许"改完再判一次"，你不在场时缺口能自行闭合 |
+| 4 | 重启后首条简报的身份 | 普通用户消息（模型当任务执行） | notice（诚实标注来源，但模型可能只当背景） |
+| 5 | 名册项的 `purpose` 是否必填 | 必填，空则拒绝保存 | 允许空，模型只能凭 `name` 选人 |
+| 6 | 子会话失败后是否跟随父会话的链切换 | `failover: inherit`（跟随父会话绑定的链，熔断全局） | `none`（钉死即失败即报错）；`<chainId>`（给子会话一条更便宜的专用链） |
+| 7 | 收工后是否自动开新会话（`restart.onFinish`） | 默认 `[]`，不自动 | `[done]`：每次收工都开新会话复核 / 继续 / 复核完再继续，会话数会涨（受 `maxRestartsPerUserMessage: 2` 约束） |
