@@ -150,9 +150,11 @@ export function ChainView(props) {
       candidates: chain.candidates,
       stickyTurns: chain.stickyTurns,
       maxTokens: chain.maxTokens,
+      immediateSwitch: chain.immediateSwitch,
       disabled: props.disabled,
       onStickyTurns: props.onStickyTurns,
       onMaxTokenContinue: props.onMaxTokenContinue,
       onMaxTokenContinues: props.onMaxTokenContinues,
+      onToggleImmediateSwitch: props.onToggleImmediateSwitch,
     }))
 }

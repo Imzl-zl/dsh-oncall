@@ -114,15 +114,15 @@ async function applyInner(ctx: Context): Promise<() => Promise<void>> {
  * @param initialNotesOpen - whether this activation opens the release notes.
  */
 function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: boolean): void {
-  // 定时器随插件半包的生命周期一起销毁，不在设置改动后留下孤儿轮询。
-  // 它声明在 createController 里，所以由控制器交回 disposer，而不是在这里
-  // 直接够那个变量——function 作用域够不到，只会在每次卸载时抛 ReferenceError。
+  var scope = ctx.configForms.get(CONFIG_NS)
+  var controller = createController(ctx, scope, t, initialNotesOpen)
+  // 定时器与在飞检查随插件半包的生命周期一起销毁，不在设置改动后留下孤儿轮询。
+  // 声明在创建之后：卸载器不必靠 `var` 提升去读一个还没赋值的名字，也不会在
+  // 创建失败时拿到 undefined。控制器自己的 dispose 是幂等的（插槽卸载时还会
+  // 再调一次，见下面的返回函数）。
   ctx.effect(function () {
     return function () { controller.dispose() }
   }, 'router: discover timer')
-
-  var scope = ctx.configForms.get(CONFIG_NS)
-  var controller = createController(ctx, scope, t, initialNotesOpen)
   // 会话内 chip 的控制器：一个会话一份绑定状态（写失败留在弹层里，成功才刷新）。
   var sessionChip = createSessionChip(ctx, t)
 
@@ -175,6 +175,7 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
     onMaxTokenContinue: function (value) { controller.setMaxTokensContinue(value) },
     onMaxTokenContinues: function (value) { controller.setMaxTokenContinues(value) },
     onToggleSwitchOn: function (key) { controller.toggleSwitchOn(key) },
+    onToggleImmediateSwitch: function (key) { controller.toggleImmediateSwitch(key) },
     onStrategy: function (value) { controller.setStrategy(value) },
     onFirstHopMaxRetries: function (value) { controller.setFirstHopMaxRetries(value) },
     onWeight: function (index, value) { controller.setWeight(index, value) },

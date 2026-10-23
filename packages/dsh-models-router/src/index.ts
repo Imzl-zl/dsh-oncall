@@ -313,7 +313,18 @@ export default class ModelRouter extends TypertRemoteService {
           states.start(agent, state)
         }
 
-        const plan = planFire(state, mayAdvance(states, agent, turn, step, state.chain))
+        const advanceAllowed = mayAdvance(states, agent, turn, step, state.chain)
+        const plan = planFire(state, advanceAllowed)
+        // `mayAdvance` 是兜底路径：它能推进链，却没有恢复裁决，因此没有熔断记录。
+        // 对恢复监听看见过的失败，这条路不该走（裁决会置 `pendingAdvance`）；
+        // 真走到这里就把话说出来，而不是悄悄换掉一条候选。
+        if (plan.advanced && state.pendingAdvance === undefined && advanceAllowed) {
+          const from = state.chain.candidates[state.index]!
+          ctx.logger.warn(
+            `model-router: advanced off ${routeKeyOf(from.provider, from.model)} by the fallback cap check `
+            + `(attempt ${state.attemptsOnCandidate}/${from.maxAttempts}); the recovery listener saw no ruling for this fire`,
+          )
+        }
         const candidates = plan.state.chain.candidates
 
         // Walk forward from the planned index, skipping candidates this exact
@@ -467,6 +478,10 @@ export default class ModelRouter extends TypertRemoteService {
     // .agents/notes/implemented/2026-10-17-policy-into-the-decision-core.md。
     ctx.on('agent/request-error', async (payload, next) => {
       const { agent, turn, step, failure, signal } = payload
+      // 总闸关着就完全不参与：`agent/request` 已经不接管这一击，恢复侧若还按冻结
+      // 的链换候选，就会出现"关了开关还在换模型"。本步剩下的失败交回 DSH 自己的策略。
+      // Note: 两个缝读同一个总闸 —— 见 .agents/notes/implemented/2026-10-23-honest-surfaces.md
+      if (!config.enabled.get()) return next()
       const state = states.current(agent, turn, step)
       // 不是本插件接管的 step：纯透传，不改变任何既有恢复行为。
       if (state === undefined) return next()
@@ -552,12 +567,13 @@ export default class ModelRouter extends TypertRemoteService {
     // 派发，所以"这次是不是截断结束"只能读上一条 assistant 消息的 finish 记录。
     ctx.on('agent/turn-stopping', ({ agent, turn, signal }) => {
       if (signal.aborted || !config.enabled.get()) return
-      const note = states.truncationOf(agent, turn)
-      if (note === undefined || !note.truncated) return
       // 只认本轮**最后一个 step** 的记录：辅助调用（标题、压缩）也会写 assistant 消息，
-      // 它们不是 step，用它们的截断去 steer 会把一句话塞进不相干的一轮。
+      // 用它们的截断去 steer 会把一句话塞进不相干的一轮。记录按 step 存，所以这里
+      // 先取 step、再问它自己的那一条——别的 step 的消息冲不掉它。
       const state = states.latestOfTurn(agent, turn)
-      if (state === undefined || state.step !== note.step) return
+      if (state === undefined) return
+      const note = states.truncationOf(agent, turn, state.step)
+      if (note === undefined || !note.truncated) return
       const effective = readConfig(config, this.raw)
       const bound = bindings.read(agent.session.id)
       const policy = chainForSession(effective, bound?.chain ?? null).chain.maxTokens
@@ -628,9 +644,15 @@ export default class ModelRouter extends TypertRemoteService {
   }
 
   /**
-   * The last report the scheduled run produced. The browser reads this when the
-   * health view opens, so a timer-driven probe is visible without the client
-   * holding a subscription — the same snapshot pattern the passive fold uses.
+   * The report of the last run — the timer, a manual "probe all", or a single
+   * route's button, whichever ran last. The browser reads this when the health
+   * view opens, so a timer-driven probe is visible without the client holding a
+   * subscription — the same snapshot pattern the passive fold uses.
+   *
+   * A single-route run therefore REPLACES this snapshot, which is why the browser
+   * merges the answer into the verdicts it already holds (`client/controller.ts`)
+   * instead of replacing its map: the snapshot speaks for the routes this run
+   * covered, and says nothing about the others.
    */
   @Remote
   async probeReport(): Promise<ProbeReport> {

@@ -19,9 +19,10 @@
  *   resolve (`Domain.put` awaits the backend before it mutates memory), so a
  *   failure reaches the caller unchanged. There is no "looks saved" fallback:
  *   the chip must not claim a write that did not land.
- * - **0..9 is a wire bound, not a policy.** `retries[route] = 0` means "do not
- *   retry this route in this session" and must stay distinguishable from an
- *   absent key, which means "use the candidate's own count".
+ * - **0..{@link MAX_SESSION_RETRIES} is a wire bound, not a policy.**
+ *   `retries[route] = 0` means "do not retry this route in this session" and must
+ *   stay distinguishable from an absent key, which means "use the candidate's own
+ *   count".
  *
  * Note: 为何用 storageDomain 侧车、记录形状、0..9 边界与内存回退 —— 见
  * .agents/notes/implemented/2026-10-21-per-session-bindings.md
@@ -229,8 +230,9 @@ function reloadedError(): Error {
  * Reject a binding the wire should not have produced.
  *
  * Both checks are about silent no-ops: a route key nobody matches and a count
- * outside 0..9 would each look saved and then quietly do nothing, which is the
- * failure mode this project treats as worse than a loud error.
+ * outside 0..{@link MAX_SESSION_RETRIES} would each look saved and then quietly
+ * do nothing, which is the failure mode this project treats as worse than a
+ * loud error.
  */
 function assertBinding(binding: SessionBinding): void {
   for (const [route, retries] of Object.entries(binding.retries)) {

@@ -34,6 +34,7 @@ import type { Candidate, SwitchOn } from './config.ts'
 import {
   DEFAULT_CHAIN_ID,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
+  DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_MAX_RETRIES,
   DEFAULT_MAX_TOKEN_AUTO_CONTINUE,
   DEFAULT_MAX_TOKEN_CONTINUES,
@@ -68,6 +69,7 @@ export function emptyChain(): ChainConfig {
   return {
     candidates: [],
     switchOn: { ...DEFAULT_SWITCH_ON },
+    immediateSwitch: [...DEFAULT_IMMEDIATE_SWITCH],
     stickyTurns: DEFAULT_STICKY_TURNS,
     strategy: DEFAULT_STRATEGY,
     firstHopMaxRetries: DEFAULT_FIRST_HOP_MAX_RETRIES,
@@ -137,6 +139,8 @@ export interface LegacyAwareConfig {
 /** The chain-level fields a legacy record may carry, in either vocabulary. */
 interface LegacyChainFields {
   switchOn?: Partial<SwitchOn>
+  /** 白名单：`switchOn` 的键名数组。旧配置没有这个键，读成默认名单。 */
+  immediateSwitch?: unknown
   stickyTurns?: number
   strategy?: Strategy
   firstHopMaxRetries?: number
@@ -159,6 +163,18 @@ function switchOnOf(over: Partial<SwitchOn> | undefined, policyCurrent: boolean)
   return policyCurrent ? { ...DEFAULT_SWITCH_ON, ...over } : { ...DEFAULT_SWITCH_ON }
 }
 
+/**
+ * 立即切换白名单，从任何形状的旧记录里读一次。
+ *
+ * 缺键（这个字段是 2026-10-23 才有的）读成默认名单；不是数组 = 写坏了，也给默认，
+ * 但拼错的键*不*在这里过滤——那由 `rules.ts` 的结构校验点名拒绝，否则"写错一个
+ * 键"会静默变成"没勾"。
+ */
+function immediateSwitchOf(over: unknown): string[] {
+  if (!Array.isArray(over)) return [...DEFAULT_IMMEDIATE_SWITCH]
+  return [...new Set(over.filter((value): value is string => typeof value === 'string'))]
+}
+
 function maxTokensOf(over: Partial<ChainConfig['maxTokens']> | undefined): ChainConfig['maxTokens'] {
   return {
     autoContinue: typeof over?.autoContinue === 'boolean'
@@ -174,6 +190,7 @@ function chainFrom(candidates: LegacyCandidate[], over: LegacyChainFields, polic
   return {
     candidates: candidates.map(candidate => normalizeCandidate(candidate, policyCurrent)),
     switchOn: switchOnOf(over.switchOn, policyCurrent),
+    immediateSwitch: immediateSwitchOf(over.immediateSwitch),
     stickyTurns: typeof over.stickyTurns === 'number' ? over.stickyTurns : DEFAULT_STICKY_TURNS,
     strategy: over.strategy === 'weight' || over.strategy === 'round-robin' ? over.strategy : DEFAULT_STRATEGY,
     firstHopMaxRetries: firstHopRetriesOf(over, policyCurrent),

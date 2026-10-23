@@ -25,6 +25,7 @@ import {
   resolveStartIndex,
   rotate,
   startStep,
+  switchesImmediately,
   toolResultHasImage,
   unmetCondition,
 } from '../src/router.ts'
@@ -123,6 +124,8 @@ const chainOf = (maxAttempts, count = 3, strategy = 'order') => ({
   // 2026-10-22 起表外还有一个 `other`（默认 true）。这一组用例刻意保留
   // emptyResponse/invalidRequest = false，它们测的是"用户显式取消勾选"那条路。
   switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: false, invalidRequest: false, other: true },
+  // 这一组测的是次数预算本身，所以白名单留空：把"直接切"的行为留给专门的用例。
+  immediateSwitch: [],
   strategy,
 })
 
@@ -237,6 +240,53 @@ test('before inner: an unchecked code or an abort still defers to llm-retry', ()
     assert.equal(ruling.record, false)
     assert.equal(ruling.log, '')
   }
+})
+
+// ---- 立即切换白名单：重试注定一样的码不占预算 ----
+
+const immediateChain = (maxAttempts, count) => {
+  const base = chainOf(maxAttempts, count)
+  return {
+    ...base,
+    switchOn: { ...base.switchOn, auth: true, quota: true },
+    immediateSwitch: ['auth', 'quota'],
+  }
+}
+
+test('before inner: a whitelisted failure switches without spending the retry budget', () => {
+  // 密钥失效、额度用尽：换一条候选通常立刻能救，而重试同一条只会拿到同一个答案。
+  // 白名单命中时不重试、不等退避，直接换——次数预算留给瞬态失败。
+  const policy = { mode: 'normal', maxRetries: 5, retryableCodes: [], initialDelayMs: 500, maxDelayMs: 10000, jitterRatio: 0 }
+  const state = at(immediateChain(5, 2), { attemptsOnCandidate: 1, totalAttempts: 1 })
+  const ruling = decideBeforeInner(state, 'AUTH', false, { policy })
+  assert.equal(ruling.kind, 'advance')
+  assert.equal(ruling.record, true, 'the candidate leaves rotation, so the breaker hears about it')
+  assert.match(ruling.log, /immediate-switch list, switching without retrying/)
+  // 末位候选：直接终态，不再白打一次。
+  const last = { ...state, index: 1 }
+  assert.equal(decideBeforeInner(last, 'AUTH', false, { policy }).kind, 'terminate')
+})
+
+test('before inner: the whitelist only names keys, and the others keep their budget', () => {
+  const state = at(immediateChain(5, 2), { attemptsOnCandidate: 1, totalAttempts: 1 })
+  // 限流是瞬态失败：不在默认名单里，仍按次数重试。
+  const ruling = decideBeforeInner(state, 'RATE_LIMIT', false)
+  assert.equal(ruling.kind, 'retry-self')
+  assert.equal(switchesImmediately(state.chain, 'RATE_LIMIT'), false)
+  // 表外的码经 `other` 归口：名单里没有 other 就不抢在 DSH 内层前面。
+  assert.equal(switchesImmediately(state.chain, 'PI_AI_ERROR'), false)
+  assert.equal(decideBeforeInner(state, 'PI_AI_ERROR', false).kind, 'delegate')
+})
+
+test('after inner: a whitelisted code outside the table gets no router retry either', () => {
+  // 表外码先问内层；内层放弃后，白名单让路由器不补自己的重试。
+  const chain = { ...immediateChain(5, 2), immediateSwitch: ['other'] }
+  const state = at(chain, { attemptsOnCandidate: 1, totalAttempts: 1 })
+  assert.equal(switchesImmediately(chain, 'PI_AI_ERROR'), true, 'unknown codes are named by the `other` key')
+  // `retryable: false` 是"内层从没为这个码重试过"：没有白名单时路由器会补自己的重试。
+  const ruling = decideAfterInner(state, 'PI_AI_ERROR', false, undefined, { retryable: false })
+  assert.equal(ruling.kind, 'advance')
+  assert.equal(ruling.record, true)
 })
 
 test('after inner: an inner retry is always honored — there is no cap left to veto it', () => {
@@ -701,6 +751,9 @@ const crossCases = [
   ] })), ['problemDuplicateRouteInChain']],
   ['a weight strategy with nothing to draw', structural(crossChain({ strategy: 'weight', candidates: [{ provider: 'stub-primary', model: 'stub-model', maxRetries: 0, weight: 0 }] })), ['problemWeightNoPositive']],
   ['a breaker rule that matches nothing', { ...structural(crossChain()), health: crossHealth([{ code: '', message: '', cooldownSeconds: 60 }]) }, ['problemBreakerEmptyRule']],
+  // 白名单按 switchOn 的键书写；拼错一个键就是一条永不命中的规则，所以它和重复渠道
+  // 一样是"任何环境都错"的配置错误。
+  ['an immediate-switch entry that names no failure', structural(crossChain({ immediateSwitch: ['authh'] })), ['problemUnknownImmediateSwitch']],
 ]
 
 test('the cross-field rules are one expression: the host throws the first, the browser formats them all', () => {
@@ -1359,6 +1412,27 @@ test('toolResultHasImage reads the nested tool-result content', () => {
   assert.equal(toolResultHasImage(undefined), false)
 })
 
+// ---- 截断记录：按 step 存，不是一个槽 ----
+
+test('an auxiliary message cannot erase the truncated step it did not produce', () => {
+  // `assistant/message` 不只属于 Agent 主请求：会话标题、压缩这些辅助调用也写一条。
+  // 单槽记录会被后到的那条覆盖成 truncated:false，自动续跑随即静默不发生——用户只
+  // 看到 DSH 原生的"发送继续"，而插件一声不响。
+  const states = new RouterState()
+  const agent = agentKey()
+  states.noteTruncation(agent, { turn: 1, step: 3, provider: 'p', model: 'm', truncated: true })
+  states.noteTruncation(agent, { turn: 1, step: 4, provider: 'p', model: 'title', truncated: false })
+  assert.equal(states.truncationOf(agent, 1, 3)?.truncated, true, '别的 step 的消息冲不掉本 step 的事实')
+  assert.equal(states.truncationOf(agent, 1, 4)?.truncated, false)
+  // 同一个 step 的后一条覆盖前一条：真·后写赢。
+  states.noteTruncation(agent, { turn: 1, step: 3, provider: 'p', model: 'm', truncated: false })
+  assert.equal(states.truncationOf(agent, 1, 3)?.truncated, false)
+  // 换轮即失效。
+  states.noteTruncation(agent, { turn: 2, step: 1, provider: 'p', model: 'm2', truncated: true })
+  assert.equal(states.truncationOf(agent, 1, 3), undefined)
+  assert.equal(states.truncationOf(agent, 2, 1)?.truncated, true)
+})
+
 // ---- stickyTurns structural validation ----
 
 test('a negative stickyTurns is refused by the schema, not by a structural guard', () => {
@@ -1615,6 +1689,7 @@ test('the last candidate is not fired once past its cap, and neither is a lone o
     candidates: Array.from({ length: n }, (_, i) => ({ provider: `c${i}`, model: 'm', maxAttempts })),
     order: Array.from({ length: n }, (_, i) => i),
     switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: false, invalidRequest: false, auth: true, quota: true },
+    immediateSwitch: [],
     stickyTurns: 0,
     strategy: 'order',
   })
@@ -2008,6 +2083,18 @@ test('compareVersions orders releases, and refuses what is not a version', () =>
   assert.equal(compareVersions('latest', '0.3.3'), null)
   assert.equal(compareVersions('0.3', '0.3.3'), null)
   assert.equal(compareVersions('', '0.3.3'), null)
+})
+
+test('a running version that is not comparable is an error, not "up to date"', async () => {
+  // 旧写法 `compareVersions(latest, current) ?? 0` 把"不可比较"读成"不比最新版新"，
+  // 于是界面显示"已是最新版本"——一个不成立的结论。运行版本来自构建产物，
+  // 读不出它就是构建有毛病，要按失败说。
+  const result = await checkForUpdate('latest', {
+    fetchImpl: async () => jsonResponse({ version: '0.4.0' })(),
+  })
+  assert.equal(result.latest, '0.4.0', '版本答案仍然读到了')
+  assert.equal(result.newer, false)
+  assert.match(result.error ?? '', /not a comparable version/, 'the reason reaches the user')
 })
 
 test('the update check answers with the newest published version and its notes', async () => {

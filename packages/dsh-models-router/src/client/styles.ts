@@ -163,6 +163,12 @@ export var ROUTER_CSS = [
   '.dsh-router-label { font-size: 13px; line-height: 20px; font-weight: 500; color: var(--dsw-alias-label-primary); }',
   '.dsh-router-check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; }',
   '.dsh-router-check { font-size: 13px; line-height: 20px; }',
+  '.dsh-router-immediate { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; padding-top: 14px; border-top: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-router-immediate-head { display: flex; flex-direction: column; gap: 2px; }',
+  // 同一套 9 个码在页面上出现两次（勾选切换 / 不重试）。第二组压小一档、排成 5 列
+  // 两行，读起来是"对上面那张表的补充"，而不是又一张等重的表。
+  '.dsh-router-immediate .dsh-router-check { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-router-immediate .dsh-router-check-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px 12px; }',
   '.dsh-router-filter-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }',
   '.dsh-router-search { width: 260px; max-width: 100%; }',
   '.dsh-router-scope-line { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
@@ -384,19 +390,34 @@ export var ROUTER_CSS = [
 ].join('\n')
 
 
+/**
+ * How many activations are holding the shared style element.
+ *
+ * The sheet is global (one <style> per document) but its lifetime is per fiber:
+ * Cordis reloads the plugin by applying the new instance while the old one is
+ * still on its way out. Without a count, the surviving activation would inherit a
+ * disposer that removes a sheet another instance is still using, and the UI would
+ * lose every `dsh-router-*` rule while still mounted.
+ */
+var styleHolders = 0
+
 export function ensureStyles() {
   if (typeof document === 'undefined') return function () {}
-  var id = 'dsh-models-router-styles'
   var tag = document.querySelector('style[data-plugin="dsh-models-router"]')
   if (!tag) {
     tag = document.createElement('style')
     tag.dataset.plugin = 'dsh-models-router'
-    tag.dataset.pluginCss = id
+    tag.dataset.pluginCss = 'dsh-models-router-styles'
     tag.textContent = ROUTER_CSS
     document.head.appendChild(tag)
   }
+  styleHolders += 1
+  var released = false
   return function () {
-    if (tag && tag.parentNode) tag.parentNode.removeChild(tag)
+    if (released) return
+    released = true
+    styleHolders -= 1
+    if (styleHolders <= 0 && tag && tag.parentNode) tag.parentNode.removeChild(tag)
   }
 }
 

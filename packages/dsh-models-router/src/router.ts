@@ -130,6 +130,7 @@ export function resolveChain(
     // 用户可见编号：0 = 第一跳（他自己选的模型），1..N = 降级第几条。
     order: candidates.map((_, index) => index),
     switchOn: chain.switchOn,
+    immediateSwitch: chain.immediateSwitch,
     stickyTurns: chain.stickyTurns,
     strategy: chain.strategy,
   }
@@ -339,6 +340,18 @@ export function hasNextCandidate(state: StepState): boolean {
   return state.index < state.chain.candidates.length - 1
 }
 
+/**
+ * 这个失败是否跳过重试预算、直接换下一条候选。
+ *
+ * 白名单是用户对"这一击再打一次也是同一个答案"的回答（密钥失效、额度用尽、
+ * 请求被拒）；它按 `switchOn` 的键书写，所以表外的码与 {@link isSwitchOnEligible}
+ * 一样经 `other` 键归口——两个判断永远读同一套词。
+ */
+export function switchesImmediately(chain: StepChain, code: string): boolean {
+  const key = switchOnKeyOf(code) ?? OTHER_SWITCH_KEY
+  return chain.immediateSwitch.includes(key)
+}
+
 export type RecoveryDecision = 'advance' | 'terminal'
 
 /**
@@ -473,6 +486,24 @@ export function decideBeforeInner(
   if (!isSwitchOnEligible(state.chain, code)) {
     return { kind: 'delegate', record: false, log: '' }
   }
+  // 白名单：这一击再打一次是同一个答案（密钥被拒、额度用尽、请求被拒），
+  // 所以不消耗重试次数、不等退避，直接换候选。次数预算留给瞬态失败。
+  // Note: 为何用白名单而不是"每个码一个次数" —— 见
+  // .agents/notes/implemented/2026-10-23-immediate-switch-whitelist.md
+  if (switchesImmediately(state.chain, code)) {
+    if (hasNextCandidate(state)) {
+      return {
+        kind: 'advance',
+        record: true,
+        log: `model-router: ${code} on ${route} ${attempt}; on the immediate-switch list, switching without retrying`,
+      }
+    }
+    return {
+      kind: 'terminate',
+      record: true,
+      log: `model-router: ${code} on ${route} ${attempt}; on the immediate-switch list and the chain has nothing left, terminating`,
+    }
+  }
   // 勾选的码由路由器自己执行同渠道重试（2026-10-21 定案）：次数就是配置的次数，
   // 不再受 provider 策略里较小那个上限的截断。等待复刻该 provider 的曲线。
   // Note: 为何接管、为何不伪造 llm/retry —— 见
@@ -532,6 +563,7 @@ export function decideAfterInner(
   // 全部失效。用路由器自己的退避曲线补上，退避参数来自同一个 provider 策略。
   if (!aborted
     && isSwitchOnEligible(state.chain, code)
+    && !switchesImmediately(state.chain, code)
     && timing.retryable === false
     && state.attemptsOnCandidate < current.maxAttempts) {
     const plan = planBackoff(timing.policy, state.attemptsOnCandidate, timing.retryAfterMs, timing.random)

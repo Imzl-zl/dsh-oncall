@@ -137,7 +137,8 @@ export function GlobalHealthWorkspace(props) {
         // 它在这条链里的位次，不再做按规则的跳转。
         if (channel) channel.usages.push({
           name: '__chain__',
-          label: t('channelUsedInChain') + ' #' + (index + 1),
+          // 整句模板 + 占位符：拼 `t(key) + ' #' + n` 会印出「降级链第 #1」这种半中半英的序号。
+          label: fill(t('channelUsedInChain'), { n: index + 1 }),
         })
       })
     }

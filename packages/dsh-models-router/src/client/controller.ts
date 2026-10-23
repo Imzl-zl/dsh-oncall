@@ -90,6 +90,9 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     drawerOpen: false,
     drawerLoading: false,
     drawerError: false,
+    // 读不全的原因（部分或全部会话读不到）。空 = 上一次读取是完整的：
+    // 抽屉里"没有记录"与"读不到"必须是两种渲染。
+    drawerPartial: null,
     drawerRows: [],
     // Passive observation, folded by the host projection out of real
     // conversation outcomes. Keyed by route, merged across recent sessions.
@@ -168,6 +171,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
         drawerOpen: ui.drawerOpen,
         drawerLoading: ui.drawerLoading,
         drawerError: ui.drawerError,
+        drawerPartial: ui.drawerPartial,
         drawerRows: ui.drawerRows,
         passive: ui.passive,
         discover: ui.discover,
@@ -279,70 +283,99 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     return Object.assign({}, newer, { timeline: pruneTimeline(points) })
   }
 
-  /** 把一批会话的记录按旧→新合进 ui.passive。 */
-  function mergePassiveRecords(records) {
-    if (!records) return
-    var next = Object.assign({}, ui.passive)
+  /**
+   * 把一批会话的记录按旧→新合进目标表。
+   *
+   * 目标由调用方传入而不是直接读 `ui.passive`：被动快照描述的是"最近这批会话
+   * 里发生过什么"，每次读取必须从空表折起。合进上一份 `ui.passive` 会让一条
+   * 已经从所有链里删掉的渠道以幽灵行留在健康页，直到刷新。
+   */
+  function mergeHealthRecords(target, records) {
+    if (!records) return target
     Object.keys(records).forEach(function (route) {
-      next[route] = mergeHealthRecord(next[route], records[route])
+      target[route] = mergeHealthRecord(target[route], records[route])
     })
-    ui.passive = next
+    return target
   }
 
-  /**
-   * Read the host projection's passive records. Health is a cross-session
-   * fact, so this merges the same window the failover drawer reads rather
-   * than pretending one session is the whole story.
-   */
   /** An error as one line of text, for a message that has to be shown as-is. */
   function describeError(error) {
     if (error && typeof error.message === 'string' && error.message.length > 0) return error.message
     return String(error)
   }
 
-  function loadPassive() {
-    var session = ctx.remote && ctx.remote.session
-    if (!session) return
-    // Failures are collected rather than swallowed: a read that yields nothing
-    // renders identically to "this channel never ran", so the difference has to
-    // reach the screen (see `ui.passiveError`).
-    var failures = []
-    session.list({}).then(function (result) {
+  /**
+   * The recent sessions' projection values, read once for both views that need
+   * them: the passive health fold and the failover history.
+   *
+   * A refused read is reported, never folded into "this session has nothing":
+   * the two render identically, and telling them apart is the whole job of both
+   * views. Failures are returned rather than thrown, so one unreadable session
+   * cannot take the other nineteen with it.
+   *
+   * @returns the successful reads (old → new, each with the two projection
+   *   keys), the failure messages, and how many sessions were asked about.
+   *
+   * Note: 为何两个视图必须共用这一份读取、失败为何不能折成空 —— 见
+   * .agents/notes/implemented/2026-10-23-honest-surfaces.md
+   */
+  function readRecentSessions(session, limit) {
+    return session.list({}).then(function (result) {
       if (!result.ok) throw new Error(describeError(result.error) || 'session.list was refused')
+      // 数组按更新时间从旧到新，最后一条才是最近一次观测：合并顺序就是语义。
+      // 两个坑都实测踩过：① 在并发回调里直接 assign，谁最后 resolve 谁赢——
+      // 同一条路由时而显示三天前的延迟、时而显示今天的，刷新就变；② 数组新的
+      // 在前时最后 assign 的是最旧一条，语义恰好反了。
       var sessions = (result.value?.items ?? []).slice()
         .sort(function (a, b) { return (a.updatedAt ?? 0) - (b.updatedAt ?? 0) })
-        .slice(-20)
-      // 先读齐、再按旧→新合并。两个坑都实测踩过：① 在并发回调里直接
-      // Object.assign，谁最后 resolve 谁赢——同一条路由时而显示三天前的延迟、
-      // 时而显示今天的，刷新就变；② 数组新的在前时最后 assign 的是最旧一条，
-      // 语义恰好反了。旧→新顺序保证每条渠道留下的是最近一次观测。
+        .slice(-limit)
+      var failures = []
       return Promise.all(sessions.map(function (entry) {
         return session.projections({ sessionId: entry.sessionId }).then(function (read) {
-          // The live read is `{ asOfSeq, values }`; a migration-required
-          // read carries cached values only. Either way the key is read
-          // straight out of `values` — no `kind` gate (the wire payload
-          // does not carry one).
-          // A refused read is not "no records": the two must not fold into the
-          // same empty state.
+          // The live read is `{ asOfSeq, values }`; a migration-required read
+          // carries cached values only. Either way the key is read straight out
+          // of `values` — no `kind` gate (the wire payload does not carry one).
           if (!read.ok) throw new Error(describeError(read.error) || 'the projection read was refused')
           var values = read.value !== null ? (read.value.values ?? {}) : {}
-          // 先拷贝再写入：store 的 set 会 dev-freeze 它收到的对象，之后往
-          // 原对象上赋值在 dev 构建里会静默失败（圆点永远显示"未探测"）。
-          return values['router/channel-health'] ?? null
+          return {
+            sessionId: entry.sessionId,
+            health: values['router/channel-health'] ?? null,
+            entries: values['router/failover-history'] ?? [],
+          }
         }).catch(function (error) {
           failures.push(describeError(error))
           return null
         })
-      })).then(function (reads) { return { reads: reads, total: sessions.length } })
-    }).then(function (page) {
-      for (var i = 0; i < page.reads.length; i++) {
-        mergePassiveRecords(page.reads[i])
-      }
-      ui.passiveError = failures.length === 0
+      })).then(function (reads) {
+        return {
+          reads: reads.filter(function (row) { return row !== null }),
+          failures: failures,
+          total: sessions.length,
+        }
+      })
+    })
+  }
+
+  /**
+   * Read the host projection's passive records. Health is a cross-session
+   * fact, so this folds the same window the failover history reads rather
+   * than pretending one session is the whole story.
+   */
+  function loadPassive() {
+    var session = ctx.remote && ctx.remote.session
+    if (!session) return
+    readRecentSessions(session, 20).then(function (page) {
+      // 先拷贝再写入：store 的 set 会 dev-freeze 它收到的对象，之后往原对象上
+      // 赋值在 dev 构建里会静默失败（圆点永远显示"未探测"）。所以折进一张新表，
+      // 折完整体换上——也顺便让"这批会话之外"的旧记录自然消失。
+      var folded = {}
+      for (var i = 0; i < page.reads.length; i++) mergeHealthRecords(folded, page.reads[i].health)
+      ui.passive = folded
+      ui.passiveError = page.failures.length === 0
         ? null
-        : failures.length === page.total
-          ? fill(t('healthHistoryUnreadable'), { error: failures[0] })
-          : fill(t('healthHistoryPartial'), { failed: failures.length, total: page.total, error: failures[0] })
+        : page.failures.length === page.total
+          ? fill(t('healthHistoryUnreadable'), { error: page.failures[0] })
+          : fill(t('healthHistoryPartial'), { failed: page.failures.length, total: page.total, error: page.failures[0] })
       publish()
     }).catch(function (error) {
       // The list itself failed, so not one session was read. Say that instead of
@@ -405,7 +438,9 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     })
   }
 
-  scope.subscribe(function () {
+  // 订阅返回退订函数（DSH 的 settings scope 就是一个 store）：卸载时退掉，
+  // 否则已卸载的控制器会继续被宿主的每次发布唤醒，一遍遍重算一份没人看的快照。
+  var unsubscribeScope = scope.subscribe(function () {
     // mirror 的每次发布都会走到这里：保存被拒后的恢复读、连接重置、用户在
     // 别的设置页保存，都会重发整个文档。本 namespace 的值没变就什么都不做——
     // 把用户未保存的草稿冲掉，比晚一步反映宿主变化糟得多。裁定与代价见
@@ -625,6 +660,20 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       edited(draft).switchOn[key] = !edited(draft).switchOn[key]
       publish()
     },
+    /**
+     * 白名单：勾上 = 这个失败码不重试、直接切下一条候选。
+     *
+     * 与 `switchOn` 是同一套键，但回答的是另一个问题（要不要再打一次），所以是
+     * 两份独立状态：取消勾选「失败切换」时，白名单里的条目留着——再勾回来时
+     * 用户的选择还在。
+     */
+    toggleImmediateSwitch: function (key) {
+      var chain = edited(draft)
+      var at = chain.immediateSwitch.indexOf(key)
+      if (at >= 0) chain.immediateSwitch.splice(at, 1)
+      else chain.immediateSwitch.push(key)
+      publish()
+    },
     setStrategy: function (value) {
       // 策略只管起点，所以名单本身不动——只改"从哪条开始"。
       edited(draft).strategy = value
@@ -656,38 +705,21 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ui.drawerOpen = true
       ui.drawerLoading = true
       ui.drawerError = false
+      ui.drawerPartial = null
       ui.drawerRows = []
       publish()
-      ctx.remote.session.list({}).then(function (result) {
-        if (!result.ok) throw new Error('session list refused')
-        var sessions = (result.value?.items ?? []).slice()
-          .sort(function (a, b) { return (a.updatedAt ?? 0) - (b.updatedAt ?? 0) })
-          .slice(-20)
-        // 与 loadPassive 同一套合并：读齐后旧→新，每条渠道留最近一次观测。
-        return Promise.all(sessions.map(function (session) {
-          return ctx.remote.session.projections({ sessionId: session.sessionId }).then(function (read) {
-            // The live read is `{ asOfSeq, values }`; a migration-required
-            // read carries cached values only. Either way the key is read
-            // straight out of `values` — no `kind` gate (the wire payload
-            // does not carry one).
-            var values = read.ok && read.value !== null ? (read.value.values ?? {}) : {}
-            return {
-              sessionId: session.sessionId,
-              entries: values['router/failover-history'] ?? [],
-              records: values['router/channel-health'] ?? null,
-            }
-          }).catch(function () { return { sessionId: session.sessionId, entries: [], records: null } })
-        }))
-      }).then(function (rows) {
-        // 合并放在这里而不是并发回调里：数组已按旧→新，最后赋值的才是最近一次
-        // 观测；在回调里 assign 等于让 resolve 顺序决定赢家，刷新就变。
-        for (var i = 0; i < rows.length; i++) {
-          mergePassiveRecords(rows[i].records)
-        }
-        ui.drawerRows = rows.filter(function (row) { return row.entries.length > 0 })
+      // 与健康历史走同一次读取（readRecentSessions）：那是同一批会话、同一套
+      // 失败口径。此前这里是第二份实现，还把逐会话失败吞成空记录——"读不到"
+      // 于是渲染成"没有转移"，正是健康历史那轮修掉的同一句话。
+      readRecentSessions(ctx.remote.session, 20).then(function (page) {
+        ui.drawerPartial = page.failures.length === 0
+          ? null
+          : fill(t('failoverHistoryPartial'), { failed: page.failures.length, total: page.total, error: page.failures[0] })
+        ui.drawerRows = page.reads.filter(function (row) { return row.entries.length > 0 })
         ui.drawerLoading = false
         publish()
       }).catch(function () {
+        // 列表本身失败 = 一个会话都没读到，抽屉里只能报错，不能报"没有记录"。
         ui.drawerError = true
         ui.drawerLoading = false
         publish()
@@ -801,7 +833,12 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       if (!health || typeof health.probeReport !== 'function') return
       health.probeReport().then(function (result) {
         if (!result || result.ok !== true || !result.value) return
-        var next = {}
+        // 合并而不是整份替换：宿主只保留"最后一次运行"，而一次单条探测只代表
+        // 它自己那一条。整份替换会让打开健康页的一次读取抹掉这个浏览器里其它
+        // 路由刚测出来的结论（显示回"未探测"）。
+        // Note: 为何合并、为何不改宿主的"最后一次"契约 —— 见
+        // .agents/notes/implemented/2026-10-23-honest-surfaces.md
+        var next = Object.assign({}, ui.probe)
         ;(result.value.routes ?? []).forEach(function (entry) {
           next[routeKeyOf(entry.provider, entry.model)] = entry
         })
@@ -936,7 +973,9 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     },
     /** 供插件半包卸载时调用：停掉定时轮询、取消在飞的检查，别留下孤儿 interval 与孤儿请求。 */
     dispose: function () {
+      if (disposed) return
       disposed = true
+      if (typeof unsubscribeScope === 'function') unsubscribeScope()
       if (discoverTimer !== null) { clearInterval(discoverTimer); discoverTimer = null }
       armedSeconds = -1
       checkAborts.forEach(function (abort) { abort.abort() })

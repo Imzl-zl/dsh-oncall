@@ -860,6 +860,26 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'immediate-switch-skips-the-retry-budget',
+    note: '密钥失效（AUTH）在立即切换白名单里：一次失败就换到备用，不消耗重试次数',
+    // 第一跳配了 6 次调用（5 次重试）、provider 策略也允许重试 5 次。白名单没生效的话
+    // 这一轮会打出 6 条失败记录；生效则只有 1 条。判据是真实 durable 日志里的失败条数，
+    // 不是配置解析。
+    router: {
+      enabled: true,
+      profiles: [profile([C('stub-primary', 6), C('stub-backup', 1)])],
+      default: { enabled: false, candidates: [], switchOn: { ...SWITCH_ON } },
+    },
+    script: { policy: { maxRetries: 5 }, 'stub-primary': { outcomes: ['fail:AUTH'] }, 'stub-backup': { outcomes: ['ok'] } },
+    check(events) {
+      eq('headers', headers(events), ['stub-primary/stub-model', 'stub-backup/stub-model'])
+      eq('failed attempt count', failedAttempts(events).length, 1, 'whitelisted: one call, then the next candidate')
+      eq('failed attempt codes', failedAttempts(events).map(a => a.code), ['AUTH'])
+      eq('final route', finalRoute(events), 'stub-backup/stub-model')
+      eq('turn end', turnEnd(events), 'completed')
+    },
+  },
+  {
     name: 'takeover-off-means-no-takeover',
     note: '没写 enabled（默认关）时插件完全不动：请求按默认模型原样发出',
     // 默认值从 true 改成 false 后，"默认关"必须被钉住——否则新装一次就被接管，

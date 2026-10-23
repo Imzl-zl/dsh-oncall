@@ -19,6 +19,7 @@
 
 import type { HealthConfig, NamedChain } from './config.ts'
 import { chainLabel } from './chain.ts'
+import { isSwitchOnKey } from './defaults.ts'
 import { routeKeyOf } from './routes.ts'
 
 /**
@@ -79,6 +80,20 @@ export function structuralViolations(config: StructuralInput): Violation[] {
       }
       seen.add(key)
     })
+    // 白名单里拼错的键等于一条永远不命中的规则：保存得下、什么也不做。键清单与
+    // 「失败切换」同一套，所以这里能逐项判定，不需要枚举失败码。
+    // `?? []`：rules 是纯函数，也可能被手工构造的输入调用；缺这个键 = 一条白名单
+    // 也没有（路由侧总由 chainFrom 填上默认名单，这里只校验用户写了什么）。
+    for (const key of chain.immediateSwitch ?? []) {
+      if (!isSwitchOnKey(key)) {
+        violations.push({
+          key: 'problemUnknownImmediateSwitch',
+          vars: { chain: chainIndex + 1, entry: key },
+          message: `model-router: the chain "${label}" lists '${key}' in immediateSwitch, `
+            + 'which is not a switchOn key — the entry would never match a failure',
+        })
+      }
+    }
     // A weight strategy with no positive weight has nothing to draw from, and the
     // failure would surface as every request silently starting at the same hop.
     if (chain.strategy === 'weight'

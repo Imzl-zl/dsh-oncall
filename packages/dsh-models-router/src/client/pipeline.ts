@@ -12,11 +12,11 @@
 import { useMemo, useState } from 'react'
 import { Button, Checkbox, Input, Modal, SegmentedControl, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from './dom.ts'
-import { fill, routeStatus } from './format.ts'
+import { fill, healthToneStyle, routeStatus } from './format.ts'
 import { routeNames } from './naming.ts'
 import { Icon, ICON_BOLT, ICON_DOWN, ICON_GRIP, ICON_MINUS, ICON_PLUS, ICON_TRASH, ICON_UP } from './icons.ts'
 import { routeKeyOf, routeParts } from '../routes.ts'
-import { DEFAULT_FIRST_HOP_MAX_RETRIES, MAX_RETRIES, MAX_TOKEN_CONTINUES, OTHER_SWITCH_KEY, STRATEGIES, SWITCH_ON_CODES } from '../defaults.ts'
+import { DEFAULT_FIRST_HOP_MAX_RETRIES, MAX_RETRIES, MAX_TOKEN_CONTINUES, OTHER_SWITCH_KEY, STRATEGIES, SWITCH_ON_CODES, SWITCH_ON_KEYS } from '../defaults.ts'
 
 /** The status text one route's health tag carries. */
 function statusLabel(t, status) {
@@ -38,6 +38,12 @@ function statusTone(status) {
 export function codeLabel(t, code) {
   var entry = SWITCH_ON_CODES.find(function (candidate) { return candidate.code === code })
   return entry === undefined ? code : t(entry.labelKey + 'Name')
+}
+
+/** 白名单里一个键的名字与说明：与「失败切换」网格同一套字典，`other` 是兜底键。 */
+function switchOnText(t, key, suffix) {
+  var entry = SWITCH_ON_CODES.find(function (candidate) { return candidate.key === key })
+  return entry === undefined ? t(OTHER_SWITCH_KEY + suffix) : t(entry.labelKey + suffix)
 }
 
 /**
@@ -91,7 +97,15 @@ function Stepper(props) {
  */
 export function FirstHopSection(props) {
   var t = props.t
-  var retries = Math.max(0, Math.min(MAX_RETRIES, Number(props.maxRetries) || DEFAULT_FIRST_HOP_MAX_RETRIES))
+  // Note: 为什么合法的 0 必须原样显示 —— 见
+  // .agents/notes/implemented/2026-10-23-honest-surfaces.md
+  // 0 是合法值（说明文案自己写着"0 = 失败即切"），所以只兜"没有值"，不用 `||`：
+  // `0 || 5` 会让界面显示 5、note 写 5，而草稿与宿主其实是 0——同一页的两个分区
+  // 于是对同一个字段给出两个答案。数值范围由 validate() 与 host schema 负责，
+  // 这里不夹值（夹值会让越界值看起来像已修正）。
+  var retries = typeof props.maxRetries === 'number' && Number.isFinite(props.maxRetries)
+    ? props.maxRetries
+    : DEFAULT_FIRST_HOP_MAX_RETRIES
   return h('section', { className: 'dsh-router-section' },
     h('div', { className: 'dsh-router-section-head' },
       h('h2', { className: 'dsh-router-section-title' }, t('firstHopSectionTitle')),
@@ -463,8 +477,11 @@ export function RetrySection(props) {
     return sum + Math.max(0, Number(candidate.maxRetries) || 0)
   }, 0)
   var calls = first + retries + 1 + candidates.length
+  // 一条降级候选都没有时插件整个不接管（router.ts 的 resolveChain 返回 undefined），
+  // 第一跳的重试与切换都不生效。此时印一个"最多 N 次真实调用"是在承诺一件不会发生
+  // 的事，所以这一支只说明现状，不给数字。
   var formula = candidates.length === 0
-    ? fill(t('retryFormulaFirstOnly'), { calls: calls })
+    ? t('retryFormulaFirstOnly')
     : fill(t('retryFormula'), { first: first, candidates: retries, calls: calls })
   var stickyOptions = [0, 1, 2, 3, 5]
   var current = Math.max(0, Math.min(99, Number(props.stickyTurns) || 0))
@@ -505,8 +522,38 @@ export function RetrySection(props) {
             disabled: props.disabled || !(props.maxTokens && props.maxTokens.autoContinue),
             onChange: function (next) { props.onMaxTokenContinues(next) },
           })))),
+    // 白名单：与「失败切换」是同一套键，回答的是另一个问题——这一击要不要再打
+    // 一次。失败码枚举不全，所以不做"每个码一个次数"，只做二值勾选。
+    h('div', { className: 'dsh-router-immediate' },
+      h('div', { className: 'dsh-router-immediate-head' },
+        h('span', { className: 'dsh-router-label' }, t('immediateSwitchLabel')),
+        h('span', { className: 'dsh-router-hint' }, t('immediateSwitchHint'))),
+      h('div', { className: 'dsh-router-check-grid' },
+        SWITCH_ON_KEYS.map(function (key) {
+          return h(Checkbox, {
+            key: key,
+            className: 'dsh-router-check',
+            checked: (props.immediateSwitch ?? []).indexOf(key) >= 0,
+            disabled: props.disabled,
+            label: switchOnText(t, key, 'Name'),
+            title: switchOnText(t, key, 'Desc'),
+            onChange: function () { props.onToggleImmediateSwitch(key) },
+          })
+        }))),
     h('p', { className: 'dsh-router-formula' }, formula),
     h('p', { className: 'dsh-router-note' }, t('retryHierarchyNote')))
+}
+
+/**
+ * 读不全的告警行：与健康工作台同一种画法（状态点 + 文案，degraded 色）。
+ *
+ * 同一类事实在两张视图里长得一样，用户才不必重新判断"这是在说什么"；用
+ * `role="status"` 而不是 alert——它不是一次新失败的打断，只是这份列表的边界。
+ */
+function partialWarning(text) {
+  return h('div', { className: 'dsh-router-health-warning', role: 'status' },
+    h('span', { className: 'dsh-router-health-warning-dot', style: healthToneStyle('degraded') }),
+    h('span', null, text))
 }
 
 /**
@@ -527,8 +574,12 @@ export function FailoverHistoryModal(props) {
     body = h('div', null,
       h('p', { className: 'dsh-router-muted' }, t('failoverHistoryError')),
       h(Button, { variant: 'outline', size: 'sm', onClick: props.onReload }, t('failoverHistoryRetry')))
-  } else if (rows.length === 0) body = h('p', { className: 'dsh-router-muted' }, t('failoverHistoryEmpty'))
-  else {
+  } else if (rows.length === 0) {
+    // 一个会话都读不到时不能说"暂无记录"——那是把"看不见"说成"没有"。
+    body = ui.drawerPartial === null
+      ? h('p', { className: 'dsh-router-muted' }, t('failoverHistoryEmpty'))
+      : partialWarning(ui.drawerPartial)
+  } else {
     body = h('div', { className: 'dsh-router-history' },
       rows.map(function (row, rowIndex) {
         return h('section', { key: 's' + rowIndex, className: 'dsh-router-history-session' },
@@ -548,7 +599,9 @@ export function FailoverHistoryModal(props) {
                   entry.settled ? t('failoverEntrySettled') : t('failoverEntryUnsettled')))
             })))
       }),
-      h('p', { className: 'dsh-router-hint' }, t('failoverHistoryHint')))
+      h('p', { className: 'dsh-router-hint' }, t('failoverHistoryHint')),
+      // 部分会话读不到时，列表只是"读得到的那部分"，必须说出来。
+      ui.drawerPartial === null ? null : partialWarning(ui.drawerPartial))
   }
   return h(Modal, {
     open: true,

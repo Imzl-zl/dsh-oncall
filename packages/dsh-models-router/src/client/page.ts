@@ -212,6 +212,7 @@ export function RouterPage(props) {
                   onStickyTurns: props.onStickyTurns,
                   onMaxTokenContinue: props.onMaxTokenContinue,
                   onMaxTokenContinues: props.onMaxTokenContinues,
+                  onToggleImmediateSwitch: props.onToggleImmediateSwitch,
                   onToggleSwitchOn: props.onToggleSwitchOn,
                   onNeeds: props.onNeeds,
                   onOpenAddCandidate: props.onOpenAddCandidate,

@@ -6,6 +6,7 @@ import {
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
+  DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_MAX_RETRIES,
   DEFAULT_MAX_TOKEN_AUTO_CONTINUE,
@@ -51,6 +52,7 @@ export function defaultChainValue() {
   return {
     candidates: [],
     switchOn: defaultSwitchOn(),
+    immediateSwitch: [...DEFAULT_IMMEDIATE_SWITCH],
     stickyTurns: DEFAULT_STICKY_TURNS,
     strategy: DEFAULT_STRATEGY,
     firstHopMaxRetries: DEFAULT_FIRST_HOP_MAX_RETRIES,
@@ -70,6 +72,11 @@ export function normalizeChain(value) {
       : Object.assign({}, candidate, { maxRetries: DEFAULT_MAX_RETRIES })
   })
   if (typeof chain.firstHopMaxRetries !== 'number') chain.firstHopMaxRetries = DEFAULT_FIRST_HOP_MAX_RETRIES
+  // 2026-10-23 才有的字段：旧草稿/旧记录没有它，补成与宿主同一份默认名单
+  // （两边都读 ../defaults.ts）。拼错的键不在这里过滤——结构校验会点名拒绝。
+  chain.immediateSwitch = Array.isArray(chain.immediateSwitch)
+    ? chain.immediateSwitch.slice()
+    : [...DEFAULT_IMMEDIATE_SWITCH]
   // 旧配置没有这一节：缺字段会渲染成空步进器，所以在这里补齐，与 host 同源。
   var maxTokens = chain.maxTokens && typeof chain.maxTokens === 'object' ? chain.maxTokens : {}
   chain.maxTokens = {

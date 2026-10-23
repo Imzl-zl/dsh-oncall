@@ -20,6 +20,7 @@ import {
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
+  DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_MAX_RETRIES,
   DEFAULT_MAX_TOKEN_AUTO_CONTINUE,
@@ -78,7 +79,7 @@ export const candidateSchema = z.object({
   provider: z.string().required().description('provider 标识，例如 deepseek-official'),
   model: z.string().required().description('模型 ID，例如 deepseek-v4-flash'),
   maxRetries: z.number().step(1).min(0).max(MAX_RETRIES).default(DEFAULT_MAX_RETRIES)
-    .description('这条渠道失败后最多重试几次（不含首次调用；0 = 失败即切下一条）。重试由 DSH 执行，实际次数还受该 provider 重试策略的限制'),
+    .description('这条渠道失败后最多重试几次（不含首次调用；0 = 失败即切下一条）。重试由本插件执行：填几次就是几次，不受 provider 重试策略封顶（退避曲线仍取自该 provider 的策略）'),
   weight: z.number().step(1).min(0).max(100).default(0)
     .description('权重；只有「按权重」策略会读它，其他策略下写多少都不影响'),
   needs: z.object({
@@ -116,6 +117,10 @@ const chainFields = {
   candidates: z.array(candidateSchema).default([])
     .description('降级候选：第一跳永远是你当前选中的模型、永远先试；失败后从这里的候选里按起点策略开始走'),
   switchOn: switchOnSchema.default({}).description('哪些失败会切换到下一个候选'),
+  // 白名单而不是"每个码一个次数"：码枚举不全，而"这一击要不要再打一次"是个
+  // 二值判断。只收键名，界面上的两组勾选因此一一对应。
+  immediateSwitch: z.array(z.string()).default([...DEFAULT_IMMEDIATE_SWITCH])
+    .description('这些失败不重试、直接切下一条候选（键名与「失败切换」一致）。只用于"重试注定一样"的码：密钥失效、额度用尽、请求被拒'),
   stickyTurns: z.number().step(1).min(0).max(99).default(DEFAULT_STICKY_TURNS)
     .description('带图轮之后，继续按「有图」路由的无图轮数；0 = 无图轮立即切回（默认）'),
   strategy: strategySchema,
@@ -222,7 +227,8 @@ export const Config = z.object({
     .description('接管总闸：关闭时所有模型绕过插件，直接走官方适配器。默认关——接管会改请求实际打到的渠道，必须由用户显式打开'),
   // `chains` 故意不写 `.default()`：这个字段的"有没有"就是"是不是旧形状"。
   // 但 schemastery 会给任何 array 盖默认值 `[]`，所以真正判形状的是
-  // `chain.ts` 的 effectiveChains（非空列表 = 新形状），这里只能去掉一层默认。
+  // `chain.ts` 的 effectiveChains，读的是**原始配置里这个键是否存在**
+  // （`chains: []` 也算新形状，只是它里面那条链是空的），而不是校验后的值。
   chains: z.array(namedChainSchema).volatile()
     .description('命名链：每条链是一套完整的降级顺序；会话可以绑定到其中一条'),
   defaultChainId: z.string().default(DEFAULT_CHAIN_ID).volatile()
@@ -301,6 +307,13 @@ export interface MaxTokenPolicy {
 export interface ChainConfig {
   candidates: Candidate[]
   switchOn: SwitchOn
+  /**
+   * 不重试、直接切下一条候选的失败键，按 `switchOn` 的键名书写。
+   *
+   * 类型是 `string[]` 而不是键的联合：这个数组是用户数据，拼错的键要在结构校验里
+   * 被点名拒绝（`rules.ts`），而不是在读取时被悄悄过滤成"没写"。
+   */
+  immediateSwitch: string[]
   stickyTurns: number
   strategy: Strategy
   /** Retries AFTER the first hop's first call; the step core converts to calls. */

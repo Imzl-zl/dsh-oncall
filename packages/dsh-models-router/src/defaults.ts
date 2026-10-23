@@ -42,8 +42,9 @@ export const DEFAULT_FIRST_HOP_MAX_RETRIES = 5
 
 /**
  * The upper bound both retry fields accept. A sanity bound for the stepper, not
- * a policy: the real bound is the provider's own retry policy, which is what
- * actually supplies the retries.
+ * a policy: since 2026-10-21 the plugin executes these retries itself, so the
+ * configured count is the real count — the provider's policy only supplies the
+ * backoff curve, never a cap on how many of them run.
  */
 export const MAX_RETRIES = 99
 
@@ -223,6 +224,38 @@ export const OTHER_SWITCH_KEY = 'other' as const
 
 /** A `switchOn` config key. */
 export type SwitchOnKey = (typeof SWITCH_ON_CODES)[number]['key'] | typeof OTHER_SWITCH_KEY
+
+/**
+ * 每个 `switchOn` 键，按界面上的顺序（八张具名码 + "其他"）。
+ *
+ * 立即切换白名单按这套键书写，所以界面上的两组勾选一一对应；键清单只有这一份，
+ * 加一个码时白名单的选项不用再改第二处。
+ */
+export const SWITCH_ON_KEYS: readonly SwitchOnKey[] = [
+  ...SWITCH_ON_CODES.map(entry => entry.key),
+  OTHER_SWITCH_KEY,
+]
+
+/** 这个字符串是不是一个已知的 `switchOn` 键（配置里的白名单条目要过这一关）。 */
+export function isSwitchOnKey(value: unknown): value is SwitchOnKey {
+  return typeof value === 'string' && (SWITCH_ON_KEYS as readonly string[]).includes(value)
+}
+
+/**
+ * 重试注定一样结果的失败码：不重试，直接切下一条候选。
+ *
+ * 只收"同一路由再打一次也是同一个答案"的那三个：
+ *
+ * - `auth` —— 密钥被拒，重试还是同一把钥匙；
+ * - `quota` —— 额度用尽，重试还是同一份额度；
+ * - `invalidRequest` —— 请求被拒 / 能力不兼容。这类由请求形状或模型的声明决定，
+ *   重试不会改变它；而 2026-10-22 那个 402「端点不可用」也被 pi-ai 归一成这个码，
+ *   那种情况下换一条渠道正是用户要的。
+ *
+ * 留给重试的是瞬态码（限流、服务端错误、超时、传输中断、空回复），以及表外的
+ * `other`：未知码先按瞬态对待，用户确认过某一类再自己加进白名单。
+ */
+export const DEFAULT_IMMEDIATE_SWITCH: readonly SwitchOnKey[] = ['auth', 'quota', 'invalidRequest']
 
 /** A DSH `LlmFailure.code` a chain may switch on. */
 export type SwitchOnCode = (typeof SWITCH_ON_CODES)[number]['code']

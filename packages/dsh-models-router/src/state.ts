@@ -44,6 +44,8 @@ export interface StepChain {
    */
   readonly order: readonly number[]
   readonly switchOn: SwitchOn
+  /** 不重试、直接切下一条候选的失败键（`switchOn` 的键名）。 */
+  readonly immediateSwitch: readonly string[]
   /** No-image turns the image condition holds for after an image turn. */
   readonly stickyTurns: number
   readonly strategy: Strategy
@@ -177,8 +179,15 @@ export class RouterState {
    * 进程重启归零——轮询是分配手段，不是需要记住的状态。
    */
   private readonly cursors = new WeakMap<Session, number>()
-  /** 本轮最后一条 assistant 消息的结束方式（截断识别）。 */
-  private readonly truncations = new WeakMap<Agent, TruncationNote>()
+  /**
+   * 本轮每条 assistant 消息的结束方式，按 step 存（截断识别）。
+   *
+   * 单槽会让后到的消息覆盖前一条，而 `assistant/message` 不只属于 Agent 主请求：
+   * 会话标题、压缩这些辅助调用也会写一条。它们一旦落在"被截断的那条"与
+   * `turn-stopping` 之间，单槽就被换成 `truncated:false`，自动续跑静默不发生。
+   * 按 step 存之后，别的 step 的辅助消息只是多一条记录，冲不掉本 step 的事实。
+   */
+  private readonly truncations = new WeakMap<Agent, { turn: number; notes: Map<number, TruncationNote> }>()
   /** 本轮每条候选上已经自动续跑过几次。 */
   private readonly continues = new WeakMap<Agent, { turn: number; used: Map<string, number> }>()
   /** 下一个 step 必须落到哪条候选（续跑用尽后的跨 step 换候选）。 */
@@ -202,15 +211,21 @@ export class RouterState {
     return state !== undefined && state.turn === turn ? state : undefined
   }
 
-  /** 记本轮最后一条 assistant 消息是怎么结束的。 */
+  /** 记一条 assistant 消息的结束方式（同一 step 的后一条覆盖前一条）。 */
+  // Note: 为何按 step 记而不是单槽 —— 见
+  // .agents/notes/implemented/2026-10-23-honest-surfaces.md
   noteTruncation(agent: Agent, note: TruncationNote): void {
-    this.truncations.set(agent, note)
+    const entry = this.truncations.get(agent)
+    const notes = entry !== undefined && entry.turn === note.turn ? entry.notes : new Map<number, TruncationNote>()
+    notes.set(note.step, note)
+    this.truncations.set(agent, { turn: note.turn, notes })
   }
 
-  /** 本轮最后一条 assistant 消息的结束方式；换轮即失效。 */
-  truncationOf(agent: Agent, turn: number): TruncationNote | undefined {
-    const note = this.truncations.get(agent)
-    return note !== undefined && note.turn === turn ? note : undefined
+  /** 某一个 step 的 assistant 消息是怎么结束的；换轮即失效。 */
+  truncationOf(agent: Agent, turn: number, step: number): TruncationNote | undefined {
+    const entry = this.truncations.get(agent)
+    if (entry === undefined || entry.turn !== turn) return undefined
+    return entry.notes.get(step)
   }
 
   /** 这条候选在本轮已经自动续跑过几次。 */

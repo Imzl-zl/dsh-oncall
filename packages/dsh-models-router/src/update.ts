@@ -169,7 +169,14 @@ export async function checkForUpdate(current: string, options: CheckOptions = {}
     return { ...empty, error: describe(error) }
   }
 
-  const newer = (compareVersions(latest, current) ?? 0) > 0
+  const order = compareVersions(latest, current)
+  // The running version is ours and comes from the build, so a version that
+  // cannot be parsed is a build defect — and "cannot compare" is not "up to
+  // date". Say which one it is instead of defaulting the answer to no.
+  if (order === null) {
+    return { ...empty, latest, error: `the running version '${current}' is not a comparable version` }
+  }
+  const newer = order > 0
   if (!newer) {
     // 已是最新：不需要联网去读一份用不上的说明，当前版本的说明就在产物里。
     return { ...empty, latest, newer: false }

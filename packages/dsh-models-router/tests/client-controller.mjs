@@ -1089,6 +1089,117 @@ const twoCandidates = () => config({
   chain: chainValue([cand('deepseek', 'm'), cand('deepseek', 'm2')]),
 })
 
+// ---- 界面上的数字必须与草稿/宿主是同一个值 ----
+
+test('the first-hop stepper shows 0 retries and steps up to 1', async () => {
+  // `Number(props.maxRetries) || DEFAULT` 把合法的 0 读成 5：步进器显示 5、note 写
+  // 5，而草稿与宿主按 0（首发失败即降级）执行。同一页的预算公式按 0 算，于是两个
+  // 分区对同一个字段给出两个答案。说明文案自己就写着"0 = 失败即切"。
+  const { RouterPage } = loadClient()
+  // `policyVersion: 2` 是必须的：没有它，0 会被当成旧默认值改写成 5（迁移本身是
+  // 对的，这条用例要测的是"0 到了界面之后怎么显示"）。
+  const h = await mount({ value: config({
+    policyVersion: 2,
+    chain: chainValue([cand('a', 'x')], { firstHopMaxRetries: 0 }),
+  }) })
+  pendingEffects.length = 0
+  const tree = render(createEl(RouterPage, propsFor(h)))
+  for (const effect of pendingEffects) effect()
+  const row = find(tree, (node) => typeof node.props?.className === 'string'
+    && node.props.className.includes('dsh-router-row-firsthop'))
+  assert.ok(row, 'fixture: the first-hop row reached the tree')
+  const input = find(row, (node) => node.type === 'input' && node.props?.className === 'dsh-router-stepper-input')
+  assert.equal(input?.props.value, '0', '0 must be painted as 0, not as the default 5')
+  const buttons = []
+  const collect = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { for (const child of node) collect(child); return }
+    if (node.type === 'button') buttons.push(node)
+    collect(node.children)
+  }
+  collect(row)
+  assert.equal(buttons.length, 2, 'fixture: the row carries the minus and the plus button')
+  buttons[1].props.onClick()
+  assert.equal(h.state().draft.chain.firstHopMaxRetries, 1, 'one step up from 0 is 1, not 6')
+})
+
+test('the immediate-switch whitelist defaults to the three futile codes and is editable', async () => {
+  // 旧配置没有这个字段：读成默认名单（密钥失效 / 额度用尽 / 请求被拒），
+  // 而不是读成"空名单"——空名单会让这三个码白吃满重试次数。
+  const h = await mount({ value: config() })
+  assert.deepEqual(h.state().draft.chain.immediateSwitch, ['auth', 'quota', 'invalidRequest'])
+  h.actions.onToggleImmediateSwitch('auth')
+  assert.deepEqual(h.state().draft.chain.immediateSwitch, ['quota', 'invalidRequest'], '取消勾选即移出名单')
+  h.actions.onToggleImmediateSwitch('rateLimit')
+  assert.deepEqual(h.state().draft.chain.immediateSwitch, ['quota', 'invalidRequest', 'rateLimit'],
+    '瞬态码也能被显式加进来')
+  assert.equal(h.state().dirty, true, '白名单和次数一样是草稿的一部分')
+})
+
+test('the retry section paints the whitelist with the default codes checked', async () => {
+  const { RouterPage } = loadClient()
+  const h = await mount({ value: config() })
+  pendingEffects.length = 0
+  const tree = render(createEl(RouterPage, propsFor(h)))
+  for (const effect of pendingEffects) effect()
+  const section = find(tree, (node) => node.props?.className === 'dsh-router-immediate')
+  assert.ok(section, 'fixture: the whitelist block reached the tree')
+  const box = (key) => find(section, (node) => node.type === 'Checkbox' && node.props?.title === key + 'Desc')
+  assert.equal(box('auth')?.props.checked, true, 'auth is on the default list')
+  assert.equal(box('quota')?.props.checked, true)
+  assert.equal(box('invalidRequest')?.props.checked, true)
+  // 限流是瞬态失败：默认不勾，按次数重试。
+  assert.equal(box('rateLimit')?.props.checked, false)
+})
+
+// ---- 两个视图共用的 20 会话读取：读不到 ≠ 没有 ----
+
+test('the failover history reports the sessions it could not read instead of calling them empty', async () => {
+  // 抽屉曾经是第二份 20 会话读取：逐会话 `.catch(() => ({ entries: [] }))` 把"读不到"
+  // 折成"这个会话没有转移"——与健康历史那轮修掉的是同一句话。
+  const h = await mount({
+    value: config({ chain: chainValue([cand('a', 'x')]) }),
+    remote: {
+      session: {
+        list: () => Promise.resolve({ ok: true, value: { items: [
+          { sessionId: 'readable', updatedAt: 1 },
+          { sessionId: 'unreadable', updatedAt: 2 },
+        ] } }),
+        projections: (request) => request.sessionId === 'readable'
+          ? Promise.resolve({ ok: true, value: { values: { 'router/failover-history': [
+            { time: 1, turn: 1, step: 1, from: 'a/x', to: 'b/y', code: 'RATE_LIMIT', settled: false },
+          ] } } })
+          : Promise.resolve({ ok: false, error: { message: 'projection registry is not ready' } }),
+      },
+    },
+  })
+  h.actions.onOpenDrawer()
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  const ui = h.state().ui
+  assert.equal(ui.drawerError, false, 'the list itself answered')
+  assert.equal(ui.drawerRows.length, 1, 'the readable session still shows its entries')
+  // harness 的 locale 桩是恒等函数，所以断言的是字典键；真宿主上它会翻成整句
+  // 「有 1/2 个会话读不到…」。
+  assert.match(ui.drawerPartial ?? '', /failoverHistoryPartial/,
+    'the unreadable session is reported, not silently dropped')
+})
+
+test('a single-route probe survives opening the health view', async () => {
+  // 宿主只保留"跑遍全部路由"的那一轮（单条探测不覆盖它），单条结论活在浏览器里。
+  // 整份替换会在打开健康页时（那里读一次宿主报告，默认空）抹掉刚测过的路由，
+  // 用户看到的是"未探测"。
+  const h = await mount({ value: config({ chain: chainValue([cand('a', 'x'), cand('b', 'y')]) }) })
+  h.actions.onProbeRoute('a', 'x')
+  await flush()
+  // 忙态下限定了一个可见时长，落定与发布都在它之后。
+  await settleBusy()
+  assert.equal(h.state().ui.probe['a/x']?.kind, 'reachable', 'fixture: the single-route probe landed')
+  h.actions.onActive('__health__')
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  assert.equal(h.state().ui.probe['a/x']?.kind, 'reachable',
+    'the host report merges over the route verdicts instead of replacing them')
+})
+
 // ---- 显示名：行上画目录里的名字，原始 id 只留在 tooltip 里 ----
 // 判据取自用户现场的形状：provider `cherry` 下模型 id 是 `<uuid>:<model>`、name 是
 // 映射名。用户映射名字就是为了让这些行分得出来，所以"画出来的文字"里不能再有 id。
