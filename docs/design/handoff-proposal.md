@@ -92,11 +92,21 @@ last_updated: "2026-10-23"
 
 ### 4.1 名册（用户配，模型选）
 
-每个 roster 项是一张"工牌"：稳定 id、给**主模型**看的一句话 `purpose`（选人依据）、DSH Agent Preset（子智能体的
-人格 + 工具集）、物理路由（`provider`/`model`，可选 `reasoningEffort`/`maxTokens`）、备料清单、可选的结构化输出、
-可选的角色（`review` / `work`）、以及这个角色自最近一条用户消息以来最多被派几次。
+每个 roster 项是一张"工牌"：稳定 id、给**主模型**看的一句话 `purpose`（选人依据）、给**子智能体**看的
+`instructions`（岗位规范与注意事项）、可选的 DSH Agent Preset（系统层人格 + 工具集）、物理路由（`provider`/`model`，
+可选 `reasoningEffort`/`maxTokens`）、备料清单、可选的结构化输出、角色（`review` / `work`）、以及自最近一条用户消息
+以来最多被派几次。
 
-`purpose` 不是人格，`preset` 不是菜单：前者只给主模型读（编进工具描述），后者只给子智能体用（DSH 组合时应用）。
+三个文本字段、三个读者，不许混：
+
+| 字段 | 谁读 | 作用 | 不是什么 |
+|---|---|---|---|
+| `purpose` | 主模型 | 选人依据，编进工具描述 | 不进子会话 |
+| `instructions` | 子智能体 | 每次派活时随任务一起给的岗位规范 | 不是系统提示，优先级是用户消息级 |
+| `preset` | 子智能体 | 真正的系统层人格 + 工具集（DSH 原生组合） | 不由本插件编写 |
+
+`preset` 与 `instructions` **至少一个非空**：两个都空，这个角色就退化成"随便一个子智能体，只知道这次任务"，
+保存期直接拒绝。
 
 - **名册是唯一的"谁可以被派"来源。** 模型不能现场拼 `agentOptions`，也不能派名册外的人。
 - 原生的 `subagent` 工具**不动**：想自由发挥的用户照旧用它；名册只解决"指定机构、指定人格、指定备料"。
@@ -123,14 +133,14 @@ hook（插件监听事件）是插件侧的代码，它没有"问模型一句"�
 
 ```
 roster[] ──编译──┬─→ handoff.description（有谁可派 + 每条 purpose + 收工规则 + facts 口径）
-                 └─→ 派发请求（agentPreset + agentOptions + prompt + outputSchema）
+                 └─→ 派发请求（agentPreset + agentOptions + instructions + prompt + outputSchema）
 ```
 
 由此三条语义规则，实现时不许混：
 
-1. **子智能体的"角色"由 Agent Preset 决定**（DSH 原生：persona + 工具集），不是由工具描述决定。
+1. **子智能体的角色来自 `preset`（系统层人格 + 工具）与 `instructions`（每次随任务给的规范）**，不是由工具描述决定。
 2. **工具描述只负责告诉主模型"有谁、什么时候用、收工要做什么"**；它不构成子智能体的任何定义。
-3. **一个字段只有一个读者**：`purpose` 只进主模型的菜单，不进子会话的 prompt；子智能体读自己的 preset 和这次的任务。
+3. **一个字段只有一个读者**：`purpose` 只进主模型的菜单；`instructions` 与 `preset` 只给子智能体；谁也不复用对方的话。
 
 配置变更会重启插件 fiber，工具描述随之重新生成（先 dispose 再 register），所以不存在"描述与名册不一致"的窗口。
 
@@ -160,6 +170,9 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 | `notes` | 模型在 `task` 里写的说明 | 工具参数 |
 
 开新会话的简报另有一项 `lastReview`：最近一条 `subagent-settled` 的正文与结构化结论。它只用于接力，不参与 `delegate`。
+
+派发请求的 prompt 顺序固定：`instructions`（若有）→ `task` → `attach` 采到的事实。规范在前、任务居中、工件在后——
+子智能体先知道自己该怎么干，再看这次要干什么。
 
 **不给**主模型的总结、自述、结论——复核者一旦拿到这些，只会复述它。文件内容、diff、测试输出由复核者**自己的
 工具**去读去跑（那是它的 preset 的事），插件不代劳、也不假装代劳。
@@ -272,8 +285,11 @@ handoff:
     - id: reviewer
       name: 复核
       role: review                # review | work
-      purpose: "独立复核：只看工件，判断目标是否真的达成，列出缺口。不改文件。"  # 编进工具描述，只给主模型看
-      preset: reviewer            # DSH Agent Preset：子智能体的人格 + 工具集（只给它自己用）
+      purpose: "独立复核：判断目标是否真的达成，列出缺口。"  # 编进工具描述，只给主模型看
+      instructions: |             # 只给子智能体：随每次派发注入到任务前面
+        你只读工件，不改文件。发现问题逐条列出，标明文件与行号。
+        不要复述主会话的结论；没有证据就写"未验证"。
+      preset: reviewer            # 可选：DSH Agent Preset（系统层人格 + 工具集，只给它自己用）
       provider: acme-gw           # 模型渠道，与路由链同一标识空间
       model: reviewer-model
       reasoningEffort: high       # 可选
@@ -433,6 +449,8 @@ turn 内
 9. **复核账本随会话**：fork 不继承账本（与链绑定同因），新 fork 的会话里 `finish{done}` 会要求重新复核或说明理由——
    失败关闭，不会默认放行。
 10. **接力首条消息的身份**：它在 UI 上是一条用户消息（模型必须把它当任务执行），只能靠正文第一行注明来源。
+11. **`instructions` 不是系统提示**：它随派发进入子会话的第一条用户消息，优先级低于 preset 的系统提示。
+    需要"最高优先级、不被任务覆盖"的规范，就去建一个 Agent Preset。
 
 ## 十、被否方案
 
@@ -499,6 +517,7 @@ turn 内
 | `onUnreceiptedStop.reportToUser` | `true` | 只写一条 notice 告诉你 |
 | `newSession.onFinish` | `[]` | 收工后不自动开新会话 |
 | `roster[].purpose` | 必填 | 空则拒绝保存 |
+| `roster[].instructions` | `""` | 与 `preset` 至少一个非空，否则拒绝保存 |
 | `maxReviewsPerUserMessage` | `1` | 复核上限，**不是配额**：通过即收工 |
 
 `newSession.onFinish` 的场景：一个大任务分多段交付，每段做完都换一个干净会话继续下一段（避免上下文越压越乱）。
