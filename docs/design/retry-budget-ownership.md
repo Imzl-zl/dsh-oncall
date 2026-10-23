@@ -13,18 +13,18 @@ last_updated: "2026-10-21"
 （默认 5）是第二个上限，小的那个生效。用户 2026-10-21 的裁定是：**插件自己当重试执行者**，
 让配置的数字就是事实。
 
-## 一、今天的公式（已核实）
+## 一、当前模型（已核实）
+
+路由过的 step 里，插件自己执行重试，次数就是配置的次数：
 
 ```
-每条候选的真实调用次数 = 1 + min(插件 maxRetries, 该 provider 的 retryPolicy.maxRetries)
+每条候选的真实调用次数 = 1 + 该候选的 maxRetries（会话可覆盖；白名单里的码 = 1）
 ```
 
-两层各有一个计数器，只有较小的生效：
-
-| 层 | 计数器 | 上限 | 超出后 |
-|---|---|---|---|
-| 插件（`agent/request-error`，最外层） | `attemptsOnCandidate`，按 (agent, turn, step) | `maxRetries + 1` | 不委托，直接前进到下一条候选 |
-| DSH `llm-retry`（内层） | 会话投影 `llmRetry`，按 `[provider, policyKey]`，`step/start` 重置 | `retryPolicy.maxRetries`，默认 **5** | `return next()`，把决定交回插件 |
+| 失败码 | 谁重试 | 上限 |
+|---|---|---|
+| `switchOn` 已勾选 | 插件（`agent/request-error`，退避在 `src/backoff.ts`） | 候选的 `maxRetries`；`immediateSwitch` 命中的码不重试 |
+| `switchOn` 未勾选 | DSH `llm-retry` | 该 provider 的 `retryPolicy.maxRetries`（默认 **5**） |
 
 出处：`packages/llm/llm/src/retry-policy.ts:156-168`；`packages/llm/llm-retry/src/index.ts:219-240`；
 `packages/core/agent/src/runtime-types.ts:353`（payload 自带 `retryPolicy`）。
@@ -33,9 +33,9 @@ last_updated: "2026-10-21"
 
 路由过的 step，插件**不再把失败交给 `llm-retry`**，自己执行全部重试：
 
-1. **数量**：候选的 `maxRetries` 就是真实次数。未填（`undefined`）时回落到
-   `providerRetryPolicy(provider).maxRetries`（`packages/llm/llm/src/index.ts:668`）——
-   DSH 的策略仍然决定"没写时的默认值"，只是不再是硬上限。
+1. **数量**：候选的 `maxRetries` 就是真实次数，schema 默认 5
+   （`src/defaults.ts` 的 `DEFAULT_MAX_RETRIES`）；provider 策略只提供退避参数，
+   不是上限。
 2. **时序**：插件的等待复刻 DSH 的形状——`initialDelayMs`、`maxDelayMs`、`jitterRatio`
    来自该 provider 的策略，`failure.providerRetryAfterMs` 存在时优先用它。等待必须可取消
    （`signal` 中止即放弃重试），与 `probe.ts` 的 deadline 同一个纪律。
@@ -80,6 +80,17 @@ if (finish.kind === 'error' || finish.kind === 'aborted') {
 
 这条划线让"插件独占重试"不侵蚀 DSH 的既有语义：用户没让路由器管的事，路由器不碰。
 README 与 UI 提示都要写这一句。
+
+## 三之三、立即切换白名单
+
+`immediateSwitch` 按 `switchOn` 的键书写（八张具名码 + `other`）。命中的失败不进入
+重试分支，直接按"本候选到此为止"前进——与"额度用尽"走同一个 `advance` / `terminate`
+（记熔断、带原因日志）。默认只有 `auth`、`quota`、`invalidRequest`：同一路由再打一次
+是同一个答案；瞬态码与 `other` 保留重试。表外的码仍先交给 DSH 的恢复插件，白名单只在
+内层放弃后阻止路由器补自己的重试。拼错的键由跨字段规则点名拒绝。
+
+这条按"要不要再打一次"切分，而不是给每个失败码配一个次数：失败码枚举不全，而前者是
+二值判断，新增码要么落在具名键、要么落在 `other`，不用改代码。
 
 ## 四、被否方案
 

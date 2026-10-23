@@ -24,6 +24,7 @@
 - **Named chains, chosen per session** — several fallback chains, each with its own candidates, switch-on rules and budgets; a conversation picks one right in the composer chip, with no separate session-management page.
 - **Per-route retry overrides** — a session can override a route's retry count: `0` means "do not retry this route", empty means "follow the chain".
 - **Retries this plugin executes** — for codes in `switchOn`, the configured number is the real number (no provider-policy ceiling); codes outside `switchOn` still go to DSH's `llm-retry`.
+- **Immediate-switch whitelist** — failures a retry cannot change (a rejected key, an exhausted quota, a refused request) skip the retry budget and move straight to the next candidate; everything else still retries. The default list is those three, editable under "Retries and turns".
 - **Pre-fire validation** — every candidate is resolved through `ctx.llm.resolveCallConfig()` before a real call, so an unservable candidate is skipped rather than burned.
 - **Conditional routing** — per-candidate `images` and `minContextTokens` gates, plus per-code `switchOn`.
 - **Channel health workspace** — zero-token passive latency and throughput, opt-in 1-token probes, route- and channel-scoped circuit breakers, and a failover-history drawer folded from the durable session log.
@@ -84,6 +85,7 @@ Updates are handled natively by DSH's plugin market (`dshmarket`): its installed
 ## Configuration
 
 ```yaml
+policyVersion: 2                 # failure-policy version; maintained by the plugin, do not edit
 enabled: true
 defaultChainId: default          # sessions with no choice of their own
 chains:
@@ -92,8 +94,9 @@ chains:
     candidates:                  # fallbacks; the selected model is the implicit first hop
       - { provider: deepseek-official, model: deepseek-v4-flash, maxRetries: 1, needs: { images: false } }
       - { provider: pi-ai-gpt, model: gpt-5, maxRetries: 0, needs: { images: true } }
-    switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: false, invalidRequest: false, auth: true, quota: true }
-    firstHopMaxRetries: 0        # retries after the first hop's first call
+    switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: true, invalidRequest: true, auth: true, quota: true, other: true }
+    immediateSwitch: [auth, quota, invalidRequest]   # these skip the retries (same keys as switchOn)
+    firstHopMaxRetries: 0        # retries after the first hop's first call (0 = move on)
     stickyTurns: 0               # no-image turns to keep the image route after an image turn
     strategy: order
   - id: coding
@@ -101,7 +104,7 @@ chains:
     candidates: [...]
 ```
 
-The first hop is always the model you selected in DSH — it is not part of the config — so a chain only answers "where next". Old single-`chain` configs (and the per-model `profiles` of 2026-10-19-era builds) are migrated to one named chain on read, and the first save stores the new shape.
+The first hop is always the model you selected in DSH — it is not part of the config — so a chain only answers "where next". A config without `policyVersion` is read once as the old one (`emptyResponse`/`invalidRequest` and retry counts at their old defaults); the first save stamps the version, and your own choices are kept from then on. With no fallbacks at all the plugin stays out of the request path — the first hop's retry count has no effect either, and DSH's own retry policy decides.
 
 ## How it works
 

@@ -24,6 +24,7 @@
 - **按会话选命名链** —— 多条降级链，各自有候选、失败切换规则和预算；直接在 composer 的 chip 里选，不另设会话管理页。
 - **每路由重试次数覆盖** —— 会话可以覆盖某条路由的重试次数：`0` = 这条路由不重试，空 = 跟随链。
 - **重试由插件执行** —— `switchOn` 勾选的失败码，填几次就是几次（不受 provider 重试策略封顶）；没勾的仍交给 DSH 的 `llm-retry`。
+- **立即切换白名单** —— 密钥失效、额度用尽、请求被拒这类"重试注定一样"的失败，不占重试次数、直接切下一条候选；其余失败仍按次数重试。默认名单就是这三个，可在「重试与轮次」里增删。
 - **发起前预校验** —— 每个候选在真实调用前走 `ctx.llm.resolveCallConfig()`，不能服务的候选直接跳过，不白烧一次调用。
 - **条件路由** —— 按候选的 `images` / `minContextTokens` 条件，以及按失败码的 `switchOn`。
 - **渠道健康工作台** —— 零 Token 的被动延迟与吞吐、按需的 1-token 探测、按路由/按渠道的熔断，以及从 durable 会话日志折叠出的转移历史。
@@ -76,7 +77,7 @@ dsh plugin --profile web add packages/dsh-models-router
 
 更新由 DSH 的插件市场（`dshmarket`）原生处理：在「插件」页打开已安装列表，它会按 npm 上的版本检查并提供 **一键更新**；有更新时每行还带 **更新了什么**，内容来自本仓库 GitHub Release 的 notes（即 `CHANGELOG.md` 的对应小节）。插件不自己启动包管理器，也不复制安装算法。
 
-- **更新后**：新版本第一次打开工作台会弹一次该版本的更新日志；之后可从页头的「更新日志」按钮重看。
+- **更新后**：新版本第一次打开工作台会弹一次该版本的更新日志；之后点页头的「检查更新」再看（已是最新版时会显示当前版本的说明，离线也能看）。
 - **手动更新（CLI）**：`dsh plugin --profile <profile> remove dsh-models-router`，再 `dsh plugin --profile <profile> add dsh-models-router@latest`。
 - **桌面版**：在应用自己的「设置 → 插件」里更新，不要直接改它管理的 profile。
 - 版本记录：[CHANGELOG.md](https://github.com/Imzl-zl/dsh-models-router/blob/master/CHANGELOG.md)。
@@ -84,6 +85,7 @@ dsh plugin --profile web add packages/dsh-models-router
 ## 配置
 
 ```yaml
+policyVersion: 2                 # 失败策略版本；插件自己维护，别手改
 enabled: true
 defaultChainId: default          # 没有单独选链的会话走这条
 chains:
@@ -92,14 +94,17 @@ chains:
     candidates:                  # 降级候选；用户当前选中的模型是隐式第一跳
       - { provider: deepseek-official, model: deepseek-v4-flash, maxRetries: 1, needs: { images: false } }
       - { provider: pi-ai-gpt, model: gpt-5, maxRetries: 0, needs: { images: true } }
-    switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: false, invalidRequest: false, auth: true, quota: true }
-    firstHopMaxRetries: 0        # 第一跳首发之后还能重试几次
+    switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: true, invalidRequest: true, auth: true, quota: true, other: true }
+    immediateSwitch: [auth, quota, invalidRequest]   # 这些码不重试、直接切（键名同上）
+    firstHopMaxRetries: 0        # 第一跳首发之后还能重试几次（0 = 失败即降级）
     stickyTurns: 0               # 带图轮之后，继续按识图路由的无图轮数
     strategy: order
   - id: coding
     name: 写代码
     candidates: [...]
 ```
+
+`policyVersion` 缺失的配置会被当成旧版本读一次：`emptyResponse`/`invalidRequest` 的 `false` 与重试次数的 `0` 是当时的默认值而不是你的选择，会按新默认改写；保存后带标记落盘，之后你的选择（包括刻意填的 0）不再被覆盖。一条降级候选都没有时插件整个不接管——第一跳的重试次数也不生效，由 DSH 自己的重试策略决定。
 
 第一跳永远是你在 DSH 里选中的模型，不在配置里——链只回答「失败之后去哪」。旧的单 `chain` 配置（以及 2026-10-19 那版的 per-model `profiles`）在读取时迁成一条命名链，第一次保存写新形状。
 
