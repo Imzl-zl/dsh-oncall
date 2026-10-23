@@ -290,7 +290,7 @@ handoff:
       name: 复核
       role: review                # review | work
       purpose: "独立复核：判断目标是否真的达成，列出缺口。"  # 编进工具描述，只给主模型看
-      instructions: |             # 只给子智能体：随每次派发注入到任务前面
+      instructions: |             # 轻量 Markdown，≤4000 字符；只给子智能体，随每次派发注入任务前面
         你只读工件，不改文件。发现问题逐条列出，标明文件与行号。
         不要复述主会话的结论；没有证据就写"未验证"。
       preset: reviewer            # 可选：DSH Agent Preset（系统层人格 + 工具集，只给它自己用）
@@ -527,6 +527,9 @@ turn 内
 `newSession.onFinish` 的场景：一个大任务分多段交付，每段做完都换一个干净会话继续下一段（避免上下文越压越乱）。
 填 `[done]` 才会发生；不填就什么都不做——模型想换场时自己调 `newSession`。
 
+**保存期校验（恒定，与默认值无关）**：`purpose` 非空；`preset` 与 `instructions` 至少一个非空；
+`instructions` ≤ **4000 字符**；`id` 唯一；`provider`/`model` 能解析。
+
 ## 十三、约束分级：哪些不能动，哪些实施时可以改
 
 本文是**方向 + 可验证的骨架**，不是逐行规格。实施时如果发现更简单的做法，只要不违背 A 类，就按更简单的做；
@@ -555,3 +558,20 @@ turn 内
 
 八条假设、验证方式与"不成立时怎么走"都在 §十一 的表里（第三列），这里不重复列。只强调一条：
 **退路只能换实现，不能换 A 类约束**——如果某条退路要求插件开始判断任务状态，那它不是退路，是另一个方案。
+
+## 十四、落地检查清单
+
+实现时逐条对照；漏一条是行为不对，不是风格问题。
+
+- [ ] **保存期校验**：`purpose` 非空；`preset` 与 `instructions` 至少一个非空；`instructions` ≤ 4000 字符；
+      `id` 唯一；`provider`/`model` 能解析。
+- [ ] **`instructions` 是轻量 Markdown 文本**：不解析、不改写，按 `instructions → task → attach` 拼进派发消息；
+      UI 上提示"别写密钥"。
+- [ ] **一个字段一个读者**：工具描述只含 `purpose`，不含 `instructions`；`instructions`/`preset` 只进子会话。
+- [ ] **默认全关**：`enabled` / `requireReviewFor` / `nudgeWhenUnreceipted` / `delegateTo` / `newSession.onFinish`。
+- [ ] **收工门**：有 active goal 时 `done` 被拒；`requireReviewFor` 命中时只认最近一条用户消息之后、最近一次通过的复核。
+- [ ] **预算**：三本 `max…PerUserMessage` 只由"人真的说话"清零；接力复制，不因开新会话重置；上限不是配额。
+- [ ] **路由合流**：子会话第一跳 = 声明 route；失败后按 自身 → `parentSession` → 默认链；重试与熔断照旧。
+- [ ] **不新增 durable 事件类型**：复核账本落 storageDomain；无 storage 时内存 + 可见 notice。
+- [ ] **`newSession` 的六步**：`createSession` → `selectForNextRequest` → 复制绑定与计数 → 拼简报 `followup`
+      → 旧 goal `clear` → notice。
