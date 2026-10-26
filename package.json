@@ -7,9 +7,9 @@
     "test": "node packages/dsh-models-router/tests/unit.mjs && node packages/dsh-models-router/tests/client-controller.mjs && node packages/dsh-models-router/tests/remote.mjs && node packages/dsh-models-router/tests/run.mjs"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh": "0.2.0-rc.2",
+    "@deepseek-ai/dsh": "0.2.1-rc.3",
     "typescript": "^7.0.2",
-    "zod": "^4.6.6"
+    "zod": "4.4.3"
   },
   "license": "MIT",
   "repository": {

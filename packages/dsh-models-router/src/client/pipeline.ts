@@ -10,13 +10,14 @@
  */
 
 import { useMemo, useState } from 'react'
+import type { ChangeEvent } from 'react'
 import { Button, Checkbox, Input, Modal, SegmentedControl, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from './dom.ts'
-import { fill, healthToneStyle, routeStatus } from './format.ts'
+import { fill, routeStatus } from './format.ts'
 import { routeNames } from './naming.ts'
 import { Icon, ICON_BOLT, ICON_DOWN, ICON_GRIP, ICON_MINUS, ICON_PLUS, ICON_TRASH, ICON_UP } from './icons.ts'
 import { routeKeyOf, routeParts } from '../routes.ts'
-import { DEFAULT_FIRST_HOP_MAX_RETRIES, MAX_RETRIES, MAX_TOKEN_CONTINUES, OTHER_SWITCH_KEY, STRATEGIES, SWITCH_ON_CODES, SWITCH_ON_KEYS } from '../defaults.ts'
+import { DEFAULT_FIRST_HOP_MAX_RETRIES, DEFAULT_MAX_TOKEN_CONTINUES, MAX_RETRIES, MAX_TOKEN_CONTINUES, OTHER_SWITCH_KEY, STRATEGIES, SWITCH_ON_CODES, SWITCH_ON_KEYS } from '../defaults.ts'
 
 /** The status text one route's health tag carries. */
 function statusLabel(t, status) {
@@ -73,8 +74,11 @@ function Stepper(props) {
       value: String(value),
       disabled: props.disabled,
       'aria-label': props.label,
-      onChange: function (event) {
-        var parsed = Number(event.target.value)
+      // A native `input` made by `h()`: the handler has to name its element, because
+      // the generic in React's string-element overload has nothing else to infer
+      // from and would leave `currentTarget` as a bare `Element` (no `.value`).
+      onChange: function (event: ChangeEvent<HTMLInputElement>) {
+        var parsed = Number(event.currentTarget.value)
         if (!Number.isFinite(parsed)) return
         var next = Math.max(min, Math.round(parsed))
         if (max !== undefined) next = Math.min(max, next)
@@ -197,7 +201,12 @@ function CandidateRow(props) {
       if (props.disabled) { event.preventDefault(); return }
       // 只允许从卡面本身发起拖拽：按钮/输入框上的按下不是重排手势。边界收窄到
       // 本行（row.contains），外层同角色的包裹层不再把整行判成"在交互元素里"。
-      var hit = event.target
+      //
+      // This is the one place in this file that casts `event.target`: the question
+      // is "which node under the pointer was pressed", and `currentTarget` would
+      // answer with the row itself. `EventTarget` has no `closest`, so the cast is
+      // the boundary between the DOM's event target and the query below.
+      var hit = event.target as HTMLElement | null
       if (hit && typeof hit.closest === 'function') {
         var interactive = hit.closest('button, input, select, textarea, a, [role="tab"]')
         if (interactive && event.currentTarget.contains(interactive)) { event.preventDefault(); return }
@@ -257,8 +266,8 @@ function CandidateRow(props) {
                 value: String(candidate.weight ?? 0),
                 disabled: props.disabled,
                 'aria-label': t('weightLabel'),
-                onChange: function (event) {
-                  var parsed = Number(event.target.value)
+                onChange: function (event: ChangeEvent<HTMLInputElement>) {
+                  var parsed = Number(event.currentTarget.value)
                   if (Number.isFinite(parsed)) props.onWeight(index, Math.max(0, Math.min(100, Math.round(parsed))))
                 },
               }))
@@ -342,7 +351,7 @@ export function CandidatesSection(props) {
             className: 'dsh-router-link-btn',
             title: t('imageRouteBadgeHint'),
             onClick: function () { setOpenIndex(imageIndex) },
-          }, '🖼️ ' + t('imageRouteBadge'))
+          }, t('imageRouteBadge'))
         : null,
       h('span', { className: 'dsh-router-section-spacer' }),
       h(Button, {
@@ -461,28 +470,15 @@ export function StrategySection(props) {
 }
 
 /**
- * What one model call can cost, and the one turn-scoped setting next to it.
+ * The turn-scoped settings that are not a retry budget.
  *
- * This used to be a "budget" section with a third number (a request-wide hard
- * cap). That number could only ever cut a request short — it never switched,
- * never added a call — and it made every user do the arithmetic themselves.
- * Removed 2026-10-20: the retry numbers per candidate are the budget, and the
- * line below is read-only so nobody has to add `+1` in their head.
+ * A request-wide "max calls" field used to live here. It could only cut a
+ * request short, never switch or add a call, and it duplicated the per-route
+ * numbers. The note below is read-only: the retry numbers are the budget, and
+ * there is no total-call configuration to add them into.
  */
 export function RetrySection(props) {
   var t = props.t
-  var first = Math.max(0, Number(props.firstHopMaxRetries) || 0)
-  var candidates = props.candidates ?? []
-  var retries = candidates.reduce(function (sum, candidate) {
-    return sum + Math.max(0, Number(candidate.maxRetries) || 0)
-  }, 0)
-  var calls = first + retries + 1 + candidates.length
-  // 一条降级候选都没有时插件整个不接管（router.ts 的 resolveChain 返回 undefined），
-  // 第一跳的重试与切换都不生效。此时印一个"最多 N 次真实调用"是在承诺一件不会发生
-  // 的事，所以这一支只说明现状，不给数字。
-  var formula = candidates.length === 0
-    ? t('retryFormulaFirstOnly')
-    : fill(t('retryFormula'), { first: first, candidates: retries, calls: calls })
   var stickyOptions = [0, 1, 2, 3, 5]
   var current = Math.max(0, Math.min(99, Number(props.stickyTurns) || 0))
   if (stickyOptions.indexOf(current) === -1) stickyOptions.push(current)
@@ -502,26 +498,7 @@ export function RetrySection(props) {
             return { value: String(turns), label: turns === 0 ? t('stickyTurnsOff') : String(turns) }
           }),
           onChange: function (next) { props.onStickyTurns(Number(next)) },
-        })),
-      // `max-tokens` 不是错误，DSH 会直接结束本轮并在界面上提示用户自己发"继续"。
-      // 这一格就是"别停在这儿"：同一条候选先自动续几次，续满了换下一条候选接着写。
-      h(FieldCol, { label: t('maxTokenContinueLabel'), hint: t('maxTokenContinueHint') },
-        h('span', { className: 'dsh-router-inline-field' },
-          h(Checkbox, {
-            className: 'dsh-router-check',
-            checked: Boolean(props.maxTokens && props.maxTokens.autoContinue),
-            disabled: props.disabled,
-            label: t('maxTokenContinueOn'),
-            onChange: function () { props.onMaxTokenContinue(!(props.maxTokens && props.maxTokens.autoContinue)) },
-          }),
-          h(Stepper, {
-            t: t,
-            value: Math.max(0, Math.min(MAX_TOKEN_CONTINUES, Number(props.maxTokens && props.maxTokens.continues) || 0)),
-            min: 0,
-            max: MAX_TOKEN_CONTINUES,
-            disabled: props.disabled || !(props.maxTokens && props.maxTokens.autoContinue),
-            onChange: function (next) { props.onMaxTokenContinues(next) },
-          })))),
+        }))),
     // 白名单：与「失败切换」是同一套键，回答的是另一个问题——这一击要不要再打
     // 一次。失败码枚举不全，所以不做"每个码一个次数"，只做二值勾选。
     h('div', { className: 'dsh-router-immediate' },
@@ -540,20 +517,47 @@ export function RetrySection(props) {
             onChange: function () { props.onToggleImmediateSwitch(key) },
           })
         }))),
-    h('p', { className: 'dsh-router-formula' }, formula),
+    h('p', { className: 'dsh-router-formula' }, t('retryNoTotalCapNote')),
     h('p', { className: 'dsh-router-note' }, t('retryHierarchyNote')))
 }
 
 /**
- * 读不全的告警行：与健康工作台同一种画法（状态点 + 文案，degraded 色）。
+ * Output continuation: a separate decision from failure retries.
  *
- * 同一类事实在两张视图里长得一样，用户才不必重新判断"这是在说什么"；用
- * `role="status"` 而不是 alert——它不是一次新失败的打断，只是这份列表的边界。
+ * `max-tokens` is not a failure and never reaches `agent/request-error`; it is
+ * the model stopping at its output ceiling. The switch and the count live in
+ * their own section so they cannot be read as "retry this failed route".
+ * Note: 为何输出续跑与失败重试分开、为何删掉总调用数字 —— 见
+ * .agents/notes/implemented/2026-10-23-agent-fleet-p1-and-config-surfaces.md
  */
-function partialWarning(text) {
-  return h('div', { className: 'dsh-router-health-warning', role: 'status' },
-    h('span', { className: 'dsh-router-health-warning-dot', style: healthToneStyle('degraded') }),
-    h('span', null, text))
+export function OutputContinuationSection(props) {
+  var t = props.t
+  var maxTokens = props.maxTokens ?? {}
+  var auto = maxTokens.autoContinue === true
+  var continues = typeof maxTokens.continues === 'number' ? maxTokens.continues : DEFAULT_MAX_TOKEN_CONTINUES
+  return h('section', { className: 'dsh-router-section' },
+    h('div', { className: 'dsh-router-section-head' },
+      h('h2', { className: 'dsh-router-section-title' }, t('outputContinuationTitle')),
+      h('span', { className: 'dsh-router-section-hint' }, t('outputContinuationHint'))),
+    h('div', { className: 'dsh-router-field-grid' },
+      h(FieldCol, { label: t('maxTokenContinueLabel'), hint: t('maxTokenContinueHint') },
+        h('span', { className: 'dsh-router-inline-field' },
+          h(Checkbox, {
+            className: 'dsh-router-check',
+            checked: auto,
+            disabled: props.disabled,
+            label: t('maxTokenContinueOn'),
+            onChange: function () { props.onMaxTokenContinue(!auto) },
+          }),
+          h(Stepper, {
+            t: t,
+            value: Math.max(0, Math.min(MAX_TOKEN_CONTINUES, Number(continues) || 0)),
+            min: 0,
+            max: MAX_TOKEN_CONTINUES,
+            disabled: props.disabled || !auto,
+            onChange: function (next) { props.onMaxTokenContinues(next) },
+          })))),
+    h('p', { className: 'dsh-router-note' }, t('outputContinuationNote')))
 }
 
 /**
@@ -575,10 +579,9 @@ export function FailoverHistoryModal(props) {
       h('p', { className: 'dsh-router-muted' }, t('failoverHistoryError')),
       h(Button, { variant: 'outline', size: 'sm', onClick: props.onReload }, t('failoverHistoryRetry')))
   } else if (rows.length === 0) {
-    // 一个会话都读不到时不能说"暂无记录"——那是把"看不见"说成"没有"。
-    body = ui.drawerPartial === null
-      ? h('p', { className: 'dsh-router-muted' }, t('failoverHistoryEmpty'))
-      : partialWarning(ui.drawerPartial)
+    // 列表被拒是 drawerError（上面那一支）；走到这里说明整份列表读到了，只是
+    // 窗口内一条转移都没有——这时"暂无记录"是真话。
+    body = h('p', { className: 'dsh-router-muted' }, t('failoverHistoryEmpty'))
   } else {
     body = h('div', { className: 'dsh-router-history' },
       rows.map(function (row, rowIndex) {
@@ -599,9 +602,7 @@ export function FailoverHistoryModal(props) {
                   entry.settled ? t('failoverEntrySettled') : t('failoverEntryUnsettled')))
             })))
       }),
-      h('p', { className: 'dsh-router-hint' }, t('failoverHistoryHint')),
-      // 部分会话读不到时，列表只是"读得到的那部分"，必须说出来。
-      ui.drawerPartial === null ? null : partialWarning(ui.drawerPartial))
+      h('p', { className: 'dsh-router-hint' }, t('failoverHistoryHint')))
   }
   return h(Modal, {
     open: true,

@@ -24,11 +24,15 @@
  * Note: 为何绑定存 storageDomain 侧车、0 与"没填"的区别 —— 见
  * .agents/notes/implemented/2026-10-21-per-session-bindings.md
  * Note: 命名链、默认链与会话绑定的取值规则 —— 见
- * .agents/notes/implemented/2026-10-21-named-chains-and-the-session-chip.md
+ * .agents/notes/implemented/2026-10-21-named-chains-and-the-session-chip.md；
+ * 链行默认值与 chip 本会话覆盖为何保留两个入口 —— 见
+ * .agents/notes/implemented/2026-10-23-agent-fleet-p1-and-config-surfaces.md
  */
 
 import { useEffect, useRef, useState } from 'react'
+import type { ChangeEvent, ReactNode } from 'react'
 import { Menu } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { MenuEntry } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from './dom.ts'
 import { fill } from './format.ts'
 import { Icon, ICON_DOWN, ICON_ROUTE } from './icons.ts'
@@ -82,7 +86,9 @@ function describeError(error) {
  */
 export function createSessionChip(ctx, t) {
   var views = new Map()
-  var listeners = new Set()
+  // One listener set per activation, not per session: the composer subscribes once
+  // and re-reads. The element type is what lets the fan-out call them.
+  var listeners = new Set<() => void>()
 
   function stateOf(sessionId) {
     var current = views.get(sessionId)
@@ -120,7 +126,10 @@ export function createSessionChip(ctx, t) {
    * promise: read once per activation, and a refused/failed read is `null` —
    * the rows then show the raw route keys rather than names nobody confirmed.
    */
-  var catalogPromise = null
+  // `null` = not read yet; the resolved value is the Host's catalog payload, whose
+  // only reader here is `routeNames(catalog: unknown)`, so the promise is typed by
+  // what it is — a pending read — not by a shape this file would have to invent.
+  var catalogPromise: Promise<unknown> | null = null
   var names = routeNames(null)
   function loadNames() {
     if (catalogPromise === null) {
@@ -414,12 +423,14 @@ export function SessionChainChip(props) {
       }),
     ),
   }
-  var items = [
+  var items: MenuEntry[] = [
     { type: 'label', id: 'title', text: t('sessionRouteTitle') },
     chainRow,
   ]
 
-  var extras = []
+  // The rows appended after the menu's data entries: they are component children
+  // of `Menu`, not `items` data, so they are elements.
+  var extras: ReactNode[] = []
   // 每路由的重试覆盖：行来自"本会话会走的那条链"的候选——给一条用不上的路由配次数
   // 只会写进一个永远不生效的键。
   var activeChain = view.chains.filter(function (entry) {
@@ -442,7 +453,7 @@ export function SessionChainChip(props) {
         placeholder: t('sessionRetryFollow'),
         disabled: view.saving === true,
         value: typed,
-        onChange: function (event) { chip.setRetryText(sessionId, route, event.target.value) },
+        onChange: function (event: ChangeEvent<HTMLInputElement>) { chip.setRetryText(sessionId, route, event.currentTarget.value) },
         onBlur: function () { chip.commitRetry(sessionId, route) },
         onKeyDown: function (event) { if (event.key === 'Enter') chip.commitRetry(sessionId, route) },
       }))

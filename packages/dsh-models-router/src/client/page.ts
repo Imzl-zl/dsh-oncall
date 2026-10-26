@@ -24,6 +24,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { h } from './dom.ts'
 import { Button, SegmentedTabs, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { SegmentedTab } from '@deepseek-ai/dsh-client-ui-primitives'
 import { fill, routeStatus } from './format.ts'
 import { configuredRouteList, routeKeyOf } from '../routes.ts'
 import { ChainView } from './chain.ts'
@@ -31,21 +32,32 @@ import { AddCandidateModal, HealthSettingsModal, UpdateCheckModal, WhatsNewModal
 import { RELEASE_NOTES, RELEASE_VERSION } from '../release.generated.ts'
 import { FailoverHistoryModal } from './pipeline.ts'
 import { GlobalHealthWorkspace } from './workspace.ts'
+import type { RouterSnapshot } from './controller.ts'
+import { RosterView } from './roster.ts'
 import { Icon, ICON_SAVE, ICON_UNDO } from './icons.ts'
 
-/** The two views the page has. */
+/** The three views the page has. */
 const VIEW_CHAIN = 'chain'
+const VIEW_ROSTER = 'roster'
 const VIEW_HEALTH = 'health'
 
 export function RouterPage(props) {
   var t = props.t
-  var state = props.useRouterPage(function (snapshot) { return snapshot })
+  // The published snapshot, named: this is the seam the controller and the page
+  // share, so `state.ui.<field>` and `state.draft.<field>` are checked here
+  // instead of being silently `any`. A field that the controller stops
+  // publishing breaks this line's readers, not the user's page.
+  var state: RouterSnapshot = props.useRouterPage(function (snapshot) { return snapshot })
   var draft = state.draft
   var disabled = !state.writable || state.saving
-  var view = state.ui.activeId === '__health__' ? VIEW_HEALTH : VIEW_CHAIN
+  var view = state.ui.activeId === '__health__'
+    ? VIEW_HEALTH
+    : state.ui.activeId === '__roster__' ? VIEW_ROSTER : VIEW_CHAIN
   var modal = state.ui.modal
 
-  var focusRouteState = useState(null)
+  // The jump target: a route key plus the moment it was asked for, so a second
+  // click on the same route re-arms the scroll. `null` = no jump pending.
+  var focusRouteState = useState<{ route: string; at: number } | null>(null)
   var focusRoute = focusRouteState[0]
   var setFocusRoute = focusRouteState[1]
 
@@ -79,10 +91,23 @@ export function RouterPage(props) {
     return function () { props.releaseSurface() }
   }, [])
 
-  var viewTabs = [
+  // A non-empty tuple, not an array: `SegmentedTabs` requires at least one tab
+  // (a tab list with no tabs has no selection and no keyboard target). The page
+  // always has three, so the tuple is the honest shape and not a workaround.
+  var viewTabs: [SegmentedTab, ...SegmentedTab[]] = [
     { value: VIEW_CHAIN, label: t('viewChainTab'), id: 'model-router-tab-chain', panelId: 'model-router-panel-chain' },
+    // 第三页签只在 host 落地后注册：`handoff` 段存在（B1）才到这里，页面本身没有
+    // "即将上线"占位——没有这一节时第三个页签根本不存在。
+    { value: VIEW_ROSTER, label: t('viewRosterTab'), id: 'model-router-tab-roster', panelId: 'model-router-panel-roster' },
     { value: VIEW_HEALTH, label: t('viewHealthTab'), id: 'model-router-tab-health', panelId: 'model-router-panel-health' },
   ]
+
+  var panelId = view === VIEW_HEALTH
+    ? 'model-router-panel-health'
+    : view === VIEW_ROSTER ? 'model-router-panel-roster' : 'model-router-panel-chain'
+  var tabId = view === VIEW_HEALTH
+    ? 'model-router-tab-health'
+    : view === VIEW_ROSTER ? 'model-router-tab-roster' : 'model-router-tab-chain'
 
   var footer = state.available
     ? h('footer', { className: 'dsh-router-footer' },
@@ -143,7 +168,7 @@ export function RouterPage(props) {
               items: viewTabs,
               value: view,
               label: t('viewTabsLabel'),
-              onChange: function (next) { props.onActive(next === VIEW_HEALTH ? '__health__' : '__chain__') },
+              onChange: function (next) { props.onActive(next === VIEW_HEALTH ? '__health__' : next === VIEW_ROSTER ? '__roster__' : '__chain__') },
             }))
         : null),
     h('div', { className: 'dsh-router-content' },
@@ -162,9 +187,9 @@ export function RouterPage(props) {
           : null,
       state.available
         ? h('div', {
-            id: view === VIEW_HEALTH ? 'model-router-panel-health' : 'model-router-panel-chain',
+            id: panelId,
             role: 'tabpanel',
-            'aria-labelledby': view === VIEW_HEALTH ? 'model-router-tab-health' : 'model-router-tab-chain',
+            'aria-labelledby': tabId,
             className: 'dsh-router-view',
           },
             view === VIEW_HEALTH
@@ -192,38 +217,54 @@ export function RouterPage(props) {
                   onCheckRoute: props.onCheckRoute,
                   onProbeRoute: props.onProbeRoute,
                 })
-              : h(ChainView, {
-                  t: t,
-                  chain: draft.chain,
-                  chains: draft.chains,
-                  defaultChainId: draft.defaultChainId,
-                  disabled: disabled,
-                  catalog: state.ui.catalog,
-                  passive: state.ui.passive,
-                  discover: state.ui.discover,
-                  probe: state.ui.probe,
-                  onStrategy: props.onStrategy,
-                  onFirstHopMaxRetries: props.onFirstHopMaxRetries,
-                  onWeight: props.onWeight,
-                  onMaxRetries: props.onMaxRetries,
-                  onMove: props.onMove,
-                  onReorder: props.onReorder,
-                  onRemove: props.onRemove,
-                  onStickyTurns: props.onStickyTurns,
-                  onMaxTokenContinue: props.onMaxTokenContinue,
-                  onMaxTokenContinues: props.onMaxTokenContinues,
-                  onToggleImmediateSwitch: props.onToggleImmediateSwitch,
-                  onToggleSwitchOn: props.onToggleSwitchOn,
-                  onNeeds: props.onNeeds,
-                  onOpenAddCandidate: props.onOpenAddCandidate,
-                  onJumpHealth: handleJumpHealth,
-                  onSelectChain: props.onSelectChain,
-                  onRenameChain: props.onRenameChain,
-                  onSetDefaultChain: props.onSetDefaultChain,
-                  onRemoveChain: props.onRemoveChain,
-                  onCopyChain: props.onCopyChain,
-                  onAddChain: props.onAddChain,
-                }))
+              : view === VIEW_ROSTER
+            ? h(RosterView, {
+                t: t,
+                handoff: draft.handoff,
+                chains: draft.chains,
+                disabled: disabled,
+                // 校验摘要就是页面顶部那一份（state.problems），名册页只按角色过滤它，
+                // 不另算一套规则。
+                problems: state.problems,
+                selectedId: state.ui.rosterId,
+                onSelect: props.onSelectRoster,
+                onField: props.onSetHandoffField,
+                onEntry: props.onUpdateRoster,
+                onAdd: props.onAddRoster,
+                onRemove: props.onRemoveRoster,
+              })
+                : h(ChainView, {
+                    t: t,
+                    chain: draft.chain,
+                    chains: draft.chains,
+                    defaultChainId: draft.defaultChainId,
+                    disabled: disabled,
+                    catalog: state.ui.catalog,
+                    passive: state.ui.passive,
+                    discover: state.ui.discover,
+                    probe: state.ui.probe,
+                    onStrategy: props.onStrategy,
+                    onFirstHopMaxRetries: props.onFirstHopMaxRetries,
+                    onWeight: props.onWeight,
+                    onMaxRetries: props.onMaxRetries,
+                    onMove: props.onMove,
+                    onReorder: props.onReorder,
+                    onRemove: props.onRemove,
+                    onStickyTurns: props.onStickyTurns,
+                    onMaxTokenContinue: props.onMaxTokenContinue,
+                    onMaxTokenContinues: props.onMaxTokenContinues,
+                    onToggleImmediateSwitch: props.onToggleImmediateSwitch,
+                    onToggleSwitchOn: props.onToggleSwitchOn,
+                    onNeeds: props.onNeeds,
+                    onOpenAddCandidate: props.onOpenAddCandidate,
+                    onJumpHealth: handleJumpHealth,
+                    onSelectChain: props.onSelectChain,
+                    onRenameChain: props.onRenameChain,
+                    onSetDefaultChain: props.onSetDefaultChain,
+                    onRemoveChain: props.onRemoveChain,
+                    onCopyChain: props.onCopyChain,
+                    onAddChain: props.onAddChain,
+                  }))
         : null),
     modal !== null && modal.kind === 'health' ? h(HealthSettingsModal, {
       t: t,
@@ -267,3 +308,5 @@ export function RouterPage(props) {
     }) : null,
     footer)
 }
+
+

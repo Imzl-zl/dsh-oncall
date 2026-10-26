@@ -14,7 +14,7 @@
 import { h } from './dom.ts'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { Icon, ICON_PLUS } from './icons.ts'
-import { CandidatesSection, FirstHopSection, RetrySection, StrategySection, SwitchOnSection } from './pipeline.ts'
+import { CandidatesSection, FirstHopSection, OutputContinuationSection, RetrySection, StrategySection, SwitchOnSection } from './pipeline.ts'
 
 /**
  * The named chains: pick one to edit, rename it, choose the default, add/remove.
@@ -144,17 +144,19 @@ export function ChainView(props) {
       disabled: props.disabled,
       onToggle: props.onToggleSwitchOn,
     }),
+    h(OutputContinuationSection, {
+      t: t,
+      maxTokens: chain.maxTokens,
+      disabled: props.disabled,
+      onMaxTokenContinue: props.onMaxTokenContinue,
+      onMaxTokenContinues: props.onMaxTokenContinues,
+    }),
     h(RetrySection, {
       t: t,
-      firstHopMaxRetries: chain.firstHopMaxRetries,
-      candidates: chain.candidates,
       stickyTurns: chain.stickyTurns,
-      maxTokens: chain.maxTokens,
       immediateSwitch: chain.immediateSwitch,
       disabled: props.disabled,
       onStickyTurns: props.onStickyTurns,
-      onMaxTokenContinue: props.onMaxTokenContinue,
-      onMaxTokenContinues: props.onMaxTokenContinues,
       onToggleImmediateSwitch: props.onToggleImmediateSwitch,
     }))
 }

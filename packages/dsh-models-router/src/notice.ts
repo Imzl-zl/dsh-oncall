@@ -215,3 +215,51 @@ export function breakerNotice(
     : `候选 ${routeKeyOf(candidate.provider, candidate.model)} 已被自动禁用`
   return notice(`${subject}，约 ${seconds} 秒后自动重试，本次跳过`)
 }
+
+// ---- handoff (delegation) ----
+//
+// 交接侧的 notice 全部是"插件替用户说一句"，不是判断：它们陈述已经发生的事实
+// （账本没落盘、已经接力到哪个会话、还有几项没做完），不评价任务做没做完。
+
+/**
+ * The review ledger is memory-only.
+ *
+ * Said once, when the first review lands: from then on a restart loses the
+ * verdicts, and a `finish{done}` that cited one will be refused. Saying it at
+ * enable time instead would warn about a risk the user may never take.
+ */
+export function handoffLedgerMemoryNotice(): UserMessage {
+  return notice(
+    '[委派] 复核账本只存在进程内存里（这个组合没有 storageDomain）：重启后已通过的复核会丢失，'
+    + '届时 finish{done} 会被要求重新复核。',
+  )
+}
+
+/** A new session was opened and the task was carried over. */
+export function handoffRelayNotice(newSessionId: string, outcome: string): UserMessage {
+  return notice(
+    `[委派] 已按接力配置把任务交接到新会话 ${newSessionId}（上一会话收工：${outcome}）。本会话不再自动继续。`,
+  )
+}
+
+/**
+ * The model stopped without a receipt.
+ *
+ * This is the plugin's one proactive line, and it only says what it can count:
+ * how many todos are still open, and what the model can do about it. It never
+ * claims the work is unfinished — that judgment is the model's.
+ */
+export function handoffUnreceiptedNotice(pendingTodos: number, delegateTo: string): UserMessage {
+  const action = delegateTo === ''
+    ? '可以继续干、调用 handoff finish 交回执，或调用 handoff delegate 派人'
+    : `可以继续干、调用 handoff finish 交回执，或已按配置自动派「${delegateTo}」兜底`
+  return notice(`[委派] 本回合没有收工回执，还有 ${pendingTodos} 项待办未完成。${action}。`)
+}
+
+/** The nudge the model receives inside `agent/turn-stopping` (steer, once per turn). */
+export function handoffNudgeNotice(pendingTodos: number): UserMessage {
+  return notice(
+    `[委派] 还有 ${pendingTodos} 项待办处于未完成/进行中。要么继续做完，`
+    + '要么调用 handoff finish（done / needs_user / abandoned）交回执，要么 handoff delegate 派人。',
+  )
+}

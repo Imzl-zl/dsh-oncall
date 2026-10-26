@@ -12,6 +12,8 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
+import type { ModelCatalogModel, ModelProviderGroup } from '@deepseek-ai/dsh-api-session-controller/types'
 import { Button, Checkbox, Input, MarkdownText, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from './dom.ts'
 import { fill, formatWindowHours } from './format.ts'
@@ -117,7 +119,7 @@ export function HealthSettingsModal(props) {
   // A newly added override row lands at the bottom of the scrolling body; bring it
   // into view with scrollIntoView (the nearest scrollable ancestor is the modal
   // body), so the click never looks dead.
-  var lastOverrideRef = useRef(null)
+  var lastOverrideRef = useRef<HTMLDivElement | null>(null)
   useEffect(function () {
     var el = lastOverrideRef.current
     if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
@@ -204,7 +206,7 @@ export function HealthSettingsModal(props) {
         'aria-label': t('healthProbeRouteLabel'),
         value: entry.route,
         disabled: props.disabled,
-        onChange: function (event) { patchOverride(index, { route: event.target.value }) },
+        onChange: function (event: ChangeEvent<HTMLSelectElement>) { patchOverride(index, { route: event.currentTarget.value }) },
       },
         h('option', { value: entry.route }, entry.route === '' ? t('healthProbeRoutePlaceholder') : routeLabelOf(entry.route)),
         routeChoices.map(function (route) {
@@ -457,9 +459,13 @@ export function AddCandidateModal(props) {
   var t = props.t
   var [query, setQuery] = useState('')
   var [selected, setSelected] = useState({})
-  var groups = props.catalog?.groups ?? []
+  // The catalog is `ModelCatalog` from the session-controller's Host face; only the
+  // provider groups matter here. Typed at the read so the filter below works on
+  // real `id`/`name` fields instead of `any`.
+  var groups: readonly ModelProviderGroup[] = props.catalog?.groups ?? []
   var needle = query.trim().toLowerCase()
-  var entries = []
+  /** One provider group with the models that matched the search. */
+  var entries: { group: ModelProviderGroup; models: ModelCatalogModel[] }[] = []
   groups.forEach(function (group) {
     var models = group.models.filter(function (model) {
       if (needle === '') return true

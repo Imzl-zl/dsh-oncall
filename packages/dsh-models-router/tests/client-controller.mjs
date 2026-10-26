@@ -26,6 +26,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import * as zod from 'zod'
 import { RELEASE_NOTES, RELEASE_VERSION } from '../src/release.generated.ts'
 import { changelogSection } from '../../../scripts/changelog-section.mjs'
 
@@ -124,12 +125,28 @@ function loadClient() {
   new Function(source)()
   const require_ = (name) => {
     if (name === 'react') return react
+    // The shell seeds zod into the frozen module table
+    // (packages/client/web/src/platform.ts:12), so the generated remote artifact
+    // — `dsh-models-router/remote`, which client/apply.ts imports — asks the
+    // loader for it instead of carrying a second copy. The stub answers with the
+    // real module, the way the shell does.
+    if (name === 'zod') return zod
     if (name === 'react-dom') return { createPortal: () => null }
     if (name === '@deepseek-ai/dsh-client-ui-primitives') {
       return {
         SettingsForm: SettingsFormStub, Switch: 'Switch', Button: 'Button', Tag: 'Tag',
         SegmentedTabs: 'SegmentedTabs', Modal: 'Modal', RiskConfirmation: 'RiskConfirmation',
         SegmentedControl: 'SegmentedControl', Checkbox: 'Checkbox', Input: 'Input',
+        // Agent Fleet 的状态点与相对时间来自 DSH 原语；这里只需要可调用的形状。
+        StateDot: 'StateDot',
+        // Fleet 的长标题/折叠行/工作区路径必须走 DSH 原生原语，不自己画。这些 stub 保持
+        // 元素类型名，测试才能在渲染树里找到它们并检查传给原语的 props。
+        Tooltip: 'Tooltip',
+        DisclosureRow: 'DisclosureRow',
+        PathLabel: 'PathLabel',
+        IconFolderCloseRegular: 'IconFolderCloseRegular',
+        relativeTime: () => ({ unit: 'now', n: 0 }),
+        writeClipboard: () => Promise.resolve(true),
         // 更新日志用 DSH 的 MarkdownText 渲染，而不是把 markdown 原样塞进 <pre>。
         MarkdownText: 'MarkdownText',
         // 会话 chip 的弹层是 DSH 的 Menu 原语（portal 模式），按钮由它包一层 span。
@@ -154,7 +171,11 @@ const react = {
     const next = props ?? {}
     if (children.length === 1) next.children = children[0]
     else if (children.length > 1) next.children = children
-    return { type, props: next, children }
+    // React's children are the positional arguments, or the `children` prop when
+    // the call passes none (the JSX-shaped `h(Type, { children: node })`). The
+    // tree below walks `children`, so both shapes have to land there.
+    const kids = children.length > 0 ? children : next.children === undefined ? [] : [next.children]
+    return { type, props: next, children: kids }
   },
   useState: (init) => [init, () => {}],
   useRef: (init) => ({ current: init }),
@@ -265,7 +286,9 @@ const createEl = (type, props, ...children) => {
   const next = props ?? {}
   if (children.length === 1) next.children = children[0]
   else if (children.length > 1) next.children = children
-  return { type, props: next, children }
+  // Same rule as the `react` stub above: a `children` prop is a child too.
+  const kids = children.length > 0 ? children : next.children === undefined ? [] : [next.children]
+  return { type, props: next, children: kids }
 }
 
 /** Apply one wire mutation to a config value, the way the Host would. */
@@ -315,6 +338,8 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
   }
   const registrations = []
   const shortcutRegistrations = []
+  const tabTypeRegistrations = []
+  let capturedFleetBody = null
   // The fiber's effect cleanups, recorded the way Cordis keeps them: unloading
   // the plugin runs every one. The M11/M4 tests need a real unload — the
   // controller's timer and in-flight checks are cleaned in that cleanup.
@@ -323,12 +348,11 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
   let capturedChip = null
   /** What the Host would have stored, per session: the chip tests drive this. */
   const bindings = new Map()
-  // `session` 是按字段合并的一份面：用例覆盖自己关心的那一两个读口（list /
-  // projections）时不该顺手把别的读口拆掉——真宿主上它们是同一个面的方法，拆掉只会
-  // 得到 "modelCatalog is not a function" 这种夹具自己的错。
+  // `session` 是按字段合并的一份面：用例覆盖自己关心的读口时不该顺手把别的读口
+  // 拆掉——真宿主上它们是同一个面的方法，拆掉只会得到 "modelCatalog is not a
+  // function" 这种夹具自己的错。
   const sessionFace = Object.assign({
     list: () => Promise.resolve({ ok: false }),
-    projections: () => Promise.resolve({ ok: false }),
     // 行上的显示名来自这份目录（真实宿主是 session-controller 的
     // `session/modelCatalog`）。默认给一份空目录：名字回落到原始键，与"宿主还没答
     // 上来"同一个结果——需要映射名的用例自己给一份带名字的目录。
@@ -348,6 +372,20 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
       register: (command) => { shortcutRegistrations.push(command); return () => {} },
     },
     configForms: { get: () => scope },
+    // Agent Fleet 的三个原生读口：列表刷新、按会话投影刷新、子会话地址解析。
+    // 真实宿主由 api-session-controller / ui-workspace 提供；这里只给注册路径用的最小面。
+    sessions: {
+      refresh: () => Promise.resolve(),
+      refreshProjections: () => Promise.resolve(),
+      subagentAddress: () => undefined,
+    },
+    uiWorkspace: { openSession: () => {} },
+    sidebarRightTabs: {
+      register: (definition) => {
+        tabTypeRegistrations.push(definition)
+        return () => {}
+      },
+    },
     slots: {
       // The real inject() runs its callback to register, then returns a disposer.
       inject: (_name, fn) => { fn(); return () => {} },
@@ -361,6 +399,8 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
         if (options.name === 'main') capturedComponent = component
         // 会话 chip 的注册：组件 + 它的 inject 面（controller/model）。
         if (options.name === 'conversation.input.left') capturedChip = { options, component }
+        // Agent Fleet 的正文席位：key 是包名，组件与 inject 面都要能被测试拿到。
+        if (options.name === 'sidebar.right.pane.tab') capturedFleetBody = { options, component }
         return () => {}
       },
     },
@@ -442,6 +482,10 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
       model: chipInjected === null ? null : chipInjected.sessionChip,
       bindings,
     },
+    /** The dockkit tab types this activation registered. */
+    tabTypes: tabTypeRegistrations,
+    /** The `sidebar.right.pane.tab` registration for the Fleet body. */
+    fleetBody: capturedFleetBody,
     /** Unload the plugin fiber: run every effect cleanup, the way Cordis does. */
     unload: () => { for (const disposer of effectDisposers.slice()) disposer() },
     // The registered panel component, for the component-level tests.
@@ -711,16 +755,17 @@ test('passive health merges the recent sessions into one global record per route
     old: { 'a/b': record('healthy', 100, 1), 'a/only-old': { ...record('unhealthy', 50, 1), route: 'a/only-old', model: 'only-old' } },
     new: { 'a/b': record('degraded', 999, 2) },
   }
+  // 两条会话的块走 DSH 列表的内联列（SessionSummary.projections），不再逐条 RPC。
+  const block = (sessionId) => ({ kind: 'sequenced', asOfSeq: 1, values: { 'router/channel-health': bySession[sessionId] } })
   const h = await mount({
     value: config(),
     remote: {
       session: {
         // 故意把新的放前面、并给乱序 updatedAt：排序与合并顺序都得由插件自己负责。
         list: () => Promise.resolve({ ok: true, value: { items: [
-          { sessionId: 'new', updatedAt: 200 },
-          { sessionId: 'old', updatedAt: 100 },
+          { sessionId: 'new', updatedAt: 200, projections: block('new') },
+          { sessionId: 'old', updatedAt: 100, projections: block('old') },
         ] } }),
-        projections: (request) => Promise.resolve({ ok: true, value: { values: { 'router/channel-health': bySession[request.sessionId] } } }),
       },
     },
   })
@@ -732,6 +777,73 @@ test('passive health merges the recent sessions into one global record per route
     'the timeline is the union across sessions, ordered by time — the availability is a global fact')
   assert.ok(passive['a/only-old'], 'a route only the older session saw is still listed')
   assert.equal(h.state().ui.passiveError, null, 'a whole read raises no warning')
+})
+
+test('passive health takes the scalars by observation time, not by the session merge order', async () => {
+  // 真机踩过：一轮对话之后健康页仍显示 `本步耗时 4.51s`，而这条路由最新的观测是
+  // 13.9s。`updatedAt` 是"哪个会话最近有人说话"的读数（冷会话那份来自会滞后的持久化
+  // 投影缓存），不是"哪条观测更新"；用它排合并顺序，就会让排在前面的新观测被后面
+  // 的旧观测盖掉。这条用例专门喂**倒序**：合并序里靠后（`newer` 形参）的那份反而是
+  // 旧观测，标量必须按记录自带的 `lastCheckedAt` 取，时间线仍是两条的并集。
+  const route = 'wb/cn:deepseek-v4.1-flash'
+  const record = (status, latencyMs, throughputTps, at) => ({
+    route, provider: 'wb', model: 'cn:deepseek-v4.1-flash', status,
+    latencyMs, throughputTps, lastCheckedAt: at,
+    timeline: [{ time: at, status, latencyMs }],
+  })
+  const bySession = {
+    // 观测更新（13.9s），但它所在的会话 `updatedAt` 更小 —— 合并时排在前面。
+    fresh: { [route]: record('healthy', 13947, 26.5, 5000) },
+    // 观测更旧（4.5s），会话 `updatedAt` 更大 —— 合并时排在后面，旧实现里它赢。
+    stale: { [route]: record('degraded', 4507, 48.1, 100) },
+  }
+  const block = (sessionId) => ({ kind: 'sequenced', asOfSeq: 1, values: { 'router/channel-health': bySession[sessionId] } })
+  const h = await mount({
+    value: config(),
+    remote: {
+      session: {
+        list: () => Promise.resolve({ ok: true, value: { items: [
+          { sessionId: 'fresh', updatedAt: 100, projections: block('fresh') },
+          { sessionId: 'stale', updatedAt: 900, projections: block('stale') },
+        ] } }),
+      },
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  const passive = h.state().ui.passive[route]
+  assert.equal(passive?.latencyMs, 13947, 'the later observation wins, whatever the session order')
+  assert.equal(passive?.throughputTps, 26.5)
+  assert.equal(passive?.status, 'healthy')
+  assert.equal(passive?.lastCheckedAt, 5000)
+  assert.deepEqual(passive?.timeline.map((p) => p.time), [100, 5000],
+    'the timeline is still the union of both sessions, ordered by time')
+  assert.equal(h.state().ui.passiveError, null)
+})
+
+test('health folds every session DSH lists, not our own last-20 window', async () => {
+  // 真缺陷（方案轮定位，本步修掉）：读取先按 `updatedAt` 升序再 `.slice(-20)`，
+  // 而那个键是会滞后的持久化缓存水位（实测最多滞后 13.7 h）。于是一条观测最新、
+  // 却被缓存标成"最旧"的会话整个掉出窗口，页面只剩更早的观测。DSH 的
+  // `session.list` 本来就返回全部会话并内联投影，所以窗口本身是我们自造的，
+  // 现在按观测时间折全部——21 条会话里最新观测在排第 1 位的那条，必须仍在。
+  const fresh = {
+    'a/b': {
+      route: 'a/b', provider: 'a', model: 'b', status: 'healthy',
+      latencyMs: 13947, throughputTps: 26.5, lastCheckedAt: 5000,
+      timeline: [{ time: 5000, status: 'healthy', latencyMs: 13947 }],
+    },
+  }
+  const items = [{ sessionId: 'cached-old', updatedAt: 1, projections: { kind: 'cached', asOfSeq: 1, values: { 'router/channel-health': fresh } } }]
+  for (let index = 0; index < 20; index += 1) items.push({ sessionId: 's' + index, updatedAt: 100 + index })
+  const h = await mount({
+    value: config(),
+    remote: { session: { list: () => Promise.resolve({ ok: true, value: { items } }) } },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 60))
+  const passive = h.state().ui.passive['a/b']
+  assert.equal(passive?.latencyMs, 13947,
+    'the newest observation survives even though its session sorts first by updatedAt')
+  assert.equal(h.state().ui.passiveError, null)
 })
 
 test('opening the health workspace re-reads the passive snapshot, so a failover during the session shows up', async () => {
@@ -747,11 +859,13 @@ test('opening the health workspace re-reads the passive snapshot, so a failover 
     value: config(),
     remote: {
       session: {
-        list: () => Promise.resolve({ ok: true, value: { items: [{ sessionId: 's', updatedAt: 1 }] } }),
-        projections: () => {
+        // 每次列表都换一份块：第一次是转移前、第二次是转移后。
+        list: () => {
           const record = records[Math.min(round, records.length - 1)]
           round += 1
-          return Promise.resolve({ ok: true, value: { values: { 'router/channel-health': record } } })
+          return Promise.resolve({ ok: true, value: { items: [
+            { sessionId: 's', updatedAt: 1, projections: { kind: 'sequenced', asOfSeq: round, values: { 'router/channel-health': record } } },
+          ] } })
         },
       },
     },
@@ -761,6 +875,40 @@ test('opening the health workspace re-reads the passive snapshot, so a failover 
   h.actions.onActive('__health__')
   await new Promise((resolve) => setTimeout(resolve, 60))
   assert.equal(h.state().ui.passive['a/b']?.status, 'healthy', 're-opening the health view re-reads the snapshot')
+})
+
+test('a manual full probe re-reads the Host report afterwards', async () => {
+  // 真 bug（客户端类型检查发现）：probeAll 的 .then 里裸调 loadProbeReport()，
+  // 作用域里没有这个名字 → 运行时 ReferenceError，被后面的 .catch 吞掉，
+  // 于是"探测全部"跑完从不刷新宿主那份报告，页面只剩这一轮自己测的几条。
+  let reports = 0
+  const h = await mount({
+    value: config(),
+    remote: {
+      routerHealth: {
+        probeAll: (request) => Promise.resolve({
+          ok: true,
+          value: {
+            at: 1,
+            routes: (request?.routes ?? []).map((route) => ({
+              provider: route.provider, model: route.model, kind: 'reachable', latencyMs: 5, at: 1,
+            })),
+          },
+        }),
+        probeReport: () => {
+          reports += 1
+          return Promise.resolve({ ok: true, value: { at: 0, routes: [] } })
+        },
+      },
+    },
+  })
+  await new Promise((resolve) => setTimeout(resolve, 40))
+  const before = reports
+  h.actions.onProbeAll()
+  // 忙态有 450ms 的地板（MIN_BUSY_MS）：等过它再看 probing。
+  await new Promise((resolve) => setTimeout(resolve, 600))
+  assert.equal(reports, before + 1, 'the Host report is read after the run, not only its own routes')
+  assert.equal(h.state().ui.probing, false, 'and the busy state still clears')
 })
 
 // ---- workbench structure (hand-written createElement nesting) ----
@@ -782,8 +930,10 @@ test('re-reading the same passive record does not grow the timeline', async () =
     value: config(),
     remote: {
       session: {
-        list: () => Promise.resolve({ ok: true, value: { items: [{ sessionId: 's', updatedAt: 1 }] } }),
-        projections: () => Promise.resolve({ ok: true, value: { values: { 'router/channel-health': record } } }),
+        // 同一份块读两次：内联列在两次列表里是同一个值。
+        list: () => Promise.resolve({ ok: true, value: { items: [
+          { sessionId: 's', updatedAt: 1, projections: { kind: 'sequenced', asOfSeq: 1, values: { 'router/channel-health': record } } },
+        ] } }),
       },
     },
   })
@@ -798,26 +948,33 @@ test('re-reading the same passive record does not grow the timeline', async () =
   assert.equal(h.state().ui.passive['a/b']?.latencyMs, 12, 'scalars still come from the newest record')
 })
 
-// 回归：读失败曾被 `.catch(() => null)` 与最外层 `.catch(() => {})` 一起吞掉，页面照常
-// 渲染成"未调用 / 无记录"——与"这条渠道真的没跑过"长得一模一样。一个健康视图最不能
-// 犯的就是这个错：它的全部工作就是报告渠道做过什么。
-test('a refused history read says so instead of rendering an empty history', async () => {
+// 读不到 ≠ 空：DSH 的列表一次答全部会话，块内联在行上，所以"逐会话读失败"这个
+// 状态在浏览器侧已经不存在。剩下的是另一条边界——**行上没有块**。那既不是失败
+// 也不是观测：一条从没跑过本插件的会话本来就没有这两个键，不能因此报错，更不能
+// 凭空造一条记录。兜底的那句"整份读不到"由下一条用例守（列表本身被拒）。
+test('a session row without a projection block is unobserved, not unreadable', async () => {
+  const { RouterPage } = loadClient()
   const h = await mount({
-    value: config(),
+    value: config({ chain: chainValue([cand('a', 'b')]) }),
     remote: {
       session: {
-        list: () => Promise.resolve({ ok: true, value: { items: [{ sessionId: 's', updatedAt: 1 }] } }),
-        projections: () => Promise.resolve({ ok: false, error: { message: 'projection registry is not ready' } }),
+        list: () => Promise.resolve({ ok: true, value: { items: [
+          { sessionId: 'never-used-router', updatedAt: 1 },
+          { sessionId: 'empty-block', updatedAt: 2, projections: { kind: 'cached', asOfSeq: 0, values: {} } },
+        ] } }),
       },
     },
   })
   await new Promise((resolve) => setTimeout(resolve, 60))
   const state = h.state()
-  assert.deepEqual(state.ui.passive, {}, 'nothing was read, so nothing is claimed')
-  // harness 的 locale 桩绑定的是恒等函数（`bind: () => (key) => key`），所以这里
-  // 断言的是字典键：真宿主上它会翻成整句「渠道历史读不到：<原因>」。
-  assert.match(state.ui.passiveError ?? '', /healthHistoryUnreadable/,
-    'the refusal reaches the screen instead of folding into an empty history')
+  assert.deepEqual(state.ui.passive, {}, 'no block means no observation was claimed')
+  assert.equal(state.ui.passiveError, null, 'a row that never wrote the key is not a failed read')
+  h.actions.onActive('__health__')
+  pendingEffects.length = 0
+  const tree = render(createEl(RouterPage, propsFor(h)))
+  for (const effect of pendingEffects) effect()
+  const text = collectText(tree).join(' ')
+  assert.ok(text.includes('compactHealthIdle'), 'the configured route is 待观测, not painted from nothing')
 })
 
 test('a history list that cannot be read says so too', async () => {
@@ -851,8 +1008,9 @@ test('a channel with real volume renders a rate that is still a percentage', asy
     value: config({ chain: chainValue([cand('a', 'b')]) }),
     remote: {
       session: {
-        list: () => Promise.resolve({ ok: true, value: { items: [{ sessionId: 's', updatedAt: 1 }] } }),
-        projections: () => Promise.resolve({ ok: true, value: { values: { 'router/channel-health': record } } }),
+        list: () => Promise.resolve({ ok: true, value: { items: [
+          { sessionId: 's', updatedAt: 1, projections: { kind: 'sequenced', asOfSeq: 1, values: { 'router/channel-health': record } } },
+        ] } }),
       },
     },
   })
@@ -893,7 +1051,6 @@ test('a configured but never-used candidate still appears in the health dashboar
     remote: {
       session: {
         list: () => Promise.resolve({ ok: true, value: { items: [] } }),
-        projections: () => Promise.resolve({ ok: true, value: { values: {} } }),
       },
     },
   })
@@ -1154,22 +1311,26 @@ test('the retry section paints the whitelist with the default codes checked', as
 
 // ---- 两个视图共用的 20 会话读取：读不到 ≠ 没有 ----
 
-test('the failover history reports the sessions it could not read instead of calling them empty', async () => {
-  // 抽屉曾经是第二份 20 会话读取：逐会话 `.catch(() => ({ entries: [] }))` 把"读不到"
-  // 折成"这个会话没有转移"——与健康历史那轮修掉的是同一句话。
+test('the failover history folds every session and keeps only the last 24 hours', async () => {
+  // 抽屉原来的"窗口"是 20 个会话（按会滞后的 updatedAt 挑），条目本身没有任何
+  // 裁剪：折全部会话之后，很久以前的转移会挤在一起冒充"最近"。现在窗口与行序都
+  // 由条目自己的 time 决定——行的先后不再靠会话的 updatedAt。
+  const now = Date.now()
+  const HOUR = 3600 * 1000
+  const entry = (time, from, to) => ({ time, turn: 1, step: 1, from, to, code: 'RATE_LIMIT', settled: false })
+  const ledger = (entries) => ({ kind: 'sequenced', asOfSeq: 1, values: { 'router/failover-history': entries } })
   const h = await mount({
     value: config({ chain: chainValue([cand('a', 'x')]) }),
     remote: {
       session: {
         list: () => Promise.resolve({ ok: true, value: { items: [
-          { sessionId: 'readable', updatedAt: 1 },
-          { sessionId: 'unreadable', updatedAt: 2 },
+          // 更新时间最新，但它唯一的转移在 30 小时前：整行应当消失。
+          { sessionId: 'stale-only', updatedAt: 900, projections: ledger([entry(now - 30 * HOUR, 'a/x', 'c/z')]) },
+          { sessionId: 'two-hours', updatedAt: 100, projections: ledger([entry(now - 2 * HOUR, 'a/x', 'b/y')]) },
+          // 没有时间戳的条目：未知不是 0，不落任何窗口。
+          { sessionId: 'unknown-time', updatedAt: 500, projections: ledger([entry(undefined, 'a/x', 'b/y')]) },
+          { sessionId: 'five-hours', updatedAt: 1, projections: ledger([entry(now - 5 * HOUR, 'a/x', 'd/w')]) },
         ] } }),
-        projections: (request) => request.sessionId === 'readable'
-          ? Promise.resolve({ ok: true, value: { values: { 'router/failover-history': [
-            { time: 1, turn: 1, step: 1, from: 'a/x', to: 'b/y', code: 'RATE_LIMIT', settled: false },
-          ] } } })
-          : Promise.resolve({ ok: false, error: { message: 'projection registry is not ready' } }),
       },
     },
   })
@@ -1177,11 +1338,10 @@ test('the failover history reports the sessions it could not read instead of cal
   await new Promise((resolve) => setTimeout(resolve, 60))
   const ui = h.state().ui
   assert.equal(ui.drawerError, false, 'the list itself answered')
-  assert.equal(ui.drawerRows.length, 1, 'the readable session still shows its entries')
-  // harness 的 locale 桩是恒等函数，所以断言的是字典键；真宿主上它会翻成整句
-  // 「有 1/2 个会话读不到…」。
-  assert.match(ui.drawerPartial ?? '', /failoverHistoryPartial/,
-    'the unreadable session is reported, not silently dropped')
+  assert.deepEqual(ui.drawerRows.map((row) => row.sessionId), ['two-hours', 'five-hours'],
+    'rows order by their newest entry, and sessions with nothing inside the window are gone')
+  assert.equal(ui.drawerRows[0].entries.length, 1)
+  assert.equal(ui.drawerRows[0].entries[0].to, 'b/y')
 })
 
 test('a single-route probe survives opening the health view', async () => {
@@ -1246,7 +1406,6 @@ const mountMapped = (value = mappedConfig(), catalog = mappedCatalog) => mount({
   remote: {
     session: {
       list: () => Promise.resolve({ ok: true, value: { items: [] } }),
-      projections: () => Promise.resolve({ ok: true, value: { values: {} } }),
       modelCatalog: () => Promise.resolve(catalog),
     },
   },
@@ -1466,9 +1625,20 @@ test('the workbench is one page with top view tabs, not an internal sidebar', as
 
   const tabs = find(tree, (node) => node.type === 'SegmentedTabs')
   assert.ok(tabs, 'the views are switched by top tabs')
-  // 两个视图：链配置 / 渠道健康。会话级选链只在 composer 的 chip 里，不另设管理页。
-  assert.deepEqual(tabs.props.items.map((item) => item.value), ['chain', 'health'])
+  // 三个一级视图：链配置 / 委派名册 / 渠道健康。会话级选链只在 composer 的 chip 里，
+  // 不另设管理页；第三页签是 P2 的 host 段落地之后才注册的（config.ts 的 handoff），
+  // 这里钉的是"它已经注册"，以及默认仍是链页。
+  assert.deepEqual(tabs.props.items.map((item) => item.value), ['chain', 'roster', 'health'])
   assert.equal(tabs.props.value, 'chain', 'the chain is the default view')
+
+  h.actions.onActive('__roster__')
+  pendingEffects.length = 0
+  const rosterTree = render(createEl(RouterPage, propsFor(h)))
+  for (const effect of pendingEffects) effect()
+  const rosterTabs = find(rosterTree, (node) => node.type === 'SegmentedTabs')
+  assert.equal(rosterTabs.props.value, 'roster', 'the third tab is addressable through the same onActive seam')
+  assert.ok(find(rosterTree, (node) => node.props?.id === 'model-router-panel-roster'),
+    'the selected tab names the roster panel that is rendered')
 
   h.actions.onActive('__health__')
   pendingEffects.length = 0
@@ -1478,6 +1648,277 @@ test('the workbench is one page with top view tabs, not an internal sidebar', as
   assert.equal(healthTabs.props.value, 'health')
   assert.ok(find(healthTree, (node) => node.props?.id === 'model-router-panel-health'),
     'the selected tab names the panel that is rendered')
+})
+
+// ---- 委派名册（P2）：主从、校验、空态、保存回写 ----
+
+const roleOf = (over = {}) => ({
+  id: 'reviewer',
+  name: '复核',
+  role: 'review',
+  purpose: '独立复核：判断目标是否真的达成，列出缺口。',
+  instructions: '你只读工件，不改文件。',
+  preset: '',
+  provider: '',
+  model: '',
+  reasoningEffort: '',
+  maxTokens: 0,
+  failover: 'inherit',
+  attach: ['goal', 'todos', 'userRequest', 'stats'],
+  maxRunsPerUserMessage: 6,
+  ...over,
+})
+
+const handoffOf = (over = {}) => ({
+  enabled: true,
+  subagentBackend: 'spawn',
+  roster: [roleOf()],
+  protocol: { delegate: true, finish: true, facts: true, requireReviewFor: [], allowReviewOverride: true },
+  limits: {
+    maxDelegationsPerTurn: 1,
+    maxDelegationsPerUserMessage: 8,
+    maxReviewsPerUserMessage: 1,
+    maxNewSessionsPerUserMessage: 2,
+    maxDelegationsPerDay: 24,
+    nudgeWhenUnreceipted: false,
+    maxNudgesPerTurn: 1,
+  },
+  onUnreceiptedStop: { delegateTo: '', reportToUser: true },
+  newSession: {
+    onFinish: [],
+    nextAction: 'continue',
+    briefing: ['goal', 'todos', 'userRequest', 'lastReview', 'stats'],
+    keepGoal: true,
+    carrySelection: true,
+    carryChainBinding: true,
+  },
+  ...over,
+})
+
+/** Render the page on the roster tab with a given handoff section. */
+async function mountRoster(handoff, over = {}) {
+  const { RouterPage } = loadClient()
+  const h = await mount({ value: config({ handoff }), ...over })
+  h.actions.onActive('__roster__')
+  pendingEffects.length = 0
+  const tree = render(createEl(RouterPage, propsFor(h)))
+  for (const effect of pendingEffects) effect()
+  return { h, tree, RouterPage }
+}
+
+test('the roster page is a master list plus an editor, not a second page', async () => {
+  const { h, tree } = await mountRoster(handoffOf())
+  assert.ok(find(tree, (node) => node.props?.id === 'model-router-panel-roster'), 'the roster panel renders')
+  const list = find(tree, (node) => String(node.props?.className ?? '').startsWith('dsh-roster-list'))
+  assert.ok(list, 'the master list exists')
+  assert.equal(list.props.role, 'listbox', 'and it is a listbox, not a div soup')
+  const items = []
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (String(node.props?.className ?? '').split(' ')[0] === 'dsh-roster-item') items.push(node)
+    walk(node.children)
+  }
+  walk(list)
+  assert.equal(items.length, 1, 'one role, one row')
+  assert.equal(items[0].props['aria-selected'], 'true', 'the selected row says so')
+  assert.ok(find(tree, (node) => String(node.props?.className ?? '').startsWith('dsh-roster-editor')),
+    'the editor sits beside it')
+  // 常驻 hint：一个字段只有一个读者。
+  assert.ok(collectText(tree).join(' ').includes('handoffReaderHint'))
+  // 顶部三本预算 + 每回合 + 每日：全部来自 host 的同一份默认值。
+  assert.equal(h.state().draft.handoff.limits.maxDelegationsPerUserMessage, 8)
+})
+
+test('twelve roles render in a list that scrolls on its own', async () => {
+  const roster = Array.from({ length: 12 }, (_, index) => roleOf({
+    id: 'role-' + index,
+    name: '角色 ' + index,
+    purpose: '第 ' + index + ' 个角色的 purpose',
+  }))
+  const { tree } = await mountRoster(handoffOf({ roster }))
+  const list = find(tree, (node) => String(node.props?.className ?? '').startsWith('dsh-roster-list'))
+  const items = []
+  const walk = (node) => {
+    if (node === null || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    if (String(node.props?.className ?? '').split(' ')[0] === 'dsh-roster-item') items.push(node)
+    walk(node.children)
+  }
+  walk(list)
+  assert.equal(items.length, 12, 'no role is dropped')
+  // 列表自己滚动、最高 420px：12 个角色不把页面撑爆（§5.3 的尺寸约束）。
+  const css = sourceOf('styles.ts')
+  assert.match(css, /\.dsh-roster-list \{[^}]*max-height: 420px;/)
+  assert.match(css, /\.dsh-roster-list \{[^}]*overflow-y: auto;/)
+  assert.match(css, /\.dsh-roster-body \{[^}]*grid-template-columns: minmax\(160px, 224px\)/)
+})
+
+test('the roster list walks with the arrow keys and stops at both ends', async () => {
+  const roster = ['alpha', 'beta', 'gamma'].map((id) => roleOf({ id, name: id }))
+  const { h, RouterPage } = await mountRoster(handoffOf({ roster }))
+  // 进名册页签就选中第一个角色（controller 的 setActive 行为），走位从那里开始。
+  assert.equal(h.state().ui.rosterId, 'alpha', 'the first role is selected on entry')
+
+  const treeNow = () => render(createEl(RouterPage, propsFor(h)))
+  const listOf = () => find(treeNow(), (node) => String(node.props?.className ?? '').startsWith('dsh-roster-list'))
+  const press = (key) => {
+    const list = listOf()
+    assert.equal(typeof list.props.onKeyDown, 'function', 'the listbox owns the walk keys')
+    let prevented = false
+    list.props.onKeyDown({ key, preventDefault: () => { prevented = true } })
+    assert.equal(prevented, true, key + ' belongs to the list, so the page does not scroll instead')
+  }
+  /** The row that paints itself as selected, by the id its key starts with. */
+  const activeId = () => {
+    const rows = collect(treeNow(), (node) => node.props?.role === 'option')
+    const active = rows.filter((row) => row.props['aria-selected'] === 'true')
+    assert.equal(active.length, 1, 'exactly one row says it is selected')
+    return String(active[0].props.key).split(':')[0]
+  }
+
+  press('ArrowDown')
+  assert.equal(h.state().ui.rosterId, 'beta', 'ArrowDown moves to the next role')
+  assert.equal(activeId(), 'beta', 'and the painted selection follows')
+  press('ArrowDown')
+  assert.equal(h.state().ui.rosterId, 'gamma')
+  press('ArrowDown')
+  assert.equal(h.state().ui.rosterId, 'gamma', 'the last row is the end, not a wrap-around')
+  press('ArrowUp')
+  assert.equal(h.state().ui.rosterId, 'beta', 'ArrowUp moves back')
+  press('ArrowUp')
+  assert.equal(h.state().ui.rosterId, 'alpha')
+  press('ArrowUp')
+  assert.equal(h.state().ui.rosterId, 'alpha', 'the first row is the start, not a wrap-around')
+  press('End')
+  assert.equal(h.state().ui.rosterId, 'gamma', 'End goes to the last role')
+  press('Home')
+  assert.equal(h.state().ui.rosterId, 'alpha', 'Home goes to the first')
+
+  // 走位之外的东西一概不碰：Tab 照常离开列表，不认识键也不拦。
+  const list = listOf()
+  let leaked = false
+  list.props.onKeyDown({ key: 'Tab', preventDefault: () => { leaked = true } })
+  assert.equal(leaked, false, 'Tab is not ours: focus leaves the list as usual')
+  assert.equal(h.state().ui.rosterId, 'alpha', 'a key the list does not own changes nothing')
+
+  // Enter / Space 仍是"选中这一行"，且入口只有一个：onSelect(entry.id)。
+  const rowOf = (id) => find(treeNow(), (node) => node.props?.role === 'option' && String(node.props?.key ?? '').startsWith(id + ':'))
+  let handled = false
+  rowOf('gamma').props.onKeyDown({ key: 'Enter', preventDefault: () => { handled = true } })
+  assert.equal(handled, true, 'Enter still prevents the default')
+  assert.equal(h.state().ui.rosterId, 'gamma', 'Enter still selects that row')
+  rowOf('alpha').props.onKeyDown({ key: ' ', preventDefault: () => {} })
+  assert.equal(h.state().ui.rosterId, 'alpha', 'Space is the same gesture')
+  // 选中是视图状态：走一圈之后草稿没变、也不需要保存。
+  assert.equal(h.state().dirty, false, 'walking the list edits nothing')
+})
+
+test('an empty roster is an activation card, never a fake roster', async () => {
+  const { tree } = await mountRoster(handoffOf({ roster: [] }))
+  const text = collectText(tree).join(' ')
+  assert.ok(text.includes('handoffEmptyTitle'), 'the empty state is named')
+  assert.ok(text.includes('handoffEmptyBody'), 'and says what to do first')
+  assert.equal(text.includes('dsh-roster-item'), false, 'no placeholder rows')
+  assert.ok(find(tree, (node) => node.type === 'Button' && String(node.props?.children ?? '').includes('handoffAddRole')),
+    'the empty state carries the one action')
+})
+
+test('saving carries the whole handoff section in the same mutate', async () => {
+  const { h } = await mountRoster(handoffOf())
+  h.actions.onSetHandoffField(['limits', 'maxReviewsPerUserMessage'], 3)
+  h.actions.onUpdateRoster('reviewer', 'purpose', '新的 purpose')
+  h.actions.onSave()
+  await flush()
+  const ops = h.mutateCalls[0].ops
+  const handoffOp = ops.find((op) => op.path.length === 1 && op.path[0] === 'handoff')
+  assert.ok(handoffOp, 'the handoff section rides the same mutate as chains and health')
+  assert.equal(handoffOp.op, 'set')
+  assert.equal(handoffOp.value.limits.maxReviewsPerUserMessage, 3)
+  assert.equal(handoffOp.value.roster[0].purpose, '新的 purpose')
+  // 同一次保存里链与健康也在：没有第二条保存链路。
+  assert.ok(ops.some((op) => op.path[0] === 'chains'))
+  assert.ok(ops.some((op) => op.path[0] === 'health'))
+})
+
+test('the roster fields take the typed value, not the change event', async () => {
+  const { h, tree } = await mountRoster(handoffOf({ roster: [roleOf()] }))
+  const editor = find(tree, (node) => String(node.props?.className ?? '').startsWith('dsh-roster-editor'))
+  // DSH 的 Input 把 onChange 铺给原生 input，处理函数收到的是事件：值在 currentTarget 上。
+  // 曾经按"值是第一个参数"读，结果输入框与列表行都写成 "[object Object]"（真机实测）。
+  const name = find(editor, (node) => node.props?.id === 'roster-0-name')
+  name.props.onChange({ currentTarget: { value: '新名字' } })
+  assert.equal(h.state().draft.handoff.roster[0].name, '新名字',
+    'the field writes what was typed, not a stringified event')
+  assert.equal(h.state().dirty, true, 'the edit is a real draft change')
+  const maxTokens = find(editor, (node) => node.props?.id === 'roster-0-max-tokens')
+  maxTokens.props.onChange({ currentTarget: { value: '12' } })
+  assert.equal(h.state().draft.handoff.roster[0].maxTokens, 12, 'a number field writes the number')
+  maxTokens.props.onChange({ currentTarget: { value: 'abc' } })
+  assert.equal(h.state().draft.handoff.roster[0].maxTokens, 12,
+    'text that is not a number is ignored, not zeroed')
+  maxTokens.props.onChange({ currentTarget: { value: '-4' } })
+  assert.equal(h.state().draft.handoff.roster[0].maxTokens, 0, 'a negative budget clamps to 0')
+})
+
+test('a bad role blocks the save and marks the field, not just the list', async () => {
+  const { h, tree } = await mountRoster(handoffOf({ roster: [roleOf({ purpose: '   ' })] }))
+  assert.equal(h.state().invalid, true, 'the save is blocked')
+  assert.deepEqual(h.state().problems.map((problem) => problem.key), ['problemRosterEmptyPurpose'])
+  const editor = find(tree, (node) => String(node.props?.className ?? '').startsWith('dsh-roster-editor'))
+  const text = collectText(editor).join(' ')
+  assert.ok(text.includes('handoffRoleProblems'), 'the summary sits at the top of the editor')
+  assert.ok(text.includes('problemRosterEmptyPurpose'), 'and names the rule')
+  const purpose = find(editor, (node) => node.props?.id === 'roster-0-purpose')
+  assert.equal(purpose.props['aria-invalid'], 'true', 'the field itself is marked')
+})
+
+test('the roster rules the host enforces are the ones the browser shows', async () => {
+  const cases = [
+    { roster: [roleOf({ preset: '', instructions: '' })], key: 'problemRosterNoDefinition' },
+    { roster: [roleOf({ instructions: 'x'.repeat(4001) })], key: 'problemRosterInstructionsTooLong' },
+    { roster: [roleOf(), roleOf()], key: 'problemRosterDuplicateId' },
+    { roster: [roleOf({ provider: 'acme' })], key: 'problemRosterHalfRoute' },
+    { roster: [roleOf({ failover: 'writing' })], key: 'problemRosterUnknownFailoverChain' },
+  ]
+  for (const entry of cases) {
+    const { h } = await mountRoster(handoffOf({ roster: entry.roster }))
+    assert.deepEqual(h.state().problems.map((problem) => problem.key), [entry.key],
+      entry.key + ' is reported by the shared rules, not by a browser copy')
+  }
+  // 兜底角色必须真的存在。
+  const { h } = await mountRoster(handoffOf({ onUnreceiptedStop: { delegateTo: 'ghost', reportToUser: true } }))
+  assert.deepEqual(h.state().problems.map((problem) => problem.key), ['problemUnreceiptedUnknownRole'])
+})
+
+test('adding and removing a role keeps the selection honest', async () => {
+  const { h } = await mountRoster(handoffOf({ roster: [] }))
+  h.actions.onAddRoster()
+  const added = h.state().draft.handoff.roster
+  assert.equal(added.length, 1)
+  assert.equal(h.state().ui.rosterId, added[0].id, 'the new role is selected')
+  h.actions.onUpdateRoster(added[0].id, 'id', 'coder')
+  assert.equal(h.state().ui.rosterId, 'coder', 'renaming the id keeps the selection')
+  // 删除正在编辑的角色：选中清空，兜底引用一并清掉。
+  h.actions.onSetHandoffField(['onUnreceiptedStop', 'delegateTo'], 'coder')
+  h.actions.onRemoveRoster('coder')
+  assert.deepEqual(h.state().draft.handoff.roster, [])
+  assert.equal(h.state().ui.rosterId, null)
+  assert.equal(h.state().draft.handoff.onUnreceiptedStop.delegateTo, '',
+    'a fallback pointing at a deleted role is cleared, not left dangling')
+})
+
+test('the relay section is separate from the finish gate', async () => {
+  const { h, tree } = await mountRoster(handoffOf())
+  const text = collectText(tree).join(' ')
+  assert.ok(text.includes('handoffReviewGateTitle'), 'the gate has its own section')
+  assert.ok(text.includes('handoffRelayTitle'), 'and the relay has its own')
+  // 两边各写各的字段：打开接力不会顺手改闸门。
+  h.actions.onSetHandoffField(['newSession', 'onFinish'], ['done'])
+  assert.deepEqual(h.state().draft.handoff.protocol.requireReviewFor, [])
+  h.actions.onSetHandoffField(['protocol', 'requireReviewFor'], ['done'])
+  assert.deepEqual(h.state().draft.handoff.newSession.onFinish, ['done'])
+  assert.equal(h.state().dirty, true)
 })
 
 test('chain rows reserve one default slot so their name inputs end on the same column', async () => {
@@ -2432,6 +2873,568 @@ test('the page always offers the update check, even after the notes dialog was a
   const text = collectText(tree).join('\n')
   assert.ok(text.includes('updateCheckButton'), 'the head keeps a permanent entry point')
   assert.ok(text.includes('whatsNewTitle'), 'the post-update dialog names the running release')
+})
+
+// ---- Agent Fleet: native tab registration and the no-fixed-drawer guard ----
+
+test('the fleet registers a dockkit tab type and its keyed body, not a second carrier', async () => {
+  const h = await mount({ value: config() })
+  const definition = h.tabTypes.find((entry) => entry.id === 'dsh-models-router')
+  assert.notEqual(definition, undefined, 'the package name is the tab type id')
+  assert.equal(definition.kind, 'agent-fleet')
+  assert.equal(definition.priority, 'extension')
+  assert.equal(definition.multiple, false)
+  assert.equal(definition.keepMounted, false)
+  assert.equal(definition.guide.length, 1)
+  assert.equal(definition.guide[0].id, 'agent-fleet')
+  assert.equal(definition.guide[0].order, 40)
+  assert.equal(definition.guide[0].title(), 'fleetGuideTitle')
+  assert.equal(definition.guide[0].description(), 'fleetGuideHint')
+  assert.equal(definition.title(), 'fleetTabTitle')
+
+  assert.notEqual(h.fleetBody, null, 'the body registers into sidebar.right.pane.tab')
+  assert.equal(h.fleetBody.options.name, 'sidebar.right.pane.tab')
+  assert.equal(h.fleetBody.options.key, 'dsh-models-router')
+  assert.equal(h.fleetBody.options.locale, 'dsh-models-router')
+  const injected = h.fleetBody.options.inject()
+  assert.equal(typeof injected.controller.refreshSessions, 'function')
+  assert.equal(typeof injected.controller.pause, 'function', 'the body can stop scheduling when it is off screen')
+  assert.equal(typeof injected.controller.resume, 'function', 'and continue it when it comes back')
+  assert.equal(typeof injected.openSession, 'function')
+  assert.equal(typeof injected.resolveSubagentAddress, 'function')
+  assert.equal(typeof injected.copyText, 'function')
+  // The body owns scheduling through the tab's own visibility, not through a
+  // plugin-wide flag: the tab hook is the only native "is this body on screen".
+  assert.match(sourceOf('fleet/index.ts'), /useFleet\(props, viewSessionId, tab\.visible\)/,
+    'AgentFleetTab passes tab.visible into the data layer')
+})
+
+test('the fleet stylesheet is balanced, so one bad rule cannot swallow the rest', () => {
+  const styles = sourceOf('fleet/styles.ts')
+  const array = styles.slice(styles.indexOf('var FLEET_CSS'))
+  const fragments = [...array.matchAll(/'((?:[^'\\]|\\.)*)'/g)].map(match => match[1].replace(/\\'/g, "'"))
+  assert.ok(fragments.length > 50, 'the fleet style array is found')
+  const sheet = fragments.join('\n')
+  const opens = (sheet.match(/\/\*/g) ?? []).length
+  const closes = (sheet.match(/\*\//g) ?? []).length
+  assert.equal(opens, closes, `every fleet CSS comment must be closed (${String(opens)} open, ${String(closes)} closed)`)
+  const code = sheet.replace(/\/\*[\s\S]*?\*\//g, '')
+  const braces = (code.match(/\{/g) ?? []).length - (code.match(/\}/g) ?? []).length
+  assert.equal(braces, 0, `every fleet CSS rule must close its block (off by ${String(braces)})`)
+})
+
+test('the injected CSS normalizes the module system string/array shapes', () => {
+  const styles = sourceOf('styles.ts')
+  assert.match(styles, /function cssText\(value\)/, 'one shape normalizer owns the injection')
+  assert.match(styles, /Array\.isArray\(value\) \? value\.join\('\\n'\) : String\(value\)/)
+  assert.match(styles, /tag\.textContent = cssText\(ROUTER_CSS\) \+ '\\n' \+ cssText\(FLEET_CSS\)/,
+    'both the local and imported CSS must go through the normalizer')
+  const fleet = sourceOf('fleet/styles.ts')
+  assert.ok(fleet.includes('--dsw-focus-ring-width'), 'custom fleet buttons carry DSH own focus ring')
+})
+
+test('the fleet source has no fixed drawer, mask, portal, alert or emoji icon', () => {
+  const index = sourceOf('fleet/index.ts')
+  const view = sourceOf('fleet/view.ts')
+  const styles = sourceOf('fleet/styles.ts')
+  assert.ok(index.includes('ctx.sidebarRightTabs.register'), 'the type goes through the native registry')
+  assert.ok(index.includes("name: 'sidebar.right.pane.tab'"), 'the body goes through the native seat')
+  assert.equal(/position\s*:\s*fixed/i.test(styles), false, 'no fixed drawer')
+  assert.equal(/backdrop-filter/i.test(styles), false, 'no mask blur')
+  assert.equal(/createPortal|alert\s*\(/.test(index + view), false, 'no portal and no alert')
+  assert.equal(/\p{Extended_Pictographic}/u.test(index + view), false, 'no emoji as a semantic icon')
+})
+
+// ---- Config page: the two retry entries stay separate and the total cap stays gone ----
+
+test('candidate rows and the first hop keep their retry inputs; no total-call field exists', () => {
+  const pipeline = sourceOf('pipeline.ts')
+  const controller = sourceOf('controller.ts')
+  const config = readFileSync(fileURLToPath(new URL('../src/config.ts', import.meta.url)), 'utf8')
+  assert.match(pipeline, /onMaxRetries\(index, next\)/, 'each candidate row owns its retry input')
+  assert.match(pipeline, /onMaxRetries\(next\)/, 'the first hop owns the only first-hop input')
+  assert.match(controller, /maxRetries: DEFAULT_MAX_RETRIES/, 'a new candidate takes the shared default')
+  assert.match(pipeline, /DEFAULT_FIRST_HOP_MAX_RETRIES/, 'the first hop takes the shared default')
+  const all = pipeline + controller + config
+  assert.equal(/maxTotalAttempts/.test(all), false, 'the total-call field must not come back')
+  assert.equal(/单请求最多调用|总调用次数/.test(all), false, 'no total-call copy may remain')
+  assert.equal(/maxRetries:\s*2\b/.test(sourceOf('controller.ts')), false, 'no hardcoded 2 retries')
+})
+
+test('output continuation is its own section, separate from failure retries', () => {
+  const pipeline = sourceOf('pipeline.ts')
+  assert.match(pipeline, /export function OutputContinuationSection/)
+  const retry = pipeline.slice(pipeline.indexOf('export function RetrySection'), pipeline.indexOf('export function OutputContinuationSection'))
+  assert.equal(retry.includes('maxTokenContinueLabel'), false,
+    'the output-continuation control must not sit in the retry section')
+  assert.ok(pipeline.includes('DEFAULT_MAX_TOKEN_CONTINUES'), 'the continuation count reads the shared default')
+})
+
+test('the session chip keeps the chain binding and the per-route retry override side by side', async () => {
+  const h = await mount({ value: chipConfig() })
+  await h.chip.model.open('s1')
+  const menu = renderChip(h)
+  assert.equal(menu.props.items[0].text, 'sessionRouteTitle', 'the chain binding entry is still there')
+  const block = menu.props.children.find((node) => node.props?.className === 'dsh-router-session-chip-retries')
+  assert.notEqual(block, undefined, 'the per-route retry override block is still there')
+  const rows = block.props.children.filter(Array.isArray).flat()
+  assert.equal(rows.length, 1, 'one row per candidate of the chain this session uses')
+  const input = rows[0].props.children[1]
+  assert.equal(input.props.placeholder, 'sessionRetryFollow', 'an empty override follows the chain default')
+})
+
+test('a session list with no successful pull is an error, not an empty list', () => {
+  const source = sourceOf('fleet/useFleet.ts')
+  assert.match(source, /listAttempted && list\.phase === 'pending'/,
+    'the public phase pending is the no-successful-pull signal')
+  assert.match(source, /props\.t\('fleetListNoPull'\)/,
+    'the error card gets a localized concrete reason instead of an empty list')
+})
+
+test('the fleet renders error, empty, no-match and unknown states without fake zeros', () => {
+  const { GlobalView } = loadClient()
+  const t = (key) => key
+  const summary = {
+    listError: false,
+    runningSessions: 0,
+    runningSessionsUnknown: 0,
+    runningAgents: 0,
+    runningAgentsUnknown: 0,
+    pending: 0,
+    pendingUnknown: 0,
+    anomalies: 0,
+    anomaliesUnknown: 0,
+    childrenUnknown: 0,
+  }
+  const model = {
+    list: { phase: 'ready', ids: [], byId: {}, projectionsBySession: {} },
+    statuses: new Map(),
+    workspaces: { items: [], archivedSessionIds: [], pinnedSessionIds: [], state: 'ready', phase: 'ready', error: null },
+    rows: [],
+    summary,
+    queue: [],
+    groups: [],
+    filteredGroups: [],
+    filteredRows: [],
+    scope: { total: 0, scope: 0, loaded: 0, unknown: 0 },
+    session: undefined,
+    listError: null,
+    workspaceError: null,
+    refreshing: false,
+    query: '',
+    filter: 'all',
+    now: 1,
+    setQuery: () => {},
+    setFilter: () => {},
+    refreshAll: () => {},
+    loadUnknown: () => {},
+    loadSession: () => {},
+  }
+  const renderGlobal = (patch) => render(createEl(GlobalView, {
+    t,
+    model: { ...model, ...patch },
+    currentSessionId: 's1',
+    onDrill: () => {},
+    onOpenSession: () => {},
+  }))
+  const errorText = collectText(renderGlobal({ listError: new Error('boom') })).join('\n')
+  assert.ok(errorText.includes('fleetListErrorTitle'), 'a list failure renders the error card')
+  assert.ok(errorText.includes('—'), 'a list failure paints the summary as —, not 0')
+
+  const emptyText = collectText(renderGlobal({})).join('\n')
+  assert.ok(emptyText.includes('fleetEmptyTitle'), 'no sessions renders the empty state')
+
+  const noMatchText = collectText(renderGlobal({
+    rows: [{ id: 's1' }],
+    filteredRows: [],
+    query: 'zzz',
+  })).join('\n')
+  assert.ok(noMatchText.includes('fleetNoMatch'), 'a local filter with no hits renders the no-match state')
+
+  const unknownText = collectText(renderGlobal({
+    rows: [{ id: 's1' }],
+    filteredRows: [{ id: 's1' }],
+    summary: { ...summary, runningAgents: undefined, runningAgentsUnknown: 4, anomalies: undefined, anomaliesUnknown: 7 },
+  })).join('\n')
+  assert.ok(unknownText.includes('—'), 'a partial sample paints —, not 0')
+  assert.ok(unknownText.includes('fleetUnknownSessions'), 'the unknown count is named next to it')
+})
+
+test('the fleet session body renders the root -> direct children topology and the honest activity placeholder', () => {
+  const { SessionView } = loadClient()
+  const t = (key) => key
+  const agent = {
+    id: 'child-1',
+    label: 'reviewer',
+    mode: 'continuable',
+    state: 'unknown',
+    running: false,
+    lastTurnCompleted: undefined,
+    model: { provider: 'p', model: 'm' },
+    timing: undefined,
+    tokenUsage: undefined,
+    task: undefined,
+    durationMs: undefined,
+    addressable: true,
+  }
+  const row = {
+    id: 'session-abc',
+    title: 'parent',
+    cwd: undefined,
+    parentId: undefined,
+    updatedAt: 1,
+    running: false,
+    pending: undefined,
+    statusKnown: true,
+    state: 'idle',
+    children: [],
+    childrenRunning: 0,
+    childrenUnknown: 0,
+    anomaly: false,
+    model: { provider: 'p', model: 'm' },
+    chain: '默认',
+    tokenUsage: undefined,
+    contextPressure: { projectedTokens: 71, contextWindow: 100 },
+  }
+  const session = {
+    row,
+    workspaceTitle: 'W',
+    workspacePath: '/w',
+    chain: '默认',
+    retryOverrides: 0,
+    contextPercent: 71,
+    agents: [agent],
+    topologyAgents: [agent],
+    extraAgents: 0,
+    runningAgents: 0,
+    anomalyAgents: 0,
+    doneAgents: 0,
+    unknownAgents: 1,
+    catalogLoaded: true,
+    readOnly: true,
+  }
+  const tree = render(createEl(SessionView, {
+    t,
+    model: { session, loadSession: () => {} },
+    onBack: () => {},
+    onOpenSession: () => {},
+    onOpenAside: () => {},
+    copyText: () => Promise.resolve(true),
+  }))
+  const text = collectText(tree).join('\n')
+  assert.ok(text.includes('fleetSessionReadonly'), 'another session is read-only')
+  assert.ok(text.includes('fleetTopologyTitle'), 'the topology is present')
+  assert.ok(text.includes('fleetActivityUnavailable'), 'the activity stream is honest, not fake')
+  assert.ok(find(tree, (node) => node.props?.className === 'dsh-fleet-agent-card') !== null,
+    'the direct child renders as an agent card')
+})
+
+// ---- Agent Fleet: native primitives, visibility and the motion budget ----
+
+/** One FleetRow with the fields the views read. */
+function fleetRowStub(over = {}) {
+  return {
+    id: 'session-abc',
+    title: 'parent',
+    cwd: undefined,
+    parentId: undefined,
+    updatedAt: 1,
+    running: false,
+    pending: undefined,
+    statusKnown: true,
+    state: 'idle',
+    children: [],
+    childrenRunning: 0,
+    childrenUnknown: 0,
+    anomaly: false,
+    model: { provider: 'p', model: 'm' },
+    chain: undefined,
+    tokenUsage: undefined,
+    contextPressure: undefined,
+    ...over,
+  }
+}
+
+const fleetGroupStub = (row) => ({ id: 'w1', title: 'W1', path: '/w1', rows: [row], runningCount: 0 })
+
+const fleetAgentStub = (over = {}) => ({
+  id: 'child-1',
+  label: 'reviewer',
+  mode: 'continuable',
+  state: 'unknown',
+  running: false,
+  lastTurnCompleted: undefined,
+  model: { provider: 'p', model: 'm' },
+  timing: undefined,
+  tokenUsage: undefined,
+  task: undefined,
+  durationMs: undefined,
+  addressable: true,
+  ...over,
+})
+
+const fleetSessionStub = (agents, over = {}) => ({
+  row: fleetRowStub({ title: 'parent' }),
+  workspaceTitle: 'W',
+  workspacePath: '/w',
+  chain: undefined,
+  retryOverrides: 0,
+  contextPercent: undefined,
+  agents,
+  topologyAgents: agents,
+  extraAgents: 0,
+  runningAgents: agents.filter((agent) => agent.state === 'running').length,
+  anomalyAgents: 0,
+  doneAgents: 0,
+  unknownAgents: 0,
+  catalogLoaded: true,
+  readOnly: true,
+  ...over,
+})
+
+/** Every rendered node matching a predicate, depth first. */
+function collect(node, predicate, found = []) {
+  if (node === null || typeof node !== 'object') return found
+  if (Array.isArray(node)) {
+    for (const child of node) collect(child, predicate, found)
+    return found
+  }
+  if (predicate(node)) found.push(node)
+  collect(node.children, predicate, found)
+  return found
+}
+
+/** The GlobalView props with an empty model, so one test can add just what it paints. */
+function fleetGlobalModel(over = {}) {
+  return {
+    list: { phase: 'ready', ids: [], byId: {}, projectionsBySession: {} },
+    statuses: new Map(),
+    workspaces: { items: [], archivedSessionIds: [], pinnedSessionIds: [], state: 'ready', phase: 'ready', error: null },
+    rows: [],
+    summary: {
+      listError: false,
+      runningSessions: 0,
+      runningSessionsUnknown: 0,
+      runningAgents: 0,
+      runningAgentsUnknown: 0,
+      pending: 0,
+      pendingUnknown: 0,
+      anomalies: 0,
+      anomaliesUnknown: 0,
+      childrenUnknown: 0,
+    },
+    queue: [],
+    groups: [],
+    filteredGroups: [],
+    filteredRows: [],
+    scope: { total: 0, scope: 0, loaded: 0, unknown: 0 },
+    session: undefined,
+    listError: null,
+    workspaceError: null,
+    refreshing: false,
+    query: '',
+    filter: 'all',
+    now: 1,
+    setQuery: () => {},
+    setFilter: () => {},
+    refreshAll: () => {},
+    loadUnknown: () => {},
+    loadSession: () => {},
+    ...over,
+  }
+}
+
+function renderFleetGlobal(row, over = {}) {
+  const { GlobalView } = loadClient()
+  const group = fleetGroupStub(row)
+  return render(createEl(GlobalView, {
+    t: (key) => key,
+    model: fleetGlobalModel({
+      rows: [row],
+      filteredRows: [row],
+      groups: [group],
+      filteredGroups: [group],
+      scope: { total: 1, scope: 1, loaded: 1, unknown: 0 },
+      ...over,
+    }),
+    currentSessionId: row.id,
+    onDrill: () => {},
+    onOpenSession: () => {},
+  }))
+}
+
+function renderFleetSession(session, over = {}) {
+  const { SessionView } = loadClient()
+  return render(createEl(SessionView, {
+    t: (key) => key,
+    model: { session, loadSession: () => {}, ...over },
+    onBack: () => {},
+    onOpenSession: () => {},
+    onOpenAside: () => {},
+    copyText: () => Promise.resolve(true),
+  }))
+}
+
+test('the activity stream paints the handoff receipts it has, and never an empty timeline', () => {
+  const at = Date.UTC(2026, 9, 24, 1, 5, 0)
+  const tree = renderFleetSession(fleetSessionStub([], {
+    activity: [
+      { at, kind: 'delegate', rosterId: 'reviewer', outcome: undefined },
+      { at: at + 60_000, kind: 'finish', rosterId: undefined, outcome: 'done' },
+    ],
+  }))
+  const text = collectText(tree).join('\n')
+  assert.ok(text.includes('fleetActivityKind_delegate'))
+  assert.ok(text.includes('fleetActivityKind_finish'))
+  assert.ok(text.includes('reviewer'), 'a delegate names its roster role')
+  assert.ok(text.includes('done'), 'a finish names the outcome the model declared')
+  assert.equal(text.includes('fleetActivityUnavailable'), false,
+    'a connected stream must not claim it is not connected')
+  const times = collect(tree, (node) => node.props?.className === 'dsh-fleet-activity-time')
+  assert.equal(times.length, 2)
+  assert.match(String(times[0].props.children), /^\d{2}:\d{2}$/)
+  assert.equal(times[0].props.dateTime, new Date(at).toISOString(),
+    'the machine-readable time is the receipt time, not the render time')
+
+  // 空投影：自己的空态，不是"尚未接入"，也不是一条空时间线。
+  const empty = renderFleetSession(fleetSessionStub([], { activity: [] }))
+  const emptyText = collectText(empty).join('\n')
+  assert.ok(emptyText.includes('fleetActivityEmpty'))
+  assert.equal(emptyText.includes('fleetActivityUnavailable'), false)
+  assert.equal(collect(empty, (node) => node.type === 'ol').length, 0, 'no receipts means no list')
+})
+
+test('the session view paints the three budgets when every number is known, and hides them otherwise', () => {
+  const budget = {
+    delegations: { used: 3, limit: 8 },
+    reviews: { used: 1, limit: 1 },
+    newSessions: { used: 0, limit: 2 },
+  }
+  const tree = renderFleetSession(fleetSessionStub([], { budget }))
+  const text = collectText(tree).join('\n')
+  assert.ok(text.includes('fleetBudgetTitle'))
+  for (const key of ['fleetBudget_delegations', 'fleetBudget_reviews', 'fleetBudget_newSessions']) {
+    assert.ok(text.includes(key), `${key} is painted`)
+  }
+  assert.ok(text.includes('fleetBudgetValue'), 'the value is the localised use/limit template')
+  assert.ok(text.includes('fleetBudgetReset'), 'the one-line rule rides the block')
+  const bars = collect(tree, (node) => node.props?.className === 'dsh-fleet-budget-fill')
+  assert.deepEqual(bars.map((bar) => bar.props.style.width), ['38%', '100%', '0%'])
+  assert.equal(collect(tree, (node) => node.props?.className === 'dsh-fleet-budget-bar').length, 3,
+    'one bar per budget')
+
+  // 数字未知：整块不画，而不是画 0。
+  const hidden = renderFleetSession(fleetSessionStub([], { budget: undefined }))
+  assert.equal(collect(hidden, (node) => node.props?.className === 'dsh-fleet-budget').length, 0,
+    'unknown numbers mean no block — never zeros')
+})
+
+test('a long session title rides the native Tooltip, and the anchor drops its own title', () => {
+  const title = 'a very long session title that the row has to elide'
+  const tree = renderFleetGlobal(fleetRowStub({ title }))
+  const tip = find(tree, (node) => node.type === 'Tooltip')
+  assert.notEqual(tip, null, 'the session row wraps its drill button in the DSH Tooltip')
+  assert.equal(tip.props.label, title, 'the bubble carries the whole title, not a prefix')
+  const anchor = find(tip, (node) => node.type === 'button')
+  assert.notEqual(anchor, null, 'the tooltip anchors the focusable drill button')
+  assert.equal(anchor.props.className, 'dsh-fleet-session-main')
+  assert.equal(anchor.props.title, undefined,
+    'a focusable anchor must not keep the native title the tooltip replaces')
+  const model = find(tree, (node) => node.props?.className === 'dsh-fleet-row-model')
+  assert.equal(model.props.title, 'p/m', 'off the focus path the plain title stays')
+})
+
+test('the workspace group is a native DisclosureRow, not a hand-drawn fold button', () => {
+  const row = fleetRowStub({ title: 'row' })
+  const tree = renderFleetGlobal(row)
+  const disclosure = find(tree, (node) => node.type === 'DisclosureRow')
+  assert.notEqual(disclosure, null, 'the group head comes from ui-primitives')
+  assert.equal(disclosure.props.title, 'W1')
+  assert.equal(disclosure.props.open, true)
+  assert.equal(disclosure.props.expandable, true)
+  assert.equal(disclosure.props.expandOnRowClick, true,
+    'the whole 24px row is the disclosure target, so no inner button is needed')
+  assert.equal(disclosure.props.keepContentWhenOpen, true, 'the workspace path stays visible while open')
+  assert.equal(typeof disclosure.props.onToggle, 'function')
+  // The workspace path is DSH's own `PathLabel`, not a hand-rolled ellipsised span:
+  // it keeps the trailing segment visible and carries the full path on hover itself,
+  // so there is no `title` of ours to assert any more — the path is the prop.
+  assert.equal(disclosure.props.collapsedContent.type, 'PathLabel')
+  assert.equal(disclosure.props.collapsedContent.props.className, 'dsh-fleet-group-path')
+  assert.equal(disclosure.props.collapsedContent.props.path, '/w1')
+  assert.equal(disclosure.props.headerAccessory.props.className, 'dsh-fleet-group-counts')
+  const rows = find(disclosure, (node) => node.props?.className === 'dsh-fleet-session-list')
+  assert.notEqual(rows, null, 'the open group paints its rows as the disclosure content')
+  assert.equal(find(tree, (node) => node.props?.className === 'dsh-fleet-group-head'), null,
+    'no hand-drawn group button remains')
+})
+
+test('agent cards tooltip the name and the clamped task, and keep unknown a sentence', () => {
+  const agent = fleetAgentStub({ task: 'read every drawer and report the deltas' })
+  const tree = renderFleetSession(fleetSessionStub([agent]))
+  const tips = collect(tree, (node) => node.type === 'Tooltip')
+  assert.deepEqual(tips.map((tip) => tip.props.label),
+    ['parent', 'reviewer', 'read every drawer and report the deltas'],
+    'the topology root and the card name the agent, and the card also carries the full task')
+  const main = find(tree, (node) => node.props?.className === 'dsh-fleet-agent-main')
+  assert.equal(main.props.title, undefined, 'the wrapped card button drops its native title')
+  const model = find(tree, (node) => node.props?.className === 'dsh-fleet-agent-model')
+  assert.equal(model.props.title, 'p/m', 'the model line is not a tab stop, so it keeps its title')
+
+  const unknown = renderFleetSession(fleetSessionStub([fleetAgentStub()]))
+  const unknownTips = collect(unknown, (node) => node.type === 'Tooltip')
+  assert.deepEqual(unknownTips.map((tip) => tip.props.label), ['parent', 'reviewer', 'fleetAgentTaskUnknown'],
+    'a missing task is still a sentence, never an empty bubble')
+})
+
+test('the topology paints the shared rail and one flow dot, on the first running child only', () => {
+  const agents = [
+    fleetAgentStub({ id: 'a', label: 'first', state: 'running', running: true }),
+    fleetAgentStub({ id: 'b', label: 'second', state: 'running', running: true }),
+    fleetAgentStub({ id: 'c', label: 'third', state: 'done', running: false, lastTurnCompleted: true }),
+  ]
+  const tree = renderFleetSession(fleetSessionStub(agents))
+  const dots = collect(tree, (node) => node.props?.className === 'dsh-fleet-chip-flow')
+  assert.equal(dots.length, 1, 'two continuous animations is the budget: one root pulse, one drip')
+  assert.equal(dots[0].props['aria-hidden'], 'true', 'the drip is decoration, never the only state signal')
+  const chips = collect(tree, (node) => node.type === 'button' && /dsh-fleet-chip( |$)/.test(node.props?.className ?? ''))
+  assert.equal(chips.length, 3)
+  assert.ok(chips[0].props.className.includes('is-active'), 'the first running chip is the active one')
+  assert.equal(chips[1].props.className.includes('is-active'), false, 'the second running chip does not drip')
+  const rail = collect(tree, (node) => node.props?.className === 'dsh-fleet-topo-rail')
+  assert.equal(rail.length, 1, 'the shared rail is drawn once for the whole chip row')
+  assert.equal(rail[0].props['aria-hidden'], 'true')
+})
+
+test('the fleet motion budget is two animations, paused when hidden and gone under reduced motion', () => {
+  const styles = sourceOf('fleet/styles.ts')
+  const animations = (styles.match(/animation: dsh-fleet-[a-z]+/g) ?? []).sort()
+  assert.deepEqual(animations, ['animation: dsh-fleet-flow', 'animation: dsh-fleet-pulse'],
+    'no third continuous animation may be added')
+  assert.match(styles, /dsh-fleet-flow 1\.8s linear infinite/, 'the drip matches the prototype timing')
+  assert.match(styles, /dsh-fleet-pulse 2\.4s ease-in-out infinite/, 'the root keeps its slow pulse')
+  assert.match(styles, /@keyframes dsh-fleet-flow/)
+  assert.ok(styles.includes('.dsh-fleet[data-visible="false"] .dsh-fleet-chip-flow'))
+  assert.ok(styles.includes('.dsh-fleet[data-page-hidden="true"] .dsh-fleet-chip-flow'))
+  assert.ok(styles.includes('.dsh-fleet[data-page-hidden="true"] .dsh-fleet-topology-root-main.is-live .dsh-fleet-status-dot'))
+  assert.ok(styles.includes('.dsh-fleet[data-visible="false"] .dsh-fleet-topology-root-main.is-live .dsh-fleet-status-dot'))
+  assert.match(styles, /animation-play-state: paused/)
+  const reduced = styles.slice(styles.indexOf('@media (prefers-reduced-motion: reduce)'))
+  assert.ok(reduced.includes('.dsh-fleet-chip-flow'), 'reduced motion turns the drip off')
+  assert.ok(reduced.includes('.dsh-fleet-topology-root-main.is-live .dsh-fleet-status-dot'),
+    'reduced motion turns the root pulse off too')
+})
+
+test('the fleet never borrows agentTeam, Lead/teammate or the subagent chat internals', () => {
+  for (const name of ['fleet/index.ts', 'fleet/view.ts', 'fleet/useFleet.ts', 'fleet/controller.ts', 'fleet/model.ts']) {
+    const source = sourceOf(name)
+    assert.equal(/agentTeam|agent-team|teammate/.test(source), false, `${name} must not reference agent teams`)
+    assert.equal(/\bLead\b/.test(source), false, `${name} must not introduce a team Lead`)
+  }
+  const bundle = readFileSync(CLIENT_PATH, 'utf8')
+  assert.equal(/dsh-client-ui-subagent\/src/.test(bundle), false,
+    'importing the chat UI src would inline the whole subagent surface into this package')
+  assert.equal(/agentTeam/.test(bundle), false, 'the bundle carries no agent-team concept')
 })
 
 await Promise.all(pending)

@@ -27,3 +27,6 @@
 export { name, inject, apply } from './apply.ts'
 export { RouterPage } from './page.ts'
 export { routeStatus } from './format.ts'
+// The Fleet bodies are exported for the browser-harness state tests; the plugin
+// itself reaches them only through the sidebar-right seats.
+export { GlobalView, SessionView } from './fleet/view.ts'

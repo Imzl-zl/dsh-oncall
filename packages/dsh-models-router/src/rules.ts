@@ -17,9 +17,9 @@
  * .agents/notes/implemented/2026-10-17-policy-into-the-decision-core.md
  */
 
-import type { HealthConfig, NamedChain } from './config.ts'
+import type { HandoffConfig, HealthConfig, NamedChain } from './config.ts'
 import { chainLabel } from './chain.ts'
-import { isSwitchOnKey } from './defaults.ts'
+import { HANDOFF_FAILOVER_INHERIT, HANDOFF_FAILOVER_NONE, HANDOFF_INSTRUCTIONS_MAX, isSwitchOnKey } from './defaults.ts'
 import { routeKeyOf } from './routes.ts'
 
 /**
@@ -38,6 +38,7 @@ export type StructuralInput = {
   chains: NamedChain[]
   defaultChainId: string
   health?: HealthConfig
+  handoff?: HandoffConfig
 }
 
 /**
@@ -128,6 +129,93 @@ export function structuralViolations(config: StructuralInput): Violation[] {
         message: `model-router: health.breaker rule ${index + 1} matches nothing — fill in a code or a message`,
       })
     }
+  }
+  violations.push(...handoffViolations(config))
+  return violations
+}
+
+/**
+ * 名册的保存期校验（提案 §十二「保存期校验（恒定，与默认值无关）」）：
+ * `purpose` 非空；`preset` 与 `instructions` 至少一个非空；`instructions`
+ * ≤ {@link HANDOFF_INSTRUCTIONS_MAX} 字符；`id` 唯一。
+ *
+ * 这些是"在任何环境里都错"的规则，所以和链的规则一样放在这里、两边同源：
+ * host 抛第一条，浏览器把每一条渲染成字段级提示。`provider`/`model` 能不能
+ * 真的解析是环境事实（与候选同一条裁定），降级成界面上的警告，不在这里拒绝。
+ */
+function handoffViolations(config: StructuralInput): Violation[] {
+  const violations: Violation[] = []
+  const handoff = config.handoff
+  if (handoff === undefined) return violations
+  const chainIds = new Set(config.chains.map(chain => chain.id))
+  const rosterIds = new Set<string>()
+  for (const [index, entry] of (handoff.roster ?? []).entries()) {
+    const label = entry.name || entry.id || `#${index + 1}`
+    if (entry.id.trim() === '') {
+      violations.push({
+        key: 'problemRosterEmptyId',
+        vars: { index: index + 1 },
+        message: `model-router: handoff roster entry ${index + 1} has no id — the tool and the review ledger address a role by id`,
+      })
+    } else if (rosterIds.has(entry.id)) {
+      violations.push({
+        key: 'problemRosterDuplicateId',
+        vars: { index: index + 1, id: entry.id },
+        message: `model-router: two roster entries share the id '${entry.id}' — delegate would name an ambiguous role`,
+      })
+    }
+    rosterIds.add(entry.id)
+    // purpose 是模型选人的唯一依据：空白的工牌只能让模型凭名字猜人。
+    if (entry.purpose.trim() === '') {
+      violations.push({
+        key: 'problemRosterEmptyPurpose',
+        vars: { index: index + 1, role: label },
+        message: `model-router: roster entry '${label}' has an empty purpose — the model picks a role by it, so a blank one is a guess`,
+      })
+    }
+    // preset 与 instructions 都空 = "随便一个子智能体，只知道这次任务"，角色退化成摆设。
+    if (entry.preset.trim() === '' && entry.instructions.trim() === '') {
+      violations.push({
+        key: 'problemRosterNoDefinition',
+        vars: { index: index + 1, role: label },
+        message: `model-router: roster entry '${label}' sets neither preset nor instructions — the role would carry no personality at all`,
+      })
+    }
+    if (entry.instructions.length > HANDOFF_INSTRUCTIONS_MAX) {
+      violations.push({
+        key: 'problemRosterInstructionsTooLong',
+        vars: { index: index + 1, role: label, max: HANDOFF_INSTRUCTIONS_MAX, length: entry.instructions.length },
+        message: `model-router: roster entry '${label}' has ${entry.instructions.length} characters of instructions, `
+          + `over the ${HANDOFF_INSTRUCTIONS_MAX} limit — it enters the child's context on every delegation`,
+      })
+    }
+    // 只填一半不是路由：provider 没有 model 无处可发，反之亦然。
+    if ((entry.provider.trim() === '') !== (entry.model.trim() === '')) {
+      violations.push({
+        key: 'problemRosterHalfRoute',
+        vars: { index: index + 1, role: label },
+        message: `model-router: roster entry '${label}' sets only one of provider/model — a half route is not a route`,
+      })
+    }
+    // failover 指向一条不存在的链 = 失败后无处可去；点名拒绝，不静默当 inherit。
+    if (entry.failover !== HANDOFF_FAILOVER_INHERIT
+      && entry.failover !== HANDOFF_FAILOVER_NONE
+      && !chainIds.has(entry.failover)) {
+      violations.push({
+        key: 'problemRosterUnknownFailoverChain',
+        vars: { index: index + 1, role: label, chain: entry.failover },
+        message: `model-router: roster entry '${label}' fails over to '${entry.failover}', which names no chain`,
+      })
+    }
+  }
+  // 兜底角色必须真的存在：填错了就是一个永远不会发生的"自动派"。
+  const delegateTo = handoff.onUnreceiptedStop?.delegateTo ?? ''
+  if (delegateTo !== '' && !rosterIds.has(delegateTo)) {
+    violations.push({
+      key: 'problemUnreceiptedUnknownRole',
+      vars: { id: delegateTo },
+      message: `model-router: onUnreceiptedStop.delegateTo names '${delegateTo}', which is not in the roster`,
+    })
   }
   return violations
 }

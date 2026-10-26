@@ -270,3 +270,51 @@ export type SwitchOnCode = (typeof SWITCH_ON_CODES)[number]['code']
 export function switchOnKeyOf(code: string): SwitchOnKey | undefined {
   return SWITCH_ON_CODES.find(entry => entry.code === code)?.key
 }
+
+// ---- handoff (delegation roster) ----
+//
+// 值全部来自 docs/design/handoff-proposal.md §十二（用户 2026-10-23 裁定：
+// 会真实跑的一律默认关）。这里只放"两个半包都要读"的那几项：host schema 的
+// `.default()` 与浏览器草稿的补全必须同源，否则 UI 说关着、host 说开着。
+
+/** 名册里给子智能体的规范上限（字符）。超了保存期拒绝——它每次都进模型上下文。 */
+export const HANDOFF_INSTRUCTIONS_MAX = 4000
+
+/** `delegate` 能采的会话事实，封闭词表（提案 §4.3）。 */
+export const HANDOFF_ATTACH_ITEMS = ['goal', 'todos', 'userRequest', 'stats'] as const
+
+/** 接力简报能采的项：在 `delegate` 的词表之外多一条 `lastReview`（提案 §4.6）。 */
+export const HANDOFF_BRIEFING_ITEMS = ['goal', 'todos', 'userRequest', 'lastReview', 'stats'] as const
+
+/** 收工回执的三种落点（提案 §4.4）。 */
+export const HANDOFF_OUTCOMES = ['done', 'needs_user', 'abandoned'] as const
+
+/** 接力首条消息的"下一步类型"（提案 §4.6）。 */
+export const HANDOFF_NEXT_ACTIONS = ['continue', 'review', 'review-then-continue'] as const
+
+/** 名册角色的两种用途：复核者进复核账本，工作者不进。 */
+export const HANDOFF_ROLES = ['review', 'work'] as const
+
+/**
+ * 子会话失败之后跟哪条链走：`inherit`（默认）= 父会话的绑定，`none` = 不降级，
+ * 其余值是一条链的 id。它是名字，不是枚举——链 id 由用户命名，校验在结构规则里。
+ */
+export const HANDOFF_FAILOVER_INHERIT = 'inherit'
+export const HANDOFF_FAILOVER_NONE = 'none'
+
+/** `limits` 的默认值：每个数字都是"最多"，不是"必须"（提案 §8）。 */
+export const DEFAULT_HANDOFF_LIMITS = {
+  maxDelegationsPerTurn: 1,
+  maxDelegationsPerUserMessage: 8,
+  maxReviewsPerUserMessage: 1,
+  maxNewSessionsPerUserMessage: 2,
+  maxDelegationsPerDay: 24,
+  nudgeWhenUnreceipted: false,
+  maxNudgesPerTurn: 1,
+} as const
+
+/** 一个角色自最近一条用户消息以来的派发上限（提案 §5 的示例值）。 */
+export const DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE = 6
+
+/** 派发后端：DSH 的 subagent provider 名，不是模型渠道。 */
+export const DEFAULT_HANDOFF_SUBAGENT_BACKEND = 'spawn'

@@ -1,5 +1,6 @@
 /** One route's telemetry: the 24-bar window and the two figures that must not be blended. */
 
+import type { CSSProperties } from 'react'
 import { h } from './dom.ts'
 import { fill, formatLatency, formatThroughput, formatTime, formatWindowHours, healthToneStyle } from './format.ts'
 import { bucketTimeline, bucketTone, DEFAULT_TIMELINE_BUCKET_SECONDS, windowSuccessRate } from '../timeline.ts'
@@ -22,7 +23,9 @@ function TimelineBar(props) {
   var rate = bar.successRate
   // 空桶不是 0%：没有任何观测时画一条贴底的空槽，让它读作"没数据"而不是"全失败"。
   var height = rate === undefined ? 6 : Math.max(4, Math.round(rate * props.maxHeight))
-  var style = { height: height }
+  // A style object, not "an object with a height": the empty bucket also paints a
+  // dashed border, and only the declared element type makes that a legal key.
+  var style: CSSProperties = { height: height }
   if (rate === undefined) {
     style.background = 'transparent'
     style.border = '0.5px dashed var(--dsw-alias-border-l3)'

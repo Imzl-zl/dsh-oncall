@@ -74,6 +74,16 @@ function probeTone(verdict) {
   return 'outline'
 }
 
+/** One physical route as the health page lists it, with where it is used. */
+interface HealthChannel {
+  /** `provider/model`, the key every fold and the Host are keyed by. */
+  route: string
+  provider: string
+  model: string
+  /** Where this route appears in the draft: one entry per chain position. */
+  usages: { label: string }[]
+}
+
 export function GlobalHealthWorkspace(props) {
   var t = props.t
   var draft = props.draft
@@ -115,7 +125,10 @@ export function GlobalHealthWorkspace(props) {
   // the plugin does not know until a request arrives, so it can only appear once
   // it has been observed.
   var allChannels = useMemo(function () {
-    var map = {}
+    // Keyed by route, and declared as a route→channel table so `Object.values`
+    // yields channels instead of `unknown`: the row below reads `.route`,
+    // `.provider`, `.model` and `.usages`.
+    var map: Record<string, HealthChannel> = {}
     var ensure = function (provider, model) {
       if (!provider || !model) return null
       var key = routeKeyOf(provider, model)
@@ -136,7 +149,6 @@ export function GlobalHealthWorkspace(props) {
         // 单链之下没有"哪条规则"可跳：所有候选都属于同一条链。所以 usage 只说明
         // 它在这条链里的位次，不再做按规则的跳转。
         if (channel) channel.usages.push({
-          name: '__chain__',
           // 整句模板 + 占位符：拼 `t(key) + ' #' + n` 会印出「降级链第 #1」这种半中半英的序号。
           label: fill(t('channelUsedInChain'), { n: index + 1 }),
         })
@@ -303,13 +315,19 @@ export function GlobalHealthWorkspace(props) {
                     isProbingThis
                       ? h(Tag, { tone: 'warning' }, t('probingText'))
                       : probeVerdict
-                        ? h(Tag, { tone: probeTone(probeVerdict), title: probeVerdictTitle(t, probeVerdict) }, probeVerdictText(t, probeVerdict))
+                        // `Tag` 是只读徽标，只接 tone/className/children，不展开其余属性
+                        // （Tag.tsx:34-41）——所以 `title` 得挂在包着它的元素上。徽标不是
+                        // 可聚焦元素，按本仓库既有规矩（见 fleet：可聚焦的行用 Tooltip，
+                        // 非 tab stop 的用朴素 title）这里就是 title。
+                        ? h('span', { title: probeVerdictTitle(t, probeVerdict) },
+                            h(Tag, { tone: probeTone(probeVerdict) }, probeVerdictText(t, probeVerdict)))
                         : null),
                   h('div', { className: 'dsh-router-row-sub' },
                     channel.usages.length === 0
                       ? h(Tag, { tone: 'quiet' }, t('channelNotUsed'))
                       : channel.usages.map(function (usage, index) {
-                          return h(Tag, { key: index, tone: 'neutral', title: t('channelUsedInChainTip') }, usage.label)
+                          return h('span', { key: index, title: t('channelUsedInChainTip') },
+                            h(Tag, { tone: 'neutral' }, usage.label))
                         }))),
                 h('div', { className: 'dsh-router-row-end' },
                   h(Button, {

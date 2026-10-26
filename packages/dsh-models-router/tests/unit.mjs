@@ -34,8 +34,8 @@ import { breakerNotice } from '../src/notice.ts'
 import { assertStructural } from '../src/config.ts'
 import { structuralViolations } from '../src/rules.ts'
 import { POLICY_VERSION, SWITCH_ON_CODES, switchOnKeyOf } from '../src/defaults.ts'
-import { defaultSwitchOn, parseRetryInput, validate, BREAKER_CODE_PRESETS } from '../src/client/validate.ts'
-import { deepEqual, saveShortcutKeyKey } from '../src/client/format.ts'
+import { defaultSwitchOn, normalizeHandoff, normalizeHealth, parseRetryInput, validate, BREAKER_CODE_PRESETS } from '../src/client/validate.ts'
+import { deepEqual, fill, saveShortcutKeyKey } from '../src/client/format.ts'
 import { routeNames } from '../src/client/naming.ts'
 import { checkForUpdate, compareVersions } from '../src/update.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -45,6 +45,33 @@ import { checkConnectivity } from '../src/connectivity.ts'
 import { routeParts } from '../src/routes.ts'
 import { precheckTierOf } from '../src/precheck.ts'
 import { emptyBinding, SESSION_BINDINGS_DOMAIN, SessionBindings, sessionBindingsDomain } from '../src/bindings.ts'
+import {
+  FLEET_CONCURRENCY,
+  FLEET_SCOPE_LIMIT,
+  filterFleetRows,
+  fleetGroups,
+  fleetQueue,
+  fleetRows,
+  fleetScope,
+  fleetSession,
+  fleetSummary,
+  formatTokenCount,
+  totalTokens,
+  topLevelSessions,
+} from '../src/client/fleet/model.ts'
+import { createFleetController } from '../src/client/fleet/controller.ts'
+import { subagentChatAddress } from '../src/client/fleet/address.ts'
+import {
+  checkDelegateGate,
+  checkFinishGate,
+  checkNewSessionGate,
+  compileDescription,
+  handoffProjection,
+  HandoffLedger,
+  REVIEW_VERDICT_SCHEMA,
+} from '../src/handoff.ts'
+import { HANDOFF_KEY, handoffCounters } from '../src/handoff-wire.ts'
+import { HandoffRuntime, verdictOf } from '../src/handoff-tool.ts'
 
 let passed = 0
 const pending = []
@@ -815,8 +842,6 @@ test('single-field bounds belong to the schema: it refuses each value the delete
       `${label}: assertStructural must not re-guard it — that guard is what made the function look stricter than the schema`)
   }
 })
-
-console.log(`\n${passed} unit test(s) passed`)
 
 // ---- failover-history fold ----
 
@@ -1932,13 +1957,12 @@ test('checkConnectivity keeps its deadline even when the discovery answers after
   assert.equal(verdict.error, 'TIMEOUT', 'the late answer does not retroactively make the check reachable')
 })
 
-test('the history-failure lines carry the placeholders their callers fill', () => {
+test('the history-failure line carries the placeholder its caller fills', () => {
   // 少一个占位符，原因就永远不出现在屏幕上——而这条提示的全部价值就是那个原因。
+  // 「部分会话读不到」那一支随内联投影一起去掉了：一次 `session.list` 要么整份
+  // 读得到、要么整份读不到，浏览器再也没有逐会话失败可报。
   for (const [name, dict] of [['zh', zh], ['en', en]]) {
     assert.ok(dict.healthHistoryUnreadable.includes('{error}'), `${name} names the reason`)
-    for (const token of ['{failed}', '{total}', '{error}']) {
-      assert.ok(dict.healthHistoryPartial.includes(token), `${name} partial line has ${token}`)
-    }
   }
 })
 
@@ -1978,8 +2002,8 @@ test('every page, chain, budget and timeline key exists in both locales', () => 
     'firstHopRetriesNote',
     'fallbackChainSection', 'addCandidateBtn', 'toggleNeedsBtn',
     'switchOnTitle', 'triggerSummaryLine', 'retrySectionTitle', 'retrySectionHint',
-    'retryFormula', 'retryFormulaFirstOnly',
-    'retryHierarchyNote', 'stickyTurns', 'stickyTurnsHint', 'stickyTurnsOff',
+    'retryNoTotalCapNote', 'retryHierarchyNote', 'stickyTurns', 'stickyTurnsHint', 'stickyTurnsOff',
+    'outputContinuationTitle', 'outputContinuationHint', 'outputContinuationNote',
     'jumpToHealth', 'healthModalTitle', 'applyChanges',
     'timelineWindowLabel', 'timelineNoData', 'timelineBucketEmpty', 'timelineBucketTip',
     'timelineLegend', 'timelineScopeLine', 'timelineBucketLabel', 'timelineBucketHint',
@@ -2254,10 +2278,16 @@ test('the truncation controls are wired through every layer that owns the chain 
   const view = read('client/chain.ts')
   assert.match(view, /onMaxTokenContinue: props\.onMaxTokenContinue/)
   assert.match(view, /onMaxTokenContinues: props\.onMaxTokenContinues/)
-  // 以及控件本身：一个开关 + 一个步进器，都从草稿的 maxTokens 读值。
+  // 以及控件本身：输出续跑是独立分区，一个开关 + 一个步进器，都从草稿的 maxTokens 读值。
+  // 它不再和失败重试同处一个分区；RetrySection 里出现续跑文案就是两件事又混回去了。
   const section = read('client/pipeline.ts')
-  assert.match(section, /props\.maxTokens && props\.maxTokens\.autoContinue/)
+  assert.match(section, /export function OutputContinuationSection/)
+  assert.match(section, /var maxTokens = props\.maxTokens \?\? \{\}/)
+  assert.match(section, /props\.onMaxTokenContinue\(!auto\)/)
   assert.match(section, /props\.onMaxTokenContinues\(next\)/)
+  const retry = section.slice(section.indexOf('export function RetrySection'), section.indexOf('export function OutputContinuationSection'))
+  assert.equal(retry.includes('maxTokenContinueLabel'), false,
+    'output continuation must not be rendered inside the retry section')
 })
 
 import {
@@ -2894,6 +2924,1151 @@ test('a switch back to the user model is not called "降级 0"', () => {
   const text = message.content[0].text
   assert.match(text, /切回你选择的模型/)
   assert.doesNotMatch(text, /降级 0/)
+})
+
+// ---- Agent Fleet: unknown is not zero, and the topology is root -> direct children ----
+
+const fleetSummaryOf = (id, over = {}) => ({
+  id,
+  displayTitle: id,
+  running: false,
+  retainedBy: { referenceCount: 0, retainedBy: {} },
+  blank: false,
+  updatedAt: 1,
+  ...over,
+})
+
+const fleetList = ({ ids, byId, projectionsBySession = {}, phase = 'ready' }) => ({
+  ids, byId, phase, projectionsBySession,
+})
+
+const fleetProjection = (values, state = 'ready') => ({ state, error: null, values })
+
+const fleetWorkspaces = (items = []) => ({
+  items,
+  archivedSessionIds: [],
+  pinnedSessionIds: [],
+  state: 'ready',
+  phase: 'ready',
+  error: null,
+})
+
+test('the fleet never turns an unloaded catalog into zero agents', () => {
+  const list = fleetList({
+    ids: ['p'],
+    byId: { p: fleetSummaryOf('p') },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  const unknown = fleetSummary(rows, false)
+  assert.equal(unknown.runningAgents, undefined, 'an unloaded catalog is unknown, not 0')
+  assert.equal(unknown.runningAgentsUnknown, 1)
+  assert.equal(unknown.childrenUnknown, 0, 'no loaded catalog means no child-status sample to count')
+
+  const ready = fleetList({
+    ids: ['p'],
+    byId: { p: fleetSummaryOf('p') },
+    projectionsBySession: { p: fleetProjection({ subagentCatalog: [] }) },
+  })
+  const readyRows = fleetRows(ready, new Map(), new Map(), () => undefined)
+  const knownZero = fleetSummary(readyRows, false)
+  assert.equal(knownZero.runningAgents, 0, 'a ready empty catalog is a known zero')
+  assert.equal(knownZero.runningAgentsUnknown, 0)
+})
+
+test('a list read failure paints every fleet summary cell as unknown', () => {
+  const list = fleetList({
+    ids: ['p'],
+    byId: { p: fleetSummaryOf('p') },
+    projectionsBySession: { p: fleetProjection({ subagentCatalog: [] }) },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  const summary = fleetSummary(rows, true)
+  assert.equal(summary.listError, true)
+  for (const key of ['runningSessions', 'runningAgents', 'pending', 'anomalies']) {
+    assert.equal(summary[key], undefined, `${key} must be —, not a number`)
+  }
+})
+
+test('the fleet counts running direct children and pending approvals without inventing state', () => {
+  const child = fleetSummaryOf('c', { parentId: 'p', origin: 'subagent', running: true })
+  const list = fleetList({
+    ids: ['p', 'c'],
+    byId: { p: fleetSummaryOf('p', { running: true }), c: child },
+    projectionsBySession: {
+      p: fleetProjection({
+        subagentCatalog: [{ id: 'c', createdAt: 1, mode: 'continuable', label: 'reviewer' }],
+      }),
+    },
+  })
+  const statuses = new Map([
+    ['p', { running: true, pendingInteraction: { key: 'a', kind: 'approval', sessionId: 'p' }, completionUnread: false }],
+  ])
+  const rows = fleetRows(list, statuses, new Map(), () => undefined)
+  const summary = fleetSummary(rows, false)
+  assert.equal(summary.runningSessions, 1)
+  assert.equal(summary.runningAgents, 1)
+  assert.equal(summary.pending, 1)
+  assert.deepEqual(fleetQueue(rows).map((item) => item.kind), ['approval'])
+  assert.equal(rows[0].state, 'running')
+})
+
+test('a child whose latest turn did not complete is "not normal", never "failed"', () => {
+  const child = fleetSummaryOf('c', { parentId: 'p', origin: 'subagent', running: false })
+  const list = fleetList({
+    ids: ['p', 'c'],
+    byId: { p: fleetSummaryOf('p'), c: child },
+    projectionsBySession: {
+      p: fleetProjection({
+        subagentCatalog: [{ id: 'c', createdAt: 1, mode: 'continuable', label: 'reviewer' }],
+      }),
+      c: fleetProjection({ subagentTiming: { settledMs: 1200, lastTurnCompleted: false } }),
+    },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  assert.equal(rows[0].anomaly, true)
+  const session = fleetSession(
+    list, new Map(), 'p', new Map(), () => undefined, fleetWorkspaces(), () => true, 'p',
+  )
+  assert.equal(session.agents[0].state, 'anomaly')
+  assert.equal(session.agents[0].label, 'reviewer')
+  assert.equal(zh.fleetAgentAnomaly.includes('失败'), false, 'the Chinese copy must not say 失败')
+  assert.equal(en.fleetAgentAnomaly.toLowerCase().includes('fail'), false, 'the English copy must not say failed')
+})
+
+test('a child timing that is absent is unknown, not a completed turn', () => {
+  const child = fleetSummaryOf('c', { parentId: 'p', origin: 'subagent', running: false })
+  const list = fleetList({
+    ids: ['p', 'c'],
+    byId: { p: fleetSummaryOf('p'), c: child },
+    projectionsBySession: {
+      p: fleetProjection({
+        subagentCatalog: [{ id: 'c', createdAt: 1, mode: 'continuable', label: 'reviewer' }],
+      }),
+    },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  assert.equal(rows[0].anomaly, undefined, 'no timing sample means unknown, not false')
+  const session = fleetSession(
+    list, new Map(), 'p', new Map(), () => undefined, fleetWorkspaces(), () => true, 'p',
+  )
+  assert.equal(session.agents[0].state, 'unknown')
+})
+
+test('the fleet activity stream reads the handoff projection and keeps its three states apart', () => {
+  const view = (handoff) => fleetSession(
+    fleetList({
+      ids: ['p'],
+      byId: { p: fleetSummaryOf('p') },
+      projectionsBySession: {
+        p: fleetProjection(handoff === undefined
+          ? { subagentCatalog: [] }
+          : { subagentCatalog: [], [HANDOFF_KEY]: handoff }),
+      },
+    }),
+    new Map(), 'p', new Map(), () => undefined, fleetWorkspaces(), () => true, 'p',
+  )
+  const emptyProjection = { epoch: 1, stats: { turns: 0, compactions: 0, toolFailures: 0 }, pending: [], records: [] }
+
+  // 没有这个 key：投影未加载，活动流保持"尚未接入"，不画空时间线。
+  assert.equal(view(undefined).activity, undefined)
+  // key 在、records 空：已接入但还没有回执——已知的 0，和"未接入"是两种状态。
+  assert.deepEqual(view(emptyProjection).activity, [])
+  // 有回执：最新的在前，只带投影真的折叠过的字段。
+  assert.deepEqual(view({
+    ...emptyProjection,
+    records: [
+      { at: 1000, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'reviewer' },
+      { at: 2000, epoch: 1, turn: 1, kind: 'finish', outcome: 'done' },
+    ],
+  }).activity, [
+    { at: 2000, kind: 'finish', rosterId: undefined, outcome: 'done' },
+    { at: 1000, kind: 'delegate', rosterId: 'reviewer', outcome: undefined },
+  ])
+  // 一个形状不对的行不会变成一行假活动。
+  assert.deepEqual(view({
+    ...emptyProjection,
+    records: [{ at: 'x', kind: 'delegate' }, { kind: 'finish' }, null, 'delegate'],
+  }).activity, [])
+})
+
+test('the fleet budgets add what a relay carried in, and hide when a number is unknown', () => {
+  const list = (handoff) => fleetList({
+    ids: ['p'],
+    byId: { p: fleetSummaryOf('p') },
+    projectionsBySession: {
+      p: fleetProjection(handoff === undefined
+        ? { subagentCatalog: [] }
+        : { subagentCatalog: [], [HANDOFF_KEY]: handoff }),
+    },
+  })
+  const config = {
+    limits: { delegations: 8, reviews: 1, newSessions: 2 },
+    reviewIds: new Set(['reviewer']),
+  }
+  // epoch 2 是这个人的消息：epoch 1 的那次派发不算。
+  const state = {
+    epoch: 2,
+    openTurn: 3,
+    stats: { turns: 1, compactions: 0, toolFailures: 0 },
+    pending: [],
+    records: [
+      { at: 1, epoch: 2, turn: 3, kind: 'delegate', rosterId: 'coder' },
+      { at: 2, epoch: 2, turn: 3, kind: 'delegate', rosterId: 'reviewer' },
+      { at: 3, epoch: 2, turn: 3, kind: 'newSession' },
+      { at: 4, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'coder' },
+    ],
+  }
+  const carried = { carried: true, delegations: 4, reviews: 0, newSessions: 1, perRole: { coder: 2 } }
+  const view = (handoff, input) => fleetSession(
+    list(handoff), new Map(), 'p', new Map(), () => undefined, fleetWorkspaces(), () => true, 'p', input,
+  )
+
+  const budget = view(state, { carried, config }).budget
+  assert.deepEqual(budget, {
+    delegations: { used: 6, limit: 8 },
+    reviews: { used: 1, limit: 1 },
+    newSessions: { used: 2, limit: 2 },
+  })
+  // 文案模板与数字拼法：两本字典都写成同一句，数字来自模型而不是用例里再写一遍。
+  assert.equal(fill(zh.fleetBudgetValue, budget.delegations), '6 / 8')
+  assert.equal(fill(en.fleetBudgetValue, budget.delegations), '6 / 8')
+
+  // carried 还没读回来 = 未知：整块隐藏，不是把投影数字当成全部。
+  assert.equal(view(state, { carried: undefined, config }).budget, undefined)
+  // handoff 关着 = 没有预算可说。
+  assert.equal(view(state, { carried, config: undefined }).budget, undefined)
+  // 投影未加载 = 未知。
+  assert.equal(view(undefined, { carried, config }).budget, undefined)
+})
+
+test('the fleet groups by workspace and keeps running rows first', () => {
+  const workspaces = fleetWorkspaces([{
+    workspaceId: 'w1', path: '/w1', title: 'W1', sessionIds: ['a', 'b'], createdAt: '', updatedAt: '',
+  }])
+  const list = fleetList({
+    ids: ['a', 'b'],
+    byId: {
+      a: fleetSummaryOf('a', { running: false, updatedAt: 20 }),
+      b: fleetSummaryOf('b', { running: true, updatedAt: 10 }),
+    },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  const groups = fleetGroups(rows, workspaces)
+  assert.equal(groups.length, 1)
+  assert.deepEqual(groups[0].rows.map((row) => row.id), ['b', 'a'])
+  assert.equal(groups[0].runningCount, 1)
+})
+
+test('the fleet scope reports loaded and unknown without hiding the tail', () => {
+  const ids = Array.from({ length: FLEET_SCOPE_LIMIT + 2 }, (_, index) => `s${String(index).padStart(2, '0')}`)
+  // The list orders by updatedAt desc; make the array order and the recency order agree.
+  const byId = Object.fromEntries(ids.map((id, index) => [id, fleetSummaryOf(id, { updatedAt: 1000 - index })]))
+  const projectionsBySession = Object.fromEntries(ids.slice(0, FLEET_SCOPE_LIMIT - 2)
+    .map((id) => [id, fleetProjection({ subagentCatalog: [] })]))
+  const list = fleetList({ ids, byId, projectionsBySession })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  const scope = fleetScope(rows)
+  assert.equal(scope.total, FLEET_SCOPE_LIMIT + 2)
+  assert.equal(scope.scope, FLEET_SCOPE_LIMIT)
+  assert.equal(scope.loaded, FLEET_SCOPE_LIMIT - 2)
+  assert.equal(scope.unknown, 4)
+})
+
+test('search and filters only read the loaded rows', () => {
+  const list = fleetList({
+    ids: ['alpha', 'beta'],
+    byId: {
+      alpha: fleetSummaryOf('alpha', { running: true }),
+      beta: fleetSummaryOf('beta', { running: false }),
+    },
+  })
+  const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+  assert.deepEqual(filterFleetRows(rows, 'alph', 'all').map((row) => row.id), ['alpha'])
+  assert.deepEqual(filterFleetRows(rows, '', 'running').map((row) => row.id), ['alpha'])
+  assert.deepEqual(filterFleetRows(rows, '', 'pending'), [])
+})
+
+test('the fleet token total is the four disjoint buckets, and absent usage stays absent', () => {
+  assert.equal(totalTokens({ uncachedInputTokens: 10, outputTokens: 5, cacheReadTokens: 2, cacheWriteTokens: 1 }), 18)
+  assert.equal(totalTokens(undefined), undefined)
+  assert.equal(formatTokenCount(1234), '1.2k')
+  assert.equal(formatTokenCount(999), '999')
+})
+
+test('the subagent chat address matches DSH native fixture', () => {
+  assert.equal(
+    subagentChatAddress({ parentSessionId: 'parent/a', childSessionId: 'child#1', mode: 'continuable' }),
+    'dsh-resource://subagentchat/session/child%231?parent=parent%2Fa&mode=continuable',
+  )
+})
+
+// ---- Agent Fleet: scheduling belongs to the tab's visibility ----
+
+const fleetControllerHarness = () => {
+  const started = []
+  const inflight = []
+  const ctx = {
+    sessions: {
+      refresh: () => Promise.resolve(),
+      refreshProjections: (id) => {
+        started.push(id)
+        return new Promise((resolve) => { inflight.push({ id, resolve }) })
+      },
+    },
+  }
+  const controller = createFleetController(ctx, {
+    scope: { getSnapshot: () => ({ value: {} }) },
+    t: (key) => key,
+  })
+  return { controller, started, inflight }
+}
+
+const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+test('pausing the fleet controller stops the queue and drops repaints until it resumes', async () => {
+  const h = fleetControllerHarness()
+  let paints = 0
+  h.controller.subscribe(() => { paints += 1 })
+
+  h.controller.ensureSessions(['a', 'b', 'c', 'd', 'e', 'f'])
+  assert.deepEqual(h.started, ['a', 'b', 'c', 'd'], 'the first paint fills the four read slots')
+
+  h.controller.pause()
+  h.inflight[0].resolve()
+  await settle()
+  assert.equal(h.started.length, FLEET_CONCURRENCY, 'nothing new is dispatched while the body is off screen')
+  assert.equal(paints, 0, 'a read that settles while hidden does not repaint the hidden body')
+
+  h.controller.resume()
+  assert.equal(paints, 1, 'resume repaints once so the settled read reaches the view')
+  assert.deepEqual(h.started, ['a', 'b', 'c', 'd', 'e'], 'the queue continues from where it stopped')
+
+  h.controller.dispose()
+  h.inflight[1].resolve()
+  await settle()
+  assert.equal(h.started.length, FLEET_CONCURRENCY + 1, 'dispose cancels nothing that was already dispatched')
+  assert.equal(paints, 1, 'and it stops repainting for good')
+})
+
+test('a paused body still queues what it asked for, and resume is idempotent', async () => {
+  const h = fleetControllerHarness()
+  h.controller.ensureSessions(['a'])
+  h.controller.pause()
+  h.controller.ensureSessions(['b', 'c'])
+  assert.deepEqual(h.started, ['a'], 'queued reads wait for the body to come back')
+
+  h.controller.resume()
+  h.controller.resume()
+  assert.deepEqual(h.started, ['a', 'b', 'c'], 'a second resume neither duplicates nor drops the queue')
+})
+
+test('the fleet controller reads the carried budget and the configured limits, and a refusal stays unknown', async () => {
+  const calls = []
+  const scopeValue = {
+    handoff: {
+      enabled: true,
+      roster: [{ id: 'reviewer', role: 'review', purpose: '复核', instructions: '只读' }],
+      limits: { maxDelegationsPerUserMessage: 8, maxReviewsPerUserMessage: 1, maxNewSessionsPerUserMessage: 2 },
+    },
+  }
+  const sessions = { refresh: () => Promise.resolve(), refreshProjections: () => Promise.resolve() }
+  const controller = createFleetController({
+    sessions,
+    remote: {
+      routerHealth: {
+        handoffCarried: (sessionId) => {
+          calls.push(sessionId)
+          return Promise.resolve({
+            ok: true,
+            value: { carried: true, delegations: 4, reviews: 0, newSessions: 1, perRole: { coder: 2 } },
+          })
+        },
+      },
+    },
+  }, { scope: { getSnapshot: () => ({ value: scopeValue }) }, t: (key) => key })
+
+  // 上限与"谁是复核角色"都来自浏览器自己那份配置，和名册页看到的是同一份。
+  assert.deepEqual(controller.handoffBudgetConfig(), {
+    limits: { delegations: 8, reviews: 1, newSessions: 2 },
+    reviewIds: new Set(['reviewer']),
+  })
+  assert.equal(controller.carriedSnapshot().size, 0, 'nothing is read before the view asks')
+  assert.deepEqual(await controller.loadCarried('s1'), {
+    carried: true, delegations: 4, reviews: 0, newSessions: 1, perRole: { coder: 2 },
+  })
+  assert.equal((await controller.loadCarried('s1')).delegations, 4, 'the second read is the cache')
+  assert.deepEqual(calls, ['s1'], 'and the Host is asked once')
+
+  // 被拒的读是未知，不是"没带预算"：缓存留空，预算块因此隐藏。
+  const refused = createFleetController({
+    sessions,
+    remote: { routerHealth: { handoffCarried: () => Promise.resolve({ ok: false, error: { code: 'gateway/denied' } }) } },
+  }, { scope: { getSnapshot: () => ({ value: scopeValue }) }, t: (key) => key })
+  assert.equal(await refused.loadCarried('s1'), undefined)
+  assert.equal(refused.carriedSnapshot().has('s1'), false)
+
+  // handoff 关着：没有预算可说（整块隐藏），而不是画 0/8。
+  const off = createFleetController({ sessions }, {
+    scope: { getSnapshot: () => ({ value: { handoff: { enabled: false, roster: [] } } }) },
+    t: (key) => key,
+  })
+  assert.equal(off.handoffBudgetConfig(), undefined)
+})
+
+test('a projection in state=error is unknown, not an empty catalog', () => {
+  for (const state of ['error', 'migration-required']) {
+    const child = fleetSummaryOf('c', { parentId: 'p', origin: 'subagent', running: false })
+    const list = fleetList({
+      ids: ['p', 'c'],
+      byId: { p: fleetSummaryOf('p'), c: child },
+      projectionsBySession: {
+        p: fleetProjection({
+          subagentCatalog: [{ id: 'c', createdAt: 1, mode: 'continuable', label: 'reviewer' }],
+        }, state),
+      },
+    })
+    const rows = fleetRows(list, new Map(), new Map(), () => undefined)
+    assert.equal(rows[0].children, undefined, `state=${state} is not a loaded catalog`)
+    assert.equal(rows[0].anomaly, undefined, `state=${state} carries no timing sample`)
+    assert.equal(fleetSummary(rows, false).runningAgents, undefined, `state=${state} keeps the cell at —`)
+    const session = fleetSession(
+      list, new Map(), 'p', new Map(), () => undefined, fleetWorkspaces(), () => true, 'p',
+    )
+    assert.equal(session.catalogLoaded, false, `state=${state} goes behind the explicit load, not an empty topology`)
+    assert.equal(session.agents.length, 0)
+  }
+})
+
+test('the fleet 8s list timeout is a localized sentence with the seconds kept in one place', () => {
+  const source = readFileSync(new URL('../src/client/fleet/controller.ts', import.meta.url), 'utf8')
+  assert.match(source, /const REFRESH_TIMEOUT_MS = 8000/, 'the liveness guard keeps its one budget')
+  assert.match(source, /fill\(options\.t\('fleetListTimeout'\), \{ seconds: REFRESH_TIMEOUT_MS \/ 1000 \}\)/,
+    'the message is a locale key filled from the same constant, not English prose')
+  for (const [name, table] of [['zh', zh], ['en', en]]) {
+    assert.equal(typeof table.fleetListTimeout, 'string', `${name} carries the timeout key`)
+    assert.match(table.fleetListTimeout, /\{seconds\}/, `${name} keeps the seconds a parameter`)
+    assert.ok(fill(table.fleetListTimeout, { seconds: 8 }).includes('8'), `${name} fills the number`)
+  }
+})
+
+// ---- handoff: roster compilation, projection counters and the gates ----
+//
+// 这些是纯函数：投影的 apply、四个闸门、描述编译。真实 Loader 组合里"工具注册 +
+// 拒绝路径"由 run.mjs 的场景覆盖，这里钉的是"计数与拒绝条件本身"。
+
+const rosterEntry = (over = {}) => ({
+  id: 'reviewer',
+  name: '复核',
+  role: 'review',
+  purpose: '独立复核：判断目标是否真的达成，列出缺口。',
+  instructions: '你只读工件，不改文件。',
+  preset: '',
+  provider: '',
+  model: '',
+  reasoningEffort: '',
+  maxTokens: 0,
+  failover: 'inherit',
+  attach: ['goal', 'todos', 'userRequest', 'stats'],
+  maxRunsPerUserMessage: 6,
+  ...over,
+})
+
+const handoffConfig = (over = {}) => ({
+  enabled: true,
+  subagentBackend: 'spawn',
+  roster: [rosterEntry()],
+  protocol: {
+    delegate: true,
+    finish: true,
+    facts: true,
+    requireReviewFor: [],
+    allowReviewOverride: true,
+  },
+  limits: {
+    maxDelegationsPerTurn: 1,
+    maxDelegationsPerUserMessage: 8,
+    maxReviewsPerUserMessage: 1,
+    maxNewSessionsPerUserMessage: 2,
+    maxDelegationsPerDay: 24,
+    nudgeWhenUnreceipted: false,
+    maxNudgesPerTurn: 1,
+  },
+  onUnreceiptedStop: { delegateTo: '', reportToUser: true },
+  newSession: {
+    onFinish: [],
+    nextAction: 'continue',
+    briefing: ['goal', 'todos', 'userRequest', 'lastReview', 'stats'],
+    keepGoal: true,
+    carrySelection: true,
+    carryChainBinding: true,
+  },
+  ...over,
+})
+
+const handoffGate = (over = {}) => ({
+  config: handoffConfig(),
+  counters: { epoch: 1, turnDelegations: 0, delegations: 0, reviews: 0, newSessions: 0, perRole: {} },
+  carried: undefined,
+  reviews: [],
+  goalActive: false,
+  ...over,
+})
+
+test('the tool description carries every purpose and never the instructions', () => {
+  // 一个字段只有一个读者：purpose 进主模型的菜单，instructions 只进子会话。
+  // 描述每轮都进上下文，把 instructions 也编进去等于每次派发前先给主模型看一遍岗位规范。
+  const config = handoffConfig({
+    roster: [
+      rosterEntry({ id: 'reviewer', purpose: 'PURPOSE-REVIEW', instructions: 'INSTRUCTIONS-REVIEW' }),
+      rosterEntry({ id: 'coder', role: 'work', purpose: 'PURPOSE-CODE', instructions: 'INSTRUCTIONS-CODE' }),
+    ],
+  })
+  const description = compileDescription(config)
+  assert.ok(description.includes('PURPOSE-REVIEW') && description.includes('PURPOSE-CODE'))
+  assert.equal(description.includes('INSTRUCTIONS-REVIEW'), false, 'instructions never reach the main model')
+  assert.equal(description.includes('INSTRUCTIONS-CODE'), false)
+})
+
+test('an empty roster still registers a tool that refuses delegation', () => {
+  const description = compileDescription(handoffConfig({ roster: [] }))
+  assert.match(description, /No roles are configured/)
+})
+
+test('the projection resets the budget on a human message and only on a human message', () => {
+  const human = { type: 'user/message', time: 1, data: { content: [{ type: 'text', text: 'do it' }], source: { kind: 'user' } } }
+  const briefing = { type: 'user/message', time: 2, data: { content: [{ type: 'text', text: 'carry on' }], source: { kind: 'model-router-handoff', form: 'notice', summary: 'x' } } }
+  const settled = { type: 'user/message', time: 3, data: { content: [{ type: 'text', text: 'child done' }], source: { kind: 'subagent-settled', form: 'notice', summary: 'y', senderSessionId: 's' } } }
+  let state = handoffProjection.init()
+  state = handoffProjection.apply(state, human)
+  assert.equal(state.epoch, 1)
+  assert.equal(state.lastUserText, 'do it')
+  state = handoffProjection.apply(state, briefing)
+  state = handoffProjection.apply(state, settled)
+  assert.equal(state.epoch, 1, 'the plugin\'s own messages do not reset the budget')
+})
+
+test('a refused call spends no budget, a successful one does', () => {
+  const call = (callId) => ({ type: 'tool/call', time: 5, data: { turn: 1, step: 1, callId, name: 'handoff', arguments: '{"action":"delegate","rosterId":"reviewer"}' } })
+  const result = (callId, isError) => ({ type: 'tool/result', time: 6, data: { turn: 1, step: 1, message: { toolCallId: callId, isError }, ...isError ? { error: { name: 'HarnessError', code: 'HANDOFF_ROLE_BUDGET' } } : {} } })
+  const reviews = new Set(['reviewer'])
+  let state = handoffProjection.init()
+  state = handoffProjection.apply(state, { type: 'step/start', time: 4, data: { turn: 1, step: 1 } })
+  state = handoffProjection.apply(state, call('a'))
+  state = handoffProjection.apply(state, result('a', true))
+  assert.equal(handoffCounters(state, reviews).delegations, 0, 'a refusal is not a delegation')
+  state = handoffProjection.apply(state, call('b'))
+  state = handoffProjection.apply(state, result('b', false))
+  const counters = handoffCounters(state, reviews)
+  assert.equal(counters.delegations, 1)
+  assert.equal(counters.turnDelegations, 1)
+  assert.equal(counters.reviews, 1, 'a review role counts against the review budget')
+  assert.deepEqual(counters.perRole, { reviewer: 1 })
+})
+
+test('the fold keeps a finish outcome and never attaches one to another action', () => {
+  const call = (callId, args) => ({ type: 'tool/call', time: 5, data: { turn: 1, step: 1, callId, name: 'handoff', arguments: args } })
+  const result = callId => ({ type: 'tool/result', time: 6, data: { turn: 1, step: 1, message: { toolCallId: callId } } })
+  let state = handoffProjection.init()
+  state = handoffProjection.apply(state, { type: 'step/start', time: 4, data: { turn: 1, step: 1 } })
+  state = handoffProjection.apply(state, call('a', '{"action":"finish","outcome":"done"}'))
+  state = handoffProjection.apply(state, result('a'))
+  // delegate 的 arguments 里就算带了 outcome，也不是它声明过的事。
+  state = handoffProjection.apply(state, call('b', '{"action":"delegate","rosterId":"reviewer","outcome":"done"}'))
+  state = handoffProjection.apply(state, result('b'))
+  assert.deepEqual(state.records.map(record => [record.kind, record.outcome ?? null]), [
+    ['finish', 'done'],
+    ['delegate', null],
+  ])
+})
+
+test('the finish gate refuses done while a goal is active', () => {
+  assert.throws(
+    () => checkFinishGate(handoffGate({ goalActive: true }), { outcome: 'done' }),
+    /HANDOFF_GOAL_ACTIVE|active goal/,
+  )
+  assert.doesNotThrow(() => checkFinishGate(handoffGate({ goalActive: true }), { outcome: 'needs_user' }))
+})
+
+test('the review gate only accepts a passing review from after the last human message', () => {
+  const config = handoffConfig({ protocol: { ...handoffConfig().protocol, requireReviewFor: ['done'] } })
+  const gate = (reviews) => handoffGate({ config, reviews })
+  assert.throws(() => checkFinishGate(gate([]), { outcome: 'done' }), /no review/)
+  // 旧 epoch 的复核是"人说话之前"的结论：失败关闭。
+  assert.throws(
+    () => checkFinishGate(gate([{ childId: 'c1', rosterId: 'reviewer', epoch: 0, verdict: 'pass', gaps: [], at: 1 }]), { outcome: 'done' }),
+    /no review/,
+  )
+  assert.throws(
+    () => checkFinishGate(gate([{ childId: 'c1', rosterId: 'reviewer', epoch: 1, verdict: 'gaps', gaps: ['缺测试'], at: 1 }]), { outcome: 'done' }),
+    /缺测试/,
+  )
+  assert.doesNotThrow(() => checkFinishGate(
+    gate([{ childId: 'c1', rosterId: 'reviewer', epoch: 1, verdict: 'pass', gaps: [], at: 1 }]),
+    { outcome: 'done' },
+  ))
+  // 说明理由可以跳过，但只有配置允许时。
+  assert.doesNotThrow(() => checkFinishGate(gate([]), { outcome: 'done', reviewOverride: '时间不够' }))
+  const strict = handoffConfig({ protocol: { ...config.protocol, allowReviewOverride: false } })
+  assert.throws(() => checkFinishGate(handoffGate({ config: strict }), { outcome: 'done', reviewOverride: '时间不够' }), /reviewOverride is disabled/)
+})
+
+test('an auto-relay outcome must carry a handoff note', () => {
+  const config = handoffConfig({ newSession: { ...handoffConfig().newSession, onFinish: ['done'] } })
+  assert.throws(() => checkFinishGate(handoffGate({ config }), { outcome: 'done' }), /handoffNote/)
+  assert.doesNotThrow(() => checkFinishGate(handoffGate({ config }), { outcome: 'done', handoffNote: '从测试开始' }))
+})
+
+test('the delegation gates count turn, message and role budgets separately', () => {
+  const entry = rosterEntry({ role: 'work' })
+  const gate = (counters) => handoffGate({ counters: { ...handoffGate().counters, ...counters } })
+  assert.throws(() => checkDelegateGate(gate({ turnDelegations: 1 }), entry), /maxDelegationsPerTurn/)
+  assert.throws(() => checkDelegateGate(gate({ delegations: 8 }), entry), /maxDelegationsPerUserMessage/)
+  assert.throws(() => checkDelegateGate(gate({ perRole: { reviewer: 6 } }), entry), /its limit is 6/)
+  assert.doesNotThrow(() => checkDelegateGate(gate({}), entry))
+  // 复核上限只挡复核角色。
+  assert.throws(() => checkDelegateGate(gate({ reviews: 1 }), rosterEntry()), /maxReviewsPerUserMessage/)
+  assert.doesNotThrow(() => checkDelegateGate(gate({ reviews: 1 }), entry))
+})
+
+test('the new-session gate counts the budget carried across sessions', () => {
+  assert.throws(() => checkNewSessionGate(handoffGate(), ''), /handoffNote/)
+  assert.doesNotThrow(() => checkNewSessionGate(handoffGate(), '继续'))
+  // 接力复制过去的计数也算：换一个会话不能把预算刷满。
+  assert.throws(
+    () => checkNewSessionGate(handoffGate({ carried: { delegations: 0, reviews: 0, newSessions: 2, perRole: {} } }), '继续'),
+    /maxNewSessionsPerUserMessage/,
+  )
+})
+
+test('a reviewer that returns no structured verdict fails closed', () => {
+  assert.deepEqual(verdictOf(undefined).verdict, 'gaps')
+  assert.deepEqual(verdictOf({ verdict: 'pass' }).verdict, 'pass')
+  assert.deepEqual(verdictOf({ verdict: 'gaps', gaps: ['a'] }).gaps, ['a'])
+})
+
+// ---- handoff runtime: 六步接力、facts、派发组装与复核结算 ----
+//
+// HandoffRuntime 本来就是依赖注入的（HandoffFaces）：这里用假 faces 驱动真实代码。
+// 不把 @deepseek-ai/dsh-api-session-controller 塞进 headless 组合——它 inject 一串服务，
+// 会把组合测试变成第二套宿主，而那正是本轮要避免的事。
+
+/** 一个假 agent：一个会话 id、它 append 过的消息、它被唤醒时收到的消息。 */
+function handoffAgent(id, options = {}) {
+  const appended = []
+  const followed = []
+  const log = options.log
+  return {
+    session: {
+      id,
+      header: { cwd: 'D:\\work', ...options.header },
+      append(type, message, appendOptions) {
+        if (log !== undefined) log.push('session.append')
+        appended.push({ type, message, options: appendOptions })
+      },
+    },
+    followup(message) {
+      if (log !== undefined) log.push('followup')
+      followed.push(message)
+    },
+    appended,
+    followed,
+  }
+}
+
+/** 投影面：一个 handoff 状态与一份 todos；缺席就是"未加载"，不是空值。 */
+function handoffProjections(state, todos) {
+  return {
+    stateOf(_session, key) { return key === HANDOFF_KEY ? state : undefined },
+    snapshot() { return { values: todos === undefined ? {} : { todos } } },
+  }
+}
+
+const handoffState = (over = {}) => ({
+  epoch: 1,
+  stats: { turns: 3, compactions: 1, toolFailures: 2 },
+  pending: [],
+  records: [],
+  ...over,
+})
+
+/** 账本的两张表（reviews / budgets），按表名分开记，写入可断言。 */
+function fakeDomainTables() {
+  const tables = new Map()
+  const facility = {
+    async open() {
+      return {
+        table(name) {
+          if (!tables.has(name)) tables.set(name, new Map())
+          const rows = tables.get(name)
+          return { get: key => rows.get(key), put: async (key, value) => { rows.set(key, value) } }
+        },
+        close: async () => {},
+      }
+    },
+  }
+  return {
+    context: () => ({
+      get: name => (name === 'storageDomain' ? facility : undefined),
+      logger: { error: () => {} },
+      effect: () => {},
+    }),
+    rows: name => tables.get(name),
+  }
+}
+
+/** 只观察调用顺序，读写仍落到真实的 SessionBindings / HandoffLedger 上。 */
+function observedBindings(bindings, log) {
+  return {
+    read(sessionId) { log.push('binding.read'); return bindings.read(sessionId) },
+    async write(sessionId, value) { log.push('binding.write'); return bindings.write(sessionId, value) },
+  }
+}
+
+function observedLedger(ledger, log) {
+  return {
+    carriedOf: sessionId => ledger.carriedOf(sessionId),
+    reviewsOf: sessionId => ledger.reviewsOf(sessionId),
+    async carry(sessionId, budget) { log.push('ledger.carry'); return ledger.carry(sessionId, budget) },
+    recordReview: (sessionId, record) => ledger.recordReview(sessionId, record),
+    announceOnce: session => ledger.announceOnce(session),
+  }
+}
+
+/** 注册真实的工具定义，返回一个按 `execute` 形状调用的入口。 */
+function handoffTool(config, faces, ledger, bindings) {
+  let definition
+  const runtime = new HandoffRuntime(
+    { ...faces, tools: { register(value) { definition = value; return () => {} } } },
+    () => config,
+    ledger,
+    bindings,
+  )
+  runtime.register()
+  return {
+    runtime,
+    call: (args, agent) => definition.execute(args, { agent, signal: new AbortController().signal }),
+    definition: () => definition,
+  }
+}
+
+const flushReview = () => new Promise(resolve => setImmediate(resolve))
+
+test('newSession runs the six relay steps in order and carries selection, binding and budget', async () => {
+  const log = []
+  const oldAgent = handoffAgent('old', { log })
+  const newAgent = handoffAgent('new', { log })
+  const selection = { provider: 'acme', model: 'main-1' }
+  const goal = { id: 'goal-1', revision: 4, objective: '把 P2 收尾', phase: 'active', roundsStarted: 2, maxGoalRounds: 10 }
+  const created = []
+  const cleared = []
+  const goals = {
+    get: agent => (agent === oldAgent ? goal : undefined),
+    create(agent, request) { log.push('goal.create'); created.push({ agent, request }); return { ...goal, ...request } },
+    clear(agent, ref) { log.push('goal.clear'); cleared.push({ agent, ref }) },
+  }
+  const createRequests = []
+  const controller = {
+    selectionFor() { log.push('selectionFor'); return { current: selection } },
+    async createSession(request) { log.push('createSession'); createRequests.push(request); return { agent: newAgent } },
+    selectForNextRequest(agent, value) {
+      log.push('selectForNextRequest')
+      assert.equal(agent, newAgent)
+      assert.deepEqual(value, selection)
+    },
+  }
+  const state = handoffState({
+    lastUserText: '把名册收尾',
+    records: [{ at: 5, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'coder' }],
+  })
+  const config = handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work', purpose: '写代码', instructions: '只改指定文件' })],
+  })
+  const ledger = new HandoffLedger(fakeDomainTables().context())
+  await ledger.recordReview('old', { childId: 'r1', rosterId: 'reviewer', epoch: 1, verdict: 'pass', gaps: [], at: 9 })
+  const bindings = new SessionBindings(fakeContext(undefined))
+  await bindings.write('old', { chain: 'coding', retries: { 'p/m': 2 } })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    goals,
+    sessionController: controller,
+    projections: handoffProjections(state, [{ content: '写单测', status: 'in_progress' }]),
+    logger: { error() {}, warn() {} },
+  }, observedLedger(ledger, log), observedBindings(bindings, log))
+
+  const receipt = await tool.call({ action: 'newSession', reason: 'finish:done', handoffNote: '从测试开始' }, oldAgent)
+
+  assert.deepEqual(receipt, { action: 'newSession', newSession: 'new' })
+  assert.equal(createRequests.length, 1)
+  assert.equal(createRequests[0].cwd, 'D:\\work')
+  assert.equal(typeof createRequests[0].reusable, 'function')
+  assert.equal(createRequests[0].reusable('any'), false, 'the relay never reuses a session')
+  // 六步：读旧选择 → 建会话 → 首跳 → 绑定与预算 → 简报 → 旧 goal 与 notice。
+  // goal.create 排在简报之前：重建失败时目标还得进简报（§4.6 步 6），而简报只发一次。
+  assert.deepEqual(log, [
+    'selectionFor', 'createSession', 'selectForNextRequest',
+    'binding.read', 'binding.write', 'ledger.carry',
+    'goal.create', 'followup', 'goal.clear', 'session.append',
+  ])
+  assert.deepEqual(bindings.read('new'), { chain: 'coding', retries: { 'p/m': 2 } })
+  // 携带的预算就是闸门读数：投影 1 次派发 + 这次 newSession 自身 +1（投影里还没有它）。
+  assert.deepEqual(ledger.carriedOf('new'), { delegations: 1, reviews: 0, newSessions: 1, perRole: { coder: 1 } })
+  assert.deepEqual(created.map(entry => entry.agent), [newAgent])
+  assert.deepEqual(created[0].request, { objective: '把 P2 收尾', maxGoalRounds: 10 })
+  assert.deepEqual(cleared, [{ agent: oldAgent, ref: { id: 'goal-1', revision: 4 } }])
+
+  assert.equal(newAgent.followed.length, 1)
+  const message = newAgent.followed[0]
+  assert.equal(message.role, 'user')
+  assert.equal(message.source.kind, 'model-router-handoff', 'the briefing is the plugin\'s own source kind')
+  const text = message.content.map(block => block.text).join('\n')
+  assert.match(text, /^由插件按接力配置生成/)
+  assert.match(text, /【接力】上一会话收工：finish:done/)
+  assert.match(text, /【下一步】continue：接着干/)
+  assert.match(text, /【交接说明】从测试开始/)
+  for (const title of ['目标', '未完成待办', '最近一条用户原话', '最近一次复核', '统计']) {
+    assert.ok(text.includes(title), `the briefing carries the configured artefact ${title}`)
+  }
+  assert.match(text, /把 P2 收尾（active，已用 2 轮）/)
+  assert.match(text, /- \[in_progress\] 写单测/)
+  assert.match(text, /把名册收尾/)
+  assert.match(text, /pass/)
+  assert.match(text, /压缩 1 次、轮次 3、工具失败 2/)
+
+  assert.equal(oldAgent.followed.length, 0, 'the old session is not woken')
+  assert.equal(oldAgent.appended.length, 1)
+  assert.equal(oldAgent.appended[0].type, 'user/message')
+  const notice = oldAgent.appended[0].message.content.map(block => block.text).join('\n')
+  assert.match(notice, /新会话 new/)
+  assert.match(notice, /finish:done/)
+})
+
+test('the relay carries no selection and no binding when there is nothing to carry', async () => {
+  const log = []
+  const oldAgent = handoffAgent('old', { log })
+  const newAgent = handoffAgent('new', { log })
+  const controller = {
+    selectionFor() { log.push('selectionFor'); return {} },
+    async createSession() { log.push('createSession'); return { agent: newAgent } },
+    selectForNextRequest() { log.push('selectForNextRequest') },
+  }
+  const config = handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work' })],
+    newSession: { ...handoffConfig().newSession, carryChainBinding: false },
+  })
+  const ledger = new HandoffLedger(fakeDomainTables().context())
+  const bindings = new SessionBindings(fakeContext(undefined))
+  await bindings.write('old', { chain: 'coding', retries: {} })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    sessionController: controller,
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, observedLedger(ledger, log), observedBindings(bindings, log))
+
+  await tool.call({ action: 'newSession', handoffNote: '继续' }, oldAgent)
+
+  // 没有选择就不调 selectForNextRequest；carryChainBinding 为假就不读不写绑定。
+  assert.deepEqual(log, ['selectionFor', 'createSession', 'followup', 'session.append'])
+  assert.equal(bindings.read('new'), undefined)
+  assert.equal(ledger.carriedOf('new'), undefined)
+})
+
+test('a goal that cannot be rebuilt still reaches the briefing', async () => {
+  const warnings = []
+  const oldAgent = handoffAgent('old')
+  const newAgent = handoffAgent('new')
+  const goal = { id: 'g1', revision: 1, objective: '把 1920 截图补上', phase: 'active', roundsStarted: 0, maxGoalRounds: 5 }
+  const cleared = []
+  const config = handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work' })],
+    // 简报不列 goal：失败兜底必须自己补上目标，否则目标就丢了。
+    newSession: { ...handoffConfig().newSession, briefing: ['todos'], keepGoal: true },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    goals: {
+      get: () => goal,
+      create() { throw new Error('goal tool unavailable') },
+      clear(agent, ref) { cleared.push({ agent, ref }) },
+    },
+    sessionController: {
+      selectionFor: () => ({}),
+      async createSession() { return { agent: newAgent } },
+      selectForNextRequest() {},
+    },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn(message) { warnings.push(message) } },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  await tool.call({ action: 'newSession', handoffNote: '继续' }, oldAgent)
+
+  const text = newAgent.followed[0].content.map(block => block.text).join('\n')
+  assert.match(text, /未能自动重建/)
+  assert.match(text, /把 1920 截图补上/)
+  assert.equal(warnings.length, 1, 'the failure is logged, not swallowed')
+  assert.match(warnings[0], /could not be rebuilt/)
+  assert.deepEqual(cleared, [{ agent: oldAgent, ref: { id: 'g1', revision: 1 } }], 'the old goal is still retired')
+})
+
+test('facts reports the real goal, todos and per-role delegations of this epoch', async () => {
+  const agent = handoffAgent('s1')
+  const goal = { id: 'g1', revision: 2, objective: '收尾 P2', phase: 'active', roundsStarted: 3, maxGoalRounds: 20 }
+  const state = handoffState({
+    stats: { turns: 7, compactions: 2, toolFailures: 3 },
+    records: [
+      { at: 1, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'reviewer' },
+      { at: 2, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'coder' },
+      { at: 3, epoch: 1, turn: 2, kind: 'finish' },
+      { at: 4, epoch: 0, turn: 1, kind: 'delegate', rosterId: 'coder' },
+    ],
+  })
+  const config = handoffConfig({ roster: [rosterEntry(), rosterEntry({ id: 'coder', role: 'work' })] })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    goals: { get: () => goal, create() {}, clear() {} },
+    projections: handoffProjections(state, [
+      { content: '写单测', status: 'in_progress' },
+      { content: '更新文档', status: 'pending' },
+      { content: '跑四套件', status: 'completed' },
+    ]),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const receipt = await tool.call({ action: 'facts' }, agent)
+
+  assert.equal(receipt.compactions, 2)
+  assert.equal(receipt.turns, 7)
+  assert.equal(receipt.toolFailures, 3)
+  assert.deepEqual(receipt.goal, { objective: '收尾 P2', phase: 'active', roundsStarted: 3 })
+  assert.deepEqual(receipt.todos, { pending: 1, inProgress: 1, open: ['写单测', '更新文档'] })
+  // 旧 epoch 的那次派发不算：人一说话，三本账清零。
+  assert.deepEqual(receipt.delegations, { total: 2, perRole: { reviewer: 1, coder: 1 } })
+})
+
+test('facts reports todos as unknown, not as an empty list, when the projection has not loaded', async () => {
+  const agent = handoffAgent('s1')
+  const tool = handoffTool(handoffConfig(), {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    projections: handoffProjections(undefined, undefined),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const receipt = await tool.call({ action: 'facts' }, agent)
+  assert.equal(receipt.todos, null)
+  assert.equal(receipt.goal, null)
+})
+
+test('delegate assembles the child request from the roster and keeps one reader per field', async () => {
+  const starts = []
+  const agent = handoffAgent('s1')
+  const goal = { id: 'g1', revision: 1, objective: '收尾 P2', phase: 'active', roundsStarted: 1, maxGoalRounds: 20 }
+  const config = handoffConfig({
+    roster: [
+      rosterEntry({
+        id: 'reviewer',
+        name: '复核',
+        preset: 'reviewer-preset',
+        provider: 'acme',
+        model: 'rev-1',
+        reasoningEffort: 'high',
+        maxTokens: 32000,
+        instructions: '你只读工件，不改文件。',
+      }),
+      rosterEntry({ id: 'coder', role: 'work', purpose: '写代码', instructions: '', preset: '', attach: [] }),
+    ],
+  })
+  const tool = handoffTool(config, {
+    subagents: {
+      async startActivation(spec) {
+        starts.push(spec)
+        return { childId: `child-${starts.length}`, result: new Promise(() => {}), dispose: async () => {} }
+      },
+    },
+    goals: { get: () => goal, create() {}, clear() {} },
+    projections: handoffProjections(handoffState({ lastUserText: '把名册收尾' }), [{ content: '写单测', status: 'pending' }]),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const receipt = await tool.call({
+    action: 'delegate',
+    rosterId: 'reviewer',
+    task: '复核这次改动',
+    focusPaths: ['src/handoff.ts'],
+  }, agent)
+
+  assert.deepEqual(receipt, {
+    action: 'delegate',
+    child: 'child-1',
+    rosterId: 'reviewer',
+    attached: ['目标', '未完成待办', '最近一条用户原话', '统计', '先看的文件'],
+  })
+  const spec = starts[0]
+  assert.equal(spec.provider, 'spawn')
+  assert.equal(spec.delivery, 'parent', 'the native wake is the parent inbox')
+  assert.equal(spec.label, '复核')
+  assert.equal(spec.request.agentPreset, 'reviewer-preset')
+  assert.deepEqual(spec.request.agentOptions, { provider: 'acme', model: 'rev-1', reasoningEffort: 'high', maxTokens: 32000 })
+  assert.equal(spec.request.outputSchema, REVIEW_VERDICT_SCHEMA, 'the verdict shape is the plugin\'s, not the roster\'s')
+  const prompt = spec.request.prompt[0].text
+  assert.ok(prompt.startsWith('你只读工件，不改文件。'), 'instructions come first')
+  assert.ok(prompt.indexOf('复核这次改动') > prompt.indexOf('你只读工件，不改文件。'), 'then the task')
+  for (const fact of ['【目标】', '【未完成待办】', '【最近一条用户原话】', '【统计】', '【先看的文件】']) {
+    assert.ok(prompt.includes(fact), `the prompt carries ${fact}`)
+  }
+  assert.ok(prompt.indexOf('【目标】') > prompt.indexOf('复核这次改动'), 'artefacts come last')
+
+  // 一个没有 preset / route 的 work 角色：不塞空字段，也不给复核 schema。
+  const workReceipt = await tool.call({ action: 'delegate', rosterId: 'coder', task: '写测试' }, agent)
+  const work = starts[1]
+  assert.equal(Object.hasOwn(work.request, 'agentPreset'), false)
+  assert.equal(Object.hasOwn(work.request, 'agentOptions'), false)
+  assert.equal(Object.hasOwn(work.request, 'outputSchema'), false)
+  assert.ok(work.request.prompt[0].text.startsWith('写测试'), 'no instructions means the task comes first')
+  assert.deepEqual(workReceipt.attached, [], 'a role with no attach and no focus paths attaches nothing')
+})
+
+test('a settled review is written to the ledger, and the finish gate reads that verdict', async () => {
+  const agent = handoffAgent('s1')
+  let settle
+  const result = new Promise(resolve => { settle = resolve })
+  const storage = fakeDomainTables()
+  const ledger = new HandoffLedger(storage.context())
+  const config = handoffConfig({
+    protocol: { ...handoffConfig().protocol, requireReviewFor: ['done'] },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { return { childId: 'review-child', result, dispose: async () => {} } } },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, ledger, new SessionBindings(fakeContext(undefined)))
+
+  await tool.call({ action: 'delegate', rosterId: 'reviewer', task: '复核' }, agent)
+  // 还没结算：闸门拒绝。
+  await assert.rejects(() => tool.call({ action: 'finish', outcome: 'done' }, agent), /no review/)
+
+  settle({ structured: { verdict: 'pass' } })
+  await flushReview()
+
+  const stored = storage.rows('reviews').get('s1')
+  assert.equal(stored.length, 1)
+  assert.equal(stored[0].childId, 'review-child')
+  assert.equal(stored[0].rosterId, 'reviewer')
+  assert.equal(stored[0].epoch, 1, 'the dispatch epoch, not the settlement time')
+  assert.equal(stored[0].verdict, 'pass')
+  assert.deepEqual(stored[0].gaps, [])
+  assert.equal(typeof stored[0].at, 'number')
+
+  const receipt = await tool.call({ action: 'finish', outcome: 'done' }, agent)
+  assert.deepEqual(receipt, { action: 'finish', recorded: true, outcome: 'done' })
+})
+
+test('a review that finds gaps blocks finish with the gap list the ledger stored', async () => {
+  const agent = handoffAgent('s1')
+  let settle
+  const result = new Promise(resolve => { settle = resolve })
+  const ledger = new HandoffLedger(fakeDomainTables().context())
+  const config = handoffConfig({
+    protocol: { ...handoffConfig().protocol, requireReviewFor: ['done'] },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { return { childId: 'review-child', result, dispose: async () => {} } } },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, ledger, new SessionBindings(fakeContext(undefined)))
+
+  await tool.call({ action: 'delegate', rosterId: 'reviewer', task: '复核' }, agent)
+  settle({ structured: { verdict: 'gaps', gaps: ['缺少 1920 截图', '活动流未接'] } })
+  await flushReview()
+
+  await assert.rejects(
+    () => tool.call({ action: 'finish', outcome: 'done' }, agent),
+    /缺少 1920 截图; 活动流未接/,
+  )
+})
+
+test('a finish outcome listed in newSession.onFinish goes through the same relay', async () => {
+  const oldAgent = handoffAgent('old')
+  const newAgent = handoffAgent('new')
+  let created = 0
+  const config = handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work' })],
+    newSession: {
+      ...handoffConfig().newSession,
+      onFinish: ['done'],
+      carrySelection: false,
+      carryChainBinding: false,
+    },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    sessionController: {
+      selectionFor: () => ({}),
+      async createSession() { created += 1; return { agent: newAgent } },
+      selectForNextRequest() {},
+    },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const receipt = await tool.call({ action: 'finish', outcome: 'done', handoffNote: '下一段从测试开始' }, oldAgent)
+
+  assert.equal(created, 1, 'the auto-relay is the same function, not a second path')
+  assert.deepEqual(receipt, { action: 'finish', recorded: true, outcome: 'done', newSessionId: 'new' })
+  const text = newAgent.followed[0].content.map(block => block.text).join('\n')
+  assert.match(text, /【接力】上一会话收工：finish:done/)
+  assert.match(text, /【交接说明】下一段从测试开始/)
+})
+
+test('the roster rules reject blank ids, duplicate ids, empty purposes and undefined roles', () => {
+  const violations = (roster, over = {}) => structuralViolations({
+    chains: [named(chainValue())],
+    defaultChainId: 'default',
+    handoff: handoffConfig({ roster, ...over }),
+  }).map((violation) => violation.key)
+  assert.deepEqual(violations([rosterEntry({ purpose: '   ' })]), ['problemRosterEmptyPurpose'])
+  assert.deepEqual(violations([rosterEntry({ preset: '', instructions: '' })]), ['problemRosterNoDefinition'])
+  assert.deepEqual(violations([rosterEntry({ instructions: 'x'.repeat(4001) })]), ['problemRosterInstructionsTooLong'])
+  assert.deepEqual(violations([rosterEntry(), rosterEntry()]), ['problemRosterDuplicateId'])
+  assert.deepEqual(violations([rosterEntry({ id: '  ' })]), ['problemRosterEmptyId'])
+  assert.deepEqual(violations([rosterEntry({ provider: 'acme' })]), ['problemRosterHalfRoute'])
+  assert.deepEqual(violations([rosterEntry({ failover: 'writing' })]), ['problemRosterUnknownFailoverChain'])
+  assert.deepEqual(violations([], { onUnreceiptedStop: { delegateTo: 'ghost', reportToUser: true } }), ['problemUnreceiptedUnknownRole'])
+})
+
+test('a valid roster produces no violation, and the browser agrees with the host', () => {
+  const roster = [rosterEntry(), rosterEntry({ id: 'coder', role: 'work', purpose: '写代码', instructions: '只改指定文件' })]
+  const input = { chains: [named(chainValue())], defaultChainId: 'default', handoff: handoffConfig({ roster }) }
+  assert.deepEqual(structuralViolations(input), [])
+  // 浏览器侧读到同一份 draft 时也必须是 0 条：两边共用 rules.ts。
+  const draft = {
+    chains: [named(chainValue())],
+    defaultChainId: 'default',
+    health: normalizeHealth(undefined),
+    handoff: normalizeHandoff(input.handoff),
+  }
+  assert.deepEqual(validate(draft), [])
+  // 坏值在浏览器侧拿到的是同一个 key（不是 host 的英文句子）。
+  draft.handoff.roster[0].purpose = ''
+  assert.deepEqual(validate(draft).map((problem) => problem.key), ['problemRosterEmptyPurpose'])
+})
+
+test('normalizeHandoff reads a config written before the section existed as its defaults', () => {
+  const fresh = normalizeHandoff(undefined)
+  assert.equal(fresh.enabled, false, 'the section is off by default')
+  assert.deepEqual(fresh.roster, [], 'no fake roster')
+  assert.deepEqual(fresh.protocol.requireReviewFor, [])
+  assert.equal(fresh.protocol.allowReviewOverride, true)
+  assert.equal(fresh.limits.nudgeWhenUnreceipted, false)
+  assert.equal(fresh.limits.maxNudgesPerTurn, 1)
+  assert.deepEqual(fresh.newSession.onFinish, [])
+  assert.deepEqual(fresh.newSession.briefing, ['goal', 'todos', 'userRequest', 'lastReview', 'stats'])
+  assert.equal(fresh.newSession.nextAction, 'continue')
+  // 与 host schema 的默认值同源：两边都读 ../defaults.ts。
+  assert.equal(fresh.limits.maxDelegationsPerUserMessage, 8)
+  assert.equal(fresh.limits.maxReviewsPerUserMessage, 1)
+  assert.equal(fresh.limits.maxNewSessionsPerUserMessage, 2)
+  assert.equal(fresh.limits.maxDelegationsPerDay, 24)
+  assert.equal(fresh.subagentBackend, 'spawn')
 })
 
 await Promise.all(pending)

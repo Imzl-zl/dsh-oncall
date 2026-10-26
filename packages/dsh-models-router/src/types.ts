@@ -110,6 +110,27 @@ export interface SessionBindingRequest extends SessionBinding {
   sessionId: string
 }
 
+// ---- handoff budget ----
+
+/**
+ * The budget a relayed session inherited, as the fleet tab reads it (proposal
+ * §4.6 step 4, F-19).
+ *
+ * Flat on purpose: the ledger stores `{delegations, reviews, newSessions,
+ * perRole}`, and `carried: false` says "nothing was inherited" so the zero
+ * counters below are a *known* zero rather than an unread value. The projection
+ * half of "已用" is not here — the browser already holds it and adds it with the
+ * same `addCarried`.
+ */
+export interface HandoffCarriedView {
+  /** False when this session inherited nothing. */
+  carried: boolean
+  delegations: number
+  reviews: number
+  newSessions: number
+  perRole: Record<string, number>
+}
+
 // ---- update check ----
 
 /**

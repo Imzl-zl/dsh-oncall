@@ -8,11 +8,28 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
-import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts'
+// `ShortcutCommandId` is exported from the shortcuts package's **client** entry,
+// not its root (lib/types/client/index.d.ts:8 re-exports it from protocol). DSH's
+// own settings plugin imports it exactly this way
+// (packages/client/ui-settings-general/src/client/index.ts:30).
+import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
+// Type-only: each import pulls one `Context` merge into this program —
+// `ctx.locale` (dsh-client-locale), `ctx.configForms` (ui-settings) and
+// `ctx.slots` (ui-renderer owns the SlotRegistry service). No value is imported,
+// so nothing of theirs enters our bundle: cross-plugin collaboration goes through
+// cordis services, never through value imports. All three resolve through the
+// root `@deepseek-ai/dsh` install (its transitive dependencies, like the
+// pre-existing `dsh-client-ui-layout` import); declaring them as devDependencies
+// would install a second copy — see
+// .agents/notes/implemented/2026-10-24-peer-resolution-is-a-dev-workspace-fact.md
+import type {} from '@deepseek-ai/dsh-client-locale/client'
+import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
+import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import remote from 'dsh-models-router/remote'
 import { createSessionChip, SessionChainChip } from './chip.ts'
 import { createController, notesForCurrentVersion } from './controller.ts'
+import { registerAgentFleet } from './fleet/index.ts'
 import { ModelRouterPanel, ModelRouterPanelIcon } from './panel.ts'
 import { CONFIG_NS, NS, en, zh } from './locales.ts'
 import { ensureStyles } from './styles.ts'
@@ -74,7 +91,7 @@ async function applyInner(ctx: Context): Promise<() => Promise<void>> {
   // 同样声明"要依赖哪个服务就列哪个"）。`shortcuts` 必须出现在这里，因为
   // registerUi 在这个 child 上注册保存命令——漏列它会在激活时抛
   // "cannot get required service shortcuts in inactive context"。
-  var ui = ctx.inject(['remote.routerHealth', 'slots', 'locale', 'configForms', 'remote', 'remote.session', 'shortcuts'], function (child) {
+  var ui = ctx.inject(['remote.routerHealth', 'slots', 'locale', 'configForms', 'remote', 'remote.session', 'shortcuts', 'sessions', 'uiWorkspace', 'sidebarRightTabs'], function (child) {
     registerUi(child, t, initialNotesOpen)
   })
   try {
@@ -125,6 +142,9 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
   }, 'router: discover timer')
   // 会话内 chip 的控制器：一个会话一份绑定状态（写失败留在弹层里，成功才刷新）。
   var sessionChip = createSessionChip(ctx, t)
+  // 右栏的 Agent Fleet 标签页：类型 + 正文席位都由 DSH 的 sidebar-right 注册表承载。
+  // 数据读取与派生在 fleet/ 下，不进入 JSX。
+  registerAgentFleet(ctx, t, scope)
 
   // 保存快捷键走 DSH 原生的 shortcuts 服务（ui-settings-general/src/client/index.ts:179
   // 同款）：可重绑定、出现在快捷键设置页、并按模态归属仲裁。`modals: ['model-router']`
@@ -166,6 +186,12 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
     onSetDefaultChain: function (id) { controller.setDefaultChain(id) },
     onRemoveChain: function (id) { controller.removeChain(id) },
     onActive: function (id) { controller.setActive(id) },
+    // 委派名册：三个动作覆盖整页，保存仍走 controller.save() 的同一次 mutate。
+    onSelectRoster: function (id) { controller.selectRoster(id) },
+    onSetHandoffField: function (path, value) { controller.setHandoffField(path, value) },
+    onUpdateRoster: function (id, field, value) { controller.updateRoster(id, field, value) },
+    onAddRoster: function () { controller.addRoster() },
+    onRemoveRoster: function (id) { controller.removeRoster(id) },
     onMaxRetries: function (index, value) { controller.setMaxRetries(index, value) },
     onNeeds: function (index, patch) { controller.setNeeds(index, patch) },
     onMove: function (index, direction) { controller.moveCandidate(index, direction) },

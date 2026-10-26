@@ -126,6 +126,20 @@ export class SessionBindings {
     return this.table !== undefined && !this.closed
   }
 
+  /**
+   * Resolve once the domain has either opened or failed to open.
+   *
+   * `persistent` is a synchronous answer by contract (the routing path reads
+   * bindings without awaiting), but the *Remote* that reports it to the browser
+   * must not answer while the open is still in flight: a boot that reads before
+   * the domain opens would say "memory only" about a durable store and the chip
+   * would warn about a loss that cannot happen. Measured after the 0.2.1-rc.2
+   * alignment: the remote suite's first read landed before the open settled.
+   */
+  ready(): Promise<void> {
+    return this.opening
+  }
+
   /** One session's binding, or undefined when it has none. Synchronous by contract. */
   read(sessionId: string): SessionBinding | undefined {
     if (this.closed) return undefined

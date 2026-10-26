@@ -15,6 +15,8 @@
  */
 
 
+import { FLEET_CSS } from './fleet/styles.ts'
+
 export var ROUTER_CSS = [
   '/* The plugin accent. DSH ships no plugin-accent token, so the blue lives',
   '   here once and every pill, badge and gradient reads it. */',
@@ -387,6 +389,30 @@ export var ROUTER_CSS = [
   '  .dsh-router-session-chip-label { display: none; }',
   '}',
 
+  // ---- delegation roster (P2) ----
+  // 主从两列：224px 列表 + 编辑器。列表独立滚动、最高 420px——12 个角色也不撑爆页面。
+  // 不写视口单位：这一页是面板里的一个滚动列，宽度由容器决定，不是窗口。
+  '.dsh-roster-body { display: grid; grid-template-columns: minmax(160px, 224px) minmax(0, 1fr); gap: 20px; align-items: start; }',
+  '.dsh-roster-list { display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow-y: auto; padding-right: 4px; border-right: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-roster-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: var(--dsw-radius-sm); cursor: pointer; }',
+  '.dsh-roster-item:hover { background: var(--dsw-alias-interactive-bg-hover); }',
+  '.dsh-roster-item:focus-visible { outline: 2px solid var(--dsh-router-accent); outline-offset: -1px; }',
+  '.dsh-roster-item-active { background: var(--dsw-alias-bg-layer-2); }',
+  '.dsh-roster-item-invalid { box-shadow: inset 2px 0 0 var(--dsw-alias-label-danger, #c0392b); }',
+  '.dsh-roster-item-name { font-size: 12px; line-height: 17.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-roster-item-meta { display: flex; gap: 8px; min-width: 0; font-size: 11.5px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-roster-item-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-roster-item-badge { align-self: flex-start; font-size: 10.5px; line-height: 16px; font-weight: 500; color: var(--dsw-alias-label-danger, #c0392b); font-variant-numeric: tabular-nums; }',
+  '.dsh-roster-editor { min-width: 0; }',
+  '.dsh-roster-editor-body { display: flex; flex-direction: column; gap: 14px; }',
+  '.dsh-router-subtitle { margin: 8px 0 0; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-router-counter { margin-left: 8px; font-size: 11.5px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }',
+  '.dsh-router-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }',
+  '.dsh-router-field-compact > input { max-width: 120px; }',
+  '.dsh-router-textarea { width: 100%; min-height: 64px; padding: 8px 10px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); resize: vertical; }',
+  '.dsh-router-textarea:focus-visible { outline: 2px solid var(--dsh-router-accent); outline-offset: 1px; }',
+  '.dsh-router-textarea.dsh-router-invalid { border-color: var(--dsw-alias-label-danger, #c0392b); }',
+  '.dsh-router-actions { display: flex; justify-content: flex-end; gap: 8px; }',
 ].join('\n')
 
 
@@ -401,16 +427,32 @@ export var ROUTER_CSS = [
  */
 var styleHolders = 0
 
+/**
+ * The module system may hand a top-level CSS array back as one joined string.
+ * Note: 为何不能直接对 ROUTER_CSS 调 .join —— 见
+ * .agents/notes/implemented/2026-10-23-agent-fleet-p1-and-config-surfaces.md
+ */
+function cssText(value) {
+  return Array.isArray(value) ? value.join('\n') : String(value)
+}
+
 export function ensureStyles() {
   if (typeof document === 'undefined') return function () {}
-  var tag = document.querySelector('style[data-plugin="dsh-models-router"]')
+  // `querySelector` is `Element | null`, but the selector matches a `<style>` and
+  // the tag is created as one below: declaring the element type is what lets the
+  // two branches (`dataset`, `textContent`) be one variable.
+  var tag = document.querySelector<HTMLStyleElement>('style[data-plugin="dsh-models-router"]')
   if (!tag) {
     tag = document.createElement('style')
     tag.dataset.plugin = 'dsh-models-router'
     tag.dataset.pluginCss = 'dsh-models-router-styles'
-    tag.textContent = ROUTER_CSS
     document.head.appendChild(tag)
   }
+  // The client module system may hand a top-level CSS array back as one joined
+  // string (measured in the browser: ROUTER_CSS was a string while the imported
+  // FLEET_CSS stayed an array). Normalize both shapes before injecting, or the
+  // imported array is stringified with commas and every rule after it is lost.
+  tag.textContent = cssText(ROUTER_CSS) + '\n' + cssText(FLEET_CSS)
   styleHolders += 1
   var released = false
   return function () {

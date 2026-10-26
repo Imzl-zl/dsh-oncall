@@ -72,9 +72,17 @@ const externals = new Set([
  * so a client bundle keeps them as `require` calls instead of inlining a second
  * copy of React or a UI library (packages/client/web/src/platform.ts:8-14).
  * `dsh.client.external` adds package-specific rows; this package declares none.
+ *
+ * `zod` is on that list (platform.ts:12) and is not optional: from
+ * 0.2.1-rc.2 the typert generator injects the zod runtime into the generated
+ * remote metadata factories (`@deepseek-ai/dsh-typert-generator`, commit
+ * `bd91a4a570`), and `client/apply.ts` imports `dsh-models-router/remote`,
+ * which is that artifact. Leaving it out inlined a second zod (a 562 kB
+ * bundle became 874 kB) instead of sharing the shell's instance.
  */
 const clientModules = new Set([
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client',
+  'zod',
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',

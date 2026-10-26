@@ -20,11 +20,20 @@ import {
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
+  DEFAULT_HANDOFF_LIMITS,
+  DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
+  DEFAULT_HANDOFF_SUBAGENT_BACKEND,
   DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_MAX_RETRIES,
   DEFAULT_MAX_TOKEN_AUTO_CONTINUE,
   DEFAULT_MAX_TOKEN_CONTINUES,
+  HANDOFF_ATTACH_ITEMS,
+  HANDOFF_BRIEFING_ITEMS,
+  HANDOFF_FAILOVER_INHERIT,
+  HANDOFF_NEXT_ACTIONS,
+  HANDOFF_OUTCOMES,
+  HANDOFF_ROLES,
   MAX_RETRIES,
   MAX_TOKEN_CONTINUES,
   DEFAULT_PROBE_PROMPT,
@@ -221,6 +230,101 @@ export const healthSchema = z.object({
     .description('健康时间轴每一格代表多长时间（秒）。格子数固定 24，所以窗口 = 24 × 这一格'),
 })
 
+/**
+ * 委派名册（P2）：一张工牌 = 一个可以被派出去的角色。
+ *
+ * 字段、默认值与语义的唯一来源是 docs/design/handoff-proposal.md §5 / §十二；
+ * 这里只做落地，不新增含义。三个文本字段三个读者，不许混：
+ * `purpose` 编进工具描述只给主模型看，`instructions` 只随派发进子会话，
+ * `preset` 是 DSH 原生的系统层人格 + 工具集（不由本插件编写）。
+ *
+ * `provider`/`model` 留空表示"跟随父会话的模型"；只填一半不是路由，结构校验会拒。
+ */
+export const rosterEntrySchema = z.object({
+  id: z.string().default('').description('稳定标识：工具参数与复核账本按它引用，改名只改显示名'),
+  name: z.string().default('').description('显示名；留空时界面显示 id'),
+  role: z.union([...HANDOFF_ROLES]).default('work')
+    .description('review = 复核者（结论进复核账本，收工闸门读它）；work = 干活的人'),
+  purpose: z.string().default('')
+    .description('给主模型看的一句话：适合什么、不适合什么。编进工具描述，不进子会话；空则拒绝保存'),
+  instructions: z.string().default('')
+    .description('给子智能体看的岗位规范（轻量 Markdown，≤4000 字符）。随每次派发进任务前面；不要写密钥'),
+  preset: z.string().default('')
+    .description('DSH Agent Preset：子会话的系统层人格与工具集，由 DSH 负责；与 instructions 至少一个非空'),
+  provider: z.string().default('').description('物理渠道；与路由链同一标识空间。留空 = 跟随父会话'),
+  model: z.string().default('').description('模型 ID。留空 = 跟随父会话'),
+  reasoningEffort: z.string().default('').description('推理档位（可选，由该渠道的适配器解释）'),
+  maxTokens: z.number().step(1).min(0).default(0).description('输出 token 上限（0 = 不指定）'),
+  failover: z.string().default(HANDOFF_FAILOVER_INHERIT)
+    .description('失败后跟哪条链走：inherit（跟随父会话的绑定）/ none（不降级）/ <链 id>'),
+  attach: z.array(z.union([...HANDOFF_ATTACH_ITEMS])).default([...HANDOFF_ATTACH_ITEMS])
+    .description('派发时附上的会话事实；只收 goal / todos / userRequest / stats'),
+  maxRunsPerUserMessage: z.number().step(1).min(0).default(DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE)
+    .description('本角色自最近一条用户消息以来的派发上限（0 = 不许派）'),
+})
+
+/** 协议：哪几个动作对模型可见（前三项可关；`newSession` 随接力配置）。 */
+export const handoffProtocolSchema = z.object({
+  delegate: z.boolean().default(true).description('允许 delegate（派人）'),
+  finish: z.boolean().default(true).description('允许 finish（收工回执）'),
+  facts: z.boolean().default(true).description('允许 facts（看可数事实）'),
+  requireReviewFor: z.array(z.union([...HANDOFF_OUTCOMES])).default([])
+    .description('这些收工落点必须引用一次通过的复核回执；空 = 不强制'),
+  allowReviewOverride: z.boolean().default(true)
+    .description('允许模型写明理由跳过复核；理由进账，界面上看得见'),
+})
+
+/** 闸门：三个时间尺度 + 追问。每个数字都是"最多"，不是"必须"。 */
+export const handoffLimitsSchema = z.object({
+  maxDelegationsPerTurn: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxDelegationsPerTurn)
+    .description('一个回合内最多派几次（防同轮爆发）'),
+  maxDelegationsPerUserMessage: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxDelegationsPerUserMessage)
+    .description('自最近一条用户消息以来最多派几次（复核也计入）；人一说话就清零'),
+  maxReviewsPerUserMessage: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxReviewsPerUserMessage)
+    .description('复核上限，不是配额：第一次就通过就收工'),
+  maxNewSessionsPerUserMessage: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxNewSessionsPerUserMessage)
+    .description('开新会话上限；随会话复制，不因开新会话而重置'),
+  maxDelegationsPerDay: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxDelegationsPerDay)
+    .description('进程内每日累计，重启归零'),
+  nudgeWhenUnreceipted: z.boolean().default(DEFAULT_HANDOFF_LIMITS.nudgeWhenUnreceipted)
+    .description('没交回执就停时追问一次（会触发一次真实模型调用）'),
+  maxNudgesPerTurn: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxNudgesPerTurn)
+    .description('每回合最多追问几次；到顶就放行停止'),
+})
+
+/** 没签字就停时的兜底：默认只报告，不自动派。 */
+export const handoffUnreceiptedSchema = z.object({
+  delegateTo: z.string().default('')
+    .description('空 = 只报告；填名册 id = 自动派它兜底（花一次真实调用）'),
+  reportToUser: z.boolean().default(true).description('写一条中文 notice 说明剩余项与停在哪'),
+})
+
+/** 接力：收工后要不要换一个干净会话继续（默认不换）。 */
+export const handoffNewSessionSchema = z.object({
+  onFinish: z.array(z.union([...HANDOFF_OUTCOMES])).default([])
+    .description('这些收工落点之后自动开新会话；空 = 不自动，模型想换场时自己调 newSession'),
+  nextAction: z.union([...HANDOFF_NEXT_ACTIONS]).default('continue')
+    .description('新会话的"下一步类型"：接着干 / 先复核 / 复核完再接着干'),
+  briefing: z.array(z.union([...HANDOFF_BRIEFING_ITEMS])).default([...HANDOFF_BRIEFING_ITEMS])
+    .description('接力简报附上的工件：goal / todos / userRequest / lastReview / stats'),
+  keepGoal: z.boolean().default(true).description('新会话里按原 objective 重建 goal'),
+  carrySelection: z.boolean().default(true).description('主模型不变：把本会话选中的模型带过去'),
+  carryChainBinding: z.boolean().default(true).description('链绑定与预算计数跟过去（不因开新会话重置）'),
+})
+
+/** 委派名册整段：总闸 + 名册 + 协议 + 闸门 + 兜底 + 接力。 */
+export const handoffSchema = z.object({
+  enabled: z.boolean().default(false)
+    .description('交接总闸：关着时零注册（工具不出现、名册不生效），路由照旧'),
+  subagentBackend: z.string().default(DEFAULT_HANDOFF_SUBAGENT_BACKEND)
+    .description('派发后端（DSH subagent provider 名，不是模型渠道）'),
+  roster: z.array(rosterEntrySchema).default([]),
+  protocol: handoffProtocolSchema.default({}),
+  limits: handoffLimitsSchema.default({}),
+  onUnreceiptedStop: handoffUnreceiptedSchema.default({}),
+  newSession: handoffNewSessionSchema.default({}),
+})
+
 /** Plugin Config. Every field is volatile: all of them reach the settings form. */
 export const Config = z.object({
   enabled: z.boolean().default(false).volatile()
@@ -237,6 +341,8 @@ export const Config = z.object({
     .description('旧形状：唯一的全局链。只在新形状缺失时读取，首次保存后会被移除'),
   health: healthSchema.default({}).volatile()
     .description('渠道健康监控：运行时记录、连通性检查、发送测试消息、自动禁用四档'),
+  handoff: handoffSchema.default({}).volatile()
+    .description('委派名册：一个 handoff 工具（派人 / 收工 / 开新会话 / 看事实）+ 名册 + 闸门 + 接力。默认关'),
   // 策略版本：v2 = "失败默认全切"。旧配置里 emptyResponse/invalidRequest 被写成了
   // false（那是当时的默认值，不是用户的选择），只改 schema 默认值救不了它们；
   // chain.ts 按这个标记做一次性改写，第一次保存后落盘为当前版本。
@@ -383,6 +489,94 @@ export interface BreakerConfig {
   rules: BreakRule[]
 }
 
+/**
+ * 一张工牌：用户配，模型选。
+ *
+ * 三个文本字段三个读者（提案 §4.1）：`purpose` 只进工具描述（主模型），
+ * `instructions` 只进派发消息（子智能体），`preset` 是 DSH 原生的系统层人格。
+ * 一个字段只有一个读者，谁也不复用对方的话。
+ */
+export interface RosterEntry {
+  id: string
+  name: string
+  role: HandoffRole
+  purpose: string
+  instructions: string
+  preset: string
+  provider: string
+  model: string
+  reasoningEffort: string
+  maxTokens: number
+  /** `inherit` | `none` | a chain id. */
+  failover: string
+  attach: HandoffAttachItem[]
+  maxRunsPerUserMessage: number
+}
+
+/** 名册角色：复核者（结论进复核账本）还是工作者。 */
+export type HandoffRole = 'review' | 'work'
+
+/** `delegate` 能采的会话事实。 */
+export type HandoffAttachItem = 'goal' | 'todos' | 'userRequest' | 'stats'
+
+/** 接力简报能采的项：`delegate` 的词表之外多一条 `lastReview`。 */
+export type HandoffBriefingItem = HandoffAttachItem | 'lastReview'
+
+/** 收工回执的三种落点。 */
+export type HandoffOutcome = 'done' | 'needs_user' | 'abandoned'
+
+/** 接力首条消息的"下一步类型"。 */
+export type HandoffNextAction = 'continue' | 'review' | 'review-then-continue'
+
+/** 哪几个动作对模型可见，以及收工闸门。 */
+export interface HandoffProtocolConfig {
+  delegate: boolean
+  finish: boolean
+  facts: boolean
+  /** 这些收工落点必须引用一次通过的复核回执；空 = 不强制。 */
+  requireReviewFor: HandoffOutcome[]
+  /** 允许模型写明理由跳过复核。 */
+  allowReviewOverride: boolean
+}
+
+/** 闸门：三个时间尺度 + 追问。 */
+export interface HandoffLimitsConfig {
+  maxDelegationsPerTurn: number
+  maxDelegationsPerUserMessage: number
+  maxReviewsPerUserMessage: number
+  maxNewSessionsPerUserMessage: number
+  maxDelegationsPerDay: number
+  nudgeWhenUnreceipted: boolean
+  maxNudgesPerTurn: number
+}
+
+/** 没签字就停时的兜底。 */
+export interface HandoffUnreceiptedConfig {
+  delegateTo: string
+  reportToUser: boolean
+}
+
+/** 接力：收工后要不要换一个干净会话继续。 */
+export interface HandoffNewSessionConfig {
+  onFinish: HandoffOutcome[]
+  nextAction: HandoffNextAction
+  briefing: HandoffBriefingItem[]
+  keepGoal: boolean
+  carrySelection: boolean
+  carryChainBinding: boolean
+}
+
+/** 委派名册整段。 */
+export interface HandoffConfig {
+  enabled: boolean
+  subagentBackend: string
+  roster: RosterEntry[]
+  protocol: HandoffProtocolConfig
+  limits: HandoffLimitsConfig
+  onUnreceiptedStop: HandoffUnreceiptedConfig
+  newSession: HandoffNewSessionConfig
+}
+
 /** Plugin configuration as `apply` sees it: every field is a Volatile accessor. */
 export interface Config {
   enabled: Volatile<boolean>
@@ -392,6 +586,8 @@ export interface Config {
   /** The legacy single chain; read only while `chains` is absent. */
   chain: Volatile<ChainConfig>
   health: Volatile<HealthConfig>
+  /** 委派名册：字段与默认值的唯一来源是 docs/design/handoff-proposal.md §5/§十二。 */
+  handoff: Volatile<HandoffConfig>
   /** 失败策略版本：见 {@link POLICY_VERSION}。 */
   policyVersion: Volatile<number>
 }
@@ -427,6 +623,7 @@ export function assertStructural(config: {
   chains: NamedChain[]
   defaultChainId: string
   health?: HealthConfig
+  handoff?: HandoffConfig
 }): void {
   const [first] = structuralViolations(config)
   if (first !== undefined) throw new Error(first.message)

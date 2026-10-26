@@ -1,0 +1,46 @@
+{
+  // The browser half's own type-check program.
+  //
+  // DSH's shape: every `packages/client/*` package carries its own tsconfig
+  // extending a client base with the DOM libs
+  // (`packages/client/ui-primitives/tsconfig.json` →
+  // `tsconfig.base.client.json`), and the root `tsconfig.client.json`
+  // aggregates the client tests. An out-of-tree plugin has no project
+  // references to ride, so it declares the same shape locally.
+  //
+  // Separate from `tsconfig.json` on purpose: that program emits the host
+  // declarations and must not compile browser modules — the Typert host face
+  // program merges a different `Context` than the browser does.
+  //
+  // `noImplicitAny` is OFF as a ratchet, not as a policy. This half predates the
+  // build as hand-written JavaScript, so every handler parameter is
+  // unannotated; turning it on today would report 473 implicit-any sites and
+  // hide the checks that catch real defects — an unresolved name, a wrong
+  // argument type, a wrong object shape. Those stay on.
+  //
+  // Status (2026-10-24): exit 0, and `bundle` runs this program
+  // (`tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown`), so the
+  // browser half cannot regress behind a green build. The check has already paid
+  // for itself — it found a bare `loadProbeReport()` call in `probeAll` that threw
+  // a swallowed ReferenceError at runtime. How and when to tighten the ratchet
+  // (per file, not globally) is in
+  // .agents/notes/implemented/2026-10-24-client-half-typecheck.md.
+  "compilerOptions": {
+    "target": "es2022",
+    "lib": ["es2022", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noEmit": true,
+    "strict": true,
+    "noImplicitAny": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
+    "forceConsistentCasingInFileNames": true,
+    // The platform modules (react, the UI primitives, the store, the slots) come
+    // from the shell's module table at runtime; the devDependencies carry only
+    // their declarations. No ambient @types packages are wanted here.
+    "types": []
+  },
+  "include": ["src/client"]
+}

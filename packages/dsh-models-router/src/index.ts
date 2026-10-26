@@ -40,6 +40,7 @@ import {
   Config,
   assertStructural,
   type ChainConfig,
+  type HandoffConfig,
   type HealthConfig,
   type NamedChain,
   type RouterOptions,
@@ -49,10 +50,13 @@ import type { AfterInnerRuling, BeforeInnerRuling } from './router.ts'
 import { configuredRouteList, routeKeyOf, routeParts } from './routes.ts'
 import { DEFAULT_PROBE_PROMPT, DEFAULT_PROBE_TIMEOUT_SECONDS } from './defaults.ts'
 import { RouterState, candidateConfig, type StepCandidate, type StepChain, type StepConditions, type TurnCarry } from './state.ts'
-import { bindingMissingNotice, conditionSkipNotice, failoverNotice, breakerNotice, skipNotice, routeMissingNotice, adapterDefectNotice, truncationContinueNotice, truncationSwitchNotice } from './notice.ts'
+import { bindingMissingNotice, conditionSkipNotice, failoverNotice, breakerNotice, skipNotice, routeMissingNotice, adapterDefectNotice, truncationContinueNotice, truncationSwitchNotice, handoffNudgeNotice, handoffUnreceiptedNotice } from './notice.ts'
 import { precheckTierOf, type PrecheckTier } from './precheck.ts'
 import { failoverHistoryProjection, failureCodeOfStream, finishKindOfStream } from './lineage.ts'
 import { channelHealthProjection } from './health.ts'
+import { handoffProjection } from './handoff.ts'
+import { HandoffLedger } from './handoff.ts'
+import { HandoffRuntime, type HandoffFaces, type GoalLike, type TodoLike } from './handoff-tool.ts'
 import { CircuitBreaker, type RouteBlock } from './breaker.ts'
 import { waitBeforeRetry } from './backoff.ts'
 import { SessionBindings } from './bindings.ts'
@@ -64,6 +68,7 @@ import { RELEASE_VERSION } from './release.generated.ts'
 import type {
   ConnectivityRequest,
   ConnectivityVerdict,
+  HandoffCarriedView,
   ProbeReport,
   ProbeRequest,
   ProbeRoute,
@@ -122,6 +127,15 @@ export default class ModelRouter extends TypertRemoteService {
    * and writes await the open so a durable store is never skipped by a race.
    */
   private readonly bindings: SessionBindings
+  /**
+   * The handoff ledger of the mounted fiber, for the browser's budget read.
+   *
+   * Assigned by `installHandoff` (the ledger is created inside the child fiber
+   * that owns the tool) and cleared with it. No ledger means handoff is off or
+   * this composition has no tools/subagents, which the read answers as "nothing
+   * was carried" rather than as an error.
+   */
+  private handoffLedger: HandoffLedger | undefined
   /** Live agents by session, so the session/event feed can reach their state. */
   private readonly agentsBySession = new WeakMap<Session, Agent>()
   /** The last scheduled probe's report, held for the browser's read. */
@@ -129,6 +143,15 @@ export default class ModelRouter extends TypertRemoteService {
   /** Probes currently running (scheduled or manual); a scheduled tick skips while any is in flight. */
   private probeInFlight = 0
   private probeTimerId: ReturnType<typeof setInterval> | undefined
+  /**
+   * Nudges already sent per `sessionId:turn`.
+   *
+   * Process memory on purpose: a nudge is a runtime action, not a durable fact,
+   * and `maxNudgesPerTurn` bounds it inside one turn. A restart mid-turn can
+   * therefore ask once more — the alternative (a durable nudge ledger) would be
+   * a second source for something the proposal only ever counts per turn.
+   */
+  private readonly nudges = new Map<string, number>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'modelRouter', { namespace: 'routerHealth' })
@@ -189,6 +212,12 @@ export default class ModelRouter extends TypertRemoteService {
     const projections = ctx.get('sessionProjections') as (ProjectionRegistryFace & ProjectionReadFace) | undefined
     projections?.register(failoverHistoryProjection)
     projections?.register(channelHealthProjection)
+    // Registered whether or not handoff is enabled: the fold is what makes the
+    // budget counters replayable, and a session that delegated before the last
+    // config save must not look like it never did. Registering costs one pass
+    // over the log the registry already reads.
+    projections?.register(handoffProjection)
+    this.installHandoff(projections)
 
     // The router's own failure ledger. `agent/request-error` records synchronously
     // for the failure it is handed, but a delegated failure reaches the next
@@ -260,6 +289,8 @@ export default class ModelRouter extends TypertRemoteService {
       return decision
     })
 
+    // Note: 为什么仍靠 agent/request 覆盖 route、以及上游何时收回这个权力 —— 见
+    // .agents/notes/proposed/2026-10-26-agent-request-is-no-longer-the-route-authority.md
     // Outermost on agent/request: the override applied after next() wins over
     // installModelSelection's write-back of the user's selection.
     ctx.on(
@@ -603,6 +634,109 @@ export default class ModelRouter extends TypertRemoteService {
     })
   }
 
+  // ---- delegation handoff (P2) ----
+  //
+  // 委派名册：一个工具、一个投影、一个账本。默认关（`handoff.enabled: false`），
+  // 关着时这里什么都不注册——没有工具、没有监听，装好不改任何现有行为。
+  // 字段与默认值的唯一来源是 docs/design/handoff-proposal.md §5/§十二。
+
+  /**
+   * Register the one `handoff` tool and the turn-stopping fallback.
+   *
+   * The registration waits for `tools`/`subagents` through `ctx.inject`: the
+   * plugin's own `inject` list is `['llm']`, so at construction time those
+   * services may not be mounted yet (measured in the headless composition — the
+   * tool silently did not register). The child fiber dies with this one, so a
+   * config save unregisters and re-registers the tool exactly once.
+   *
+   * The remaining services stay optional (`ctx.get`): a composition without
+   * `goals`/`sessionController` can still delegate — `newSession` refuses with a
+   * named reason instead of pretending it worked.
+   */
+  private installHandoff(projections: (ProjectionRegistryFace & ProjectionReadFace) | undefined): void {
+    const ctx = this.ctx
+    const configOf = (): HandoffConfig => this.config.handoff.get() as HandoffConfig
+    const config = configOf()
+    if (!config.enabled) return
+    ctx.inject(['tools', 'subagents'], (child: Context) => {
+      const tools = child.get('tools') as HandoffFaces['tools'] | undefined
+      const subagents = child.get('subagents') as HandoffFaces['subagents'] | undefined
+      if (tools === undefined || subagents === undefined) {
+        child.logger.warn(
+          'model-router: handoff.enabled is true but this composition provides no tools/subagents service; '
+          + 'the handoff tool is not registered',
+        )
+        return
+      }
+      const ledger = new HandoffLedger(child)
+      // The browser's budget read needs the same ledger the gates use; it is
+      // created here because it rides the child fiber that owns the tool.
+      this.handoffLedger = ledger
+      const runtime = new HandoffRuntime({
+        tools,
+        subagents,
+        goals: child.get('goals') as HandoffFaces['goals'],
+        sessionController: child.get('sessionController') as HandoffFaces['sessionController'],
+        projections: projections as unknown as HandoffFaces['projections'],
+        logger: child.logger,
+      }, configOf, ledger, this.bindings)
+      runtime.register()
+      // The turn-stopping fallback: the one place the plugin speaks first, and it
+      // only counts (proposal §7-B). Both halves default off.
+      const current = configOf()
+      if (current.limits.nudgeWhenUnreceipted || current.onUnreceiptedStop.reportToUser
+        || current.onUnreceiptedStop.delegateTo !== '') {
+        child.on('agent/turn-stopping', ({ agent, turn, signal }: { agent: Agent; turn: number; signal: AbortSignal }) => {
+          this.onTurnStopping(runtime, configOf(), agent, turn, signal)
+        })
+      }
+    })
+  }
+
+  /**
+   * The "stopped without a receipt" seam.
+   *
+   * Deliberately narrow: it fires only when the projection can count open todos,
+   * the turn declared nothing, and no goal is running. It never claims the work
+   * is unfinished — the model's own `finish` receipt is the only sign-off, and
+   * the notice says what is left, not what to think about it.
+   */
+  private onTurnStopping(runtime: HandoffRuntime, config: HandoffConfig, agent: Agent, turn: number, signal: AbortSignal): void {
+    if (agent.session.header.parentSession !== undefined) return
+    const receipt = runtime.receiptState(agent, turn)
+    if (receipt === undefined || receipt.calledThisTurn || receipt.goalActive) return
+    if (receipt.pendingTodos === 0) return
+    const key = `${agent.session.id}:${turn}`
+    const used = this.nudges.get(key) ?? 0
+    if (config.limits.nudgeWhenUnreceipted && used < config.limits.maxNudgesPerTurn) {
+      this.nudges.set(key, used + 1)
+      agent.steer(handoffNudgeNotice(receipt.pendingTodos))
+      return
+    }
+    // Nudge spent (or off): either dispatch the configured fallback, or say it.
+    if (config.onUnreceiptedStop.delegateTo !== '') {
+      void runtime.delegateOnStop(agent, config.onUnreceiptedStop.delegateTo, receipt.pendingTodos, signal)
+        .catch((error: unknown) => {
+          this.ctx.logger.error(`model-router: the onUnreceiptedStop fallback could not be dispatched: ${String(error)}`)
+          if (config.onUnreceiptedStop.reportToUser) {
+            agent.session.append(
+              'user/message',
+              handoffUnreceiptedNotice(receipt.pendingTodos, ''),
+              { surfaceOp: 'append' },
+            )
+          }
+        })
+      return
+    }
+    if (config.onUnreceiptedStop.reportToUser) {
+      agent.session.append(
+        'user/message',
+        handoffUnreceiptedNotice(receipt.pendingTodos, ''),
+        { surfaceOp: 'append' },
+      )
+    }
+  }
+
   // ---- the plugin's own Remote ----
 
   /**
@@ -610,8 +744,7 @@ export default class ModelRouter extends TypertRemoteService {
    * byte. An empty `routes` means every route the config names. The caller's
    * signal cancels the whole run — a browser that closes the page mid-probe
    * stops spending tokens.
-   */
-  @Remote
+   */  @Remote
   async probeAll(request: ProbeRequest, signal: AbortSignal): Promise<ProbeReport> {
     const health = (this.config.health?.get() as HealthConfig | undefined)?.probe
     const fallback = health?.prompt ?? DEFAULT_PROBE_PROMPT
@@ -725,11 +858,38 @@ export default class ModelRouter extends TypertRemoteService {
    */
   @Remote
   async sessionBinding(sessionId: string): Promise<SessionBindingView> {
+    // `persistent` is only meaningful once the open has settled: answering
+    // during the boot would call a durable store "memory only".
+    await this.bindings.ready()
     const binding = this.bindings.read(sessionId)
     return {
       chain: binding?.chain ?? null,
       retries: { ...(binding?.retries ?? {}) },
       persistent: this.bindings.persistent,
+    }
+  }
+
+  /**
+   * The budget a `newSession` carried into one session, for the fleet tab.
+   *
+   * Only the *carried* half: the projection half is already in the browser (the
+   * `router/handoff` snapshot) and both halves add it with the same
+   * `addCarried`, so this read never becomes a second source for "已用". A
+   * session that inherited nothing answers `carried: false` with zero counters —
+   * a known zero, not an unknown.
+   */
+  @Remote
+  async handoffCarried(sessionId: string): Promise<HandoffCarriedView> {
+    const carried = this.handoffLedger?.carriedOf(sessionId)
+    if (carried === undefined) {
+      return { carried: false, delegations: 0, reviews: 0, newSessions: 0, perRole: {} }
+    }
+    return {
+      carried: true,
+      delegations: carried.delegations,
+      reviews: carried.reviews,
+      newSessions: carried.newSessions,
+      perRole: { ...carried.perRole },
     }
   }
 
@@ -802,6 +962,7 @@ function readConfig(config: Config, raw: unknown): {
   chains: NamedChain[]
   defaultChainId: string
   health?: HealthConfig
+  handoff?: HandoffConfig
   migratedFrom: ChainSource
   ignoredProfiles: number
 } {
@@ -817,6 +978,7 @@ function readConfig(config: Config, raw: unknown): {
     chains: effective.chains,
     defaultChainId: effective.defaultChainId,
     health: config.health?.get() as HealthConfig | undefined,
+    handoff: config.handoff?.get() as HandoffConfig | undefined,
     migratedFrom: effective.source,
     ignoredProfiles: effective.ignoredProfiles,
   }

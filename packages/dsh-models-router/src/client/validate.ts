@@ -6,6 +6,9 @@ import {
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
+  DEFAULT_HANDOFF_LIMITS,
+  DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
+  DEFAULT_HANDOFF_SUBAGENT_BACKEND,
   DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_MAX_RETRIES,
@@ -17,6 +20,11 @@ import {
   DEFAULT_STRATEGY,
   DEFAULT_SWITCH_ON,
   DEFAULT_TIMELINE_BUCKET_SECONDS,
+  HANDOFF_ATTACH_ITEMS,
+  HANDOFF_BRIEFING_ITEMS,
+  HANDOFF_FAILOVER_INHERIT,
+  HANDOFF_NEXT_ACTIONS,
+  HANDOFF_ROLES,
   MAX_RETRIES,
   MAX_SESSION_RETRIES,
   MAX_TOKEN_CONTINUES,
@@ -114,13 +122,30 @@ export function parseRetryInput(raw) {
 }
 
 
+/**
+ * One row of the page's problem list: the dictionary key to format plus its
+ * placeholders. It is the browser's half of `Violation` (../rules.ts:30) — the
+ * same `key`/`vars`, without the host's `message` text, which the browser never
+ * renders. Declared here because this is where the list is built; every reader
+ * (page.ts, roster.ts) only reads the two fields.
+ */
+export interface Problem {
+  key: string
+  vars: Record<string, string | number>
+}
+
 export function validate(draft) {
-  var problems = []
+  var problems: Problem[] = []
   // 跨字段规则与 host 同源（../rules.ts 的 structuralViolations）：host 抛第一条、
   // 这里收全部，key + vars 进字典渲染。此前两份规则靠三句「与 host 的 assertStructural
   // 同步」的注释对齐，且已经漂移——重复渠道 host 从第一天就拒、浏览器漏检，用户存得下
   // 一个加载即被 host 拒绝的配置，吃的还是一句英文错误。
-  structuralViolations({ chains: draft.chains, defaultChainId: draft.defaultChainId, health: draft.health }).forEach(function (violation) {
+  structuralViolations({
+    chains: draft.chains,
+    defaultChainId: draft.defaultChainId,
+    health: draft.health,
+    handoff: draft.handoff,
+  }).forEach(function (violation) {
     problems.push({ key: violation.key, vars: violation.vars })
   })
   // 草稿态检查：host 故意不做单字段边界（schema 拥有它们，assertStructural 的
@@ -133,7 +158,95 @@ export function validate(draft) {
     })
     if (!(chain.firstHopMaxRetries >= 0 && chain.firstHopMaxRetries <= MAX_RETRIES)) problems.push({ key: 'problemBadFirstHopRetries', vars: { chain: chainIndex + 1 } })
   })
+  // 名册的数值边界与 host schema 同源（../defaults.ts 的 HANDOFF 常量）：结构规则
+  // 管"跨字段/语义"，这里只管单字段范围，和候选重试次数同一条分工。
+  if (draft.handoff) {
+    draft.handoff.roster.forEach(function (entry, index) {
+      if (!(entry.maxRunsPerUserMessage >= 0)) {
+        problems.push({ key: 'problemRosterBadRuns', vars: { index: index + 1 } })
+      }
+      if (!(entry.maxTokens >= 0)) {
+        problems.push({ key: 'problemRosterBadTokens', vars: { index: index + 1 } })
+      }
+    })
+  }
   return problems
+}
+
+/**
+ * The handoff section as the editor needs it.
+ *
+ * Every default here comes from `../defaults.ts`, the same constants the host
+ * schema uses (proposal §十二 is the design source; this module never re-types
+ * a number the host also owns). A config written by an older build has no
+ * `handoff` key at all, and that must read as "the section's defaults", not as
+ * "the user turned everything off".
+ */
+export function normalizeHandoff(value) {
+  var handoff = value && typeof value === 'object' ? value : {}
+  var protocol = handoff.protocol && typeof handoff.protocol === 'object' ? handoff.protocol : {}
+  var limits = handoff.limits && typeof handoff.limits === 'object' ? handoff.limits : {}
+  var stop = handoff.onUnreceiptedStop && typeof handoff.onUnreceiptedStop === 'object' ? handoff.onUnreceiptedStop : {}
+  var newSession = handoff.newSession && typeof handoff.newSession === 'object' ? handoff.newSession : {}
+  return {
+    enabled: handoff.enabled === true,
+    subagentBackend: typeof handoff.subagentBackend === 'string' && handoff.subagentBackend !== ''
+      ? handoff.subagentBackend
+      : DEFAULT_HANDOFF_SUBAGENT_BACKEND,
+    roster: Array.isArray(handoff.roster) ? handoff.roster.map(normalizeRosterEntry) : [],
+    protocol: {
+      delegate: protocol.delegate !== false,
+      finish: protocol.finish !== false,
+      facts: protocol.facts !== false,
+      requireReviewFor: Array.isArray(protocol.requireReviewFor) ? protocol.requireReviewFor.slice() : [],
+      allowReviewOverride: protocol.allowReviewOverride !== false,
+    },
+    limits: {
+      maxDelegationsPerTurn: numberOr(limits.maxDelegationsPerTurn, DEFAULT_HANDOFF_LIMITS.maxDelegationsPerTurn),
+      maxDelegationsPerUserMessage: numberOr(limits.maxDelegationsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxDelegationsPerUserMessage),
+      maxReviewsPerUserMessage: numberOr(limits.maxReviewsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxReviewsPerUserMessage),
+      maxNewSessionsPerUserMessage: numberOr(limits.maxNewSessionsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxNewSessionsPerUserMessage),
+      maxDelegationsPerDay: numberOr(limits.maxDelegationsPerDay, DEFAULT_HANDOFF_LIMITS.maxDelegationsPerDay),
+      nudgeWhenUnreceipted: limits.nudgeWhenUnreceipted === true,
+      maxNudgesPerTurn: numberOr(limits.maxNudgesPerTurn, DEFAULT_HANDOFF_LIMITS.maxNudgesPerTurn),
+    },
+    onUnreceiptedStop: {
+      delegateTo: typeof stop.delegateTo === 'string' ? stop.delegateTo : '',
+      reportToUser: stop.reportToUser !== false,
+    },
+    newSession: {
+      onFinish: Array.isArray(newSession.onFinish) ? newSession.onFinish.slice() : [],
+      nextAction: HANDOFF_NEXT_ACTIONS.indexOf(newSession.nextAction) >= 0 ? newSession.nextAction : 'continue',
+      briefing: Array.isArray(newSession.briefing) ? newSession.briefing.slice() : HANDOFF_BRIEFING_ITEMS.slice(),
+      keepGoal: newSession.keepGoal !== false,
+      carrySelection: newSession.carrySelection !== false,
+      carryChainBinding: newSession.carryChainBinding !== false,
+    },
+  }
+}
+
+function numberOr(value, fallback) {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.round(value)) : fallback
+}
+
+/** One roster row: every field the schema declares, with the same defaults. */
+function normalizeRosterEntry(value) {
+  var entry = value && typeof value === 'object' ? value : {}
+  return {
+    id: typeof entry.id === 'string' ? entry.id : '',
+    name: typeof entry.name === 'string' ? entry.name : '',
+    role: HANDOFF_ROLES.indexOf(entry.role) >= 0 ? entry.role : 'work',
+    purpose: typeof entry.purpose === 'string' ? entry.purpose : '',
+    instructions: typeof entry.instructions === 'string' ? entry.instructions : '',
+    preset: typeof entry.preset === 'string' ? entry.preset : '',
+    provider: typeof entry.provider === 'string' ? entry.provider : '',
+    model: typeof entry.model === 'string' ? entry.model : '',
+    reasoningEffort: typeof entry.reasoningEffort === 'string' ? entry.reasoningEffort : '',
+    maxTokens: numberOr(entry.maxTokens, 0),
+    failover: typeof entry.failover === 'string' && entry.failover !== '' ? entry.failover : HANDOFF_FAILOVER_INHERIT,
+    attach: Array.isArray(entry.attach) ? entry.attach.filter(function (item) { return HANDOFF_ATTACH_ITEMS.indexOf(item) >= 0 }) : HANDOFF_ATTACH_ITEMS.slice(),
+    maxRunsPerUserMessage: numberOr(entry.maxRunsPerUserMessage, DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE),
+  }
 }
 
 

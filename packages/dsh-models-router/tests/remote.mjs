@@ -30,6 +30,7 @@ import {
   PluginPackages,
 } from '@deepseek-ai/dsh-app-boot'
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
+import { Peer } from '@deepseek-ai/dsh-client-connection'
 import { validateTypertManifest } from '@deepseek-ai/dsh-typert-loader'
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
@@ -92,6 +93,15 @@ const overlay = `- insert:
             - { provider: stub-primary, model: stub-model, maxRetries: 0 }
             - { provider: stub-third, model: stub-model, maxRetries: 0 }
           switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: false, invalidRequest: false }
+        handoff:
+          enabled: true
+          subagentBackend: spawn
+          roster:
+            - id: reviewer
+              name: 复核
+              role: review
+              purpose: '独立复核：判断目标是否真的达成，列出缺口。'
+              instructions: '你只读工件，不改文件。'
         health:
           probe:
             # The schedule is on here so the timer itself is exercised: the
@@ -178,7 +188,14 @@ try {
   process.exit(1)
 }
 
-const invoke = (method, args) => ctx.typertGateway.invoke({ namespace: 'routerHealth', method, args })
+// Every in-process Remote call names the Peer it speaks for (0.2.1-rc.2:
+// `TypertGateway.invoke` asserts `peer.signal`, so an omitted peer is a
+// TypeError rather than an owner default). This is the same owner Peer the
+// gateway's own specs build — `new Peer(ctx.root, { principal: { kind: 'owner' } })`
+// (packages/api/gateway/tests/peer.ts), so the call runs the production
+// dispatch path with a real PeerScope, not a hand-typed one.
+const peer = new Peer(ctx.root, { principal: { kind: 'owner' } })
+const invoke = (method, args) => ctx.typertGateway.invoke({ peer, namespace: 'routerHealth', method, args })
 
 // ---------- assertions ----------
 
@@ -195,6 +212,7 @@ test('the generated artifact passes the loader’s own registration validator', 
   assert.deepEqual(ids, [
     `${PACKAGE_NAME}#routerHealth/checkConnectivity`,
     `${PACKAGE_NAME}#routerHealth/checkUpdate`,
+    `${PACKAGE_NAME}#routerHealth/handoffCarried`,
     `${PACKAGE_NAME}#routerHealth/probeAll`,
     `${PACKAGE_NAME}#routerHealth/probeReport`,
     `${PACKAGE_NAME}#routerHealth/sessionBinding`,
@@ -248,12 +266,62 @@ test('the generated strict codec refuses a malformed session-binding write', asy
     { sessionId: 's', chain: 'coding', retries: {} })
 })
 
+// ---- handoff 工具：真实 Loader 组合里注册与拒绝 ----
+//
+// 这一组不伪造 Context：工具由插件在 boot 时注册进真实的 ToolRuntime，描述由名册
+// 编译，拒绝走真实的 HarnessError。真实 agent 的路径（facts / delegate / 目标闸门）
+// 由 unit.mjs 的纯函数用例与浏览器验证覆盖——这份 headless 组合不挂
+// sessionController，造不出一个真会话来。
+
+test('the handoff tool is registered in the real composition, compiled from the roster', async () => {
+  const tool = ctx.tools.get('handoff')
+  assert.notEqual(tool, undefined, 'the plugin registered the tool once tools/subagents were mounted')
+  // 描述只含 purpose，不含 instructions（一个字段一个读者）。
+  assert.match(tool.description, /reviewer/)
+  assert.match(tool.description, /独立复核/)
+  assert.equal(tool.description.includes('你只读工件'), false,
+    'instructions never reach the main model through the description')
+  assert.match(tool.description, /delegate/, 'the enabled actions are named')
+})
+
+test('the handoff tool refuses a call with no agent, loudly', async () => {
+  const tool = ctx.tools.get('handoff')
+  await assert.rejects(
+    () => tool.execute({ action: 'facts' }, { signal: new AbortController().signal }),
+    (error) => {
+      assert.equal(error.code, 'HANDOFF_AGENT_REQUIRED')
+      return true
+    },
+  )
+})
+
+test('the handoff tool refuses a delegated child before doing anything else', async () => {
+  const tool = ctx.tools.get('handoff')
+  // 只走到 handler 的第一道门：顶层会话判定。非顶层会话的拒绝发生在读取任何服务之前。
+  const childAgent = { session: { header: { parentSession: 'parent-session' } } }
+  await assert.rejects(
+    () => tool.execute({ action: 'facts' }, { agent: childAgent, signal: new AbortController().signal }),
+    (error) => {
+      assert.equal(error.code, 'HANDOFF_NOT_TOP_LEVEL')
+      assert.match(error.message, /top-level/)
+      return true
+    },
+  )
+})
+
 // ---- 会话绑定：两个 Remote 走真网关 ----
 
 test('sessionBinding reads a session that never wrote one as "follow the default chain"', async () => {
   // 没有绑定是一种状态，不是失败：读回默认值，并如实说明它存在哪。
   const view = await invoke('sessionBinding', { sessionId: 'session-never-written' })
   assert.deepEqual(view, { chain: null, retries: {}, persistent: true })
+})
+
+test('handoffCarried answers "nothing carried" as a known zero', async () => {
+  // 没有接力过的会话不是"读不到"：carried:false + 全 0 是确定的零，浏览器据此
+  // 把三本预算画成 0/上限，而不是把整块藏起来。
+  const view = await invoke('handoffCarried', { sessionId: 'session-never-relayed' })
+  assert.deepEqual(view, { carried: false, delegations: 0, reviews: 0, newSessions: 0, perRole: {} })
 })
 
 test('setSessionBinding writes durably, answers what it stored, and reads back', async () => {

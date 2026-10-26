@@ -9,16 +9,27 @@
  */
 
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import type { ModelCatalog } from '@deepseek-ai/dsh-api-remotes/client'
+import type { UpdateCheck } from '../types.ts'
+import type { HandoffConfig, HealthConfig, NamedChain } from '../config.ts'
 import { clone, deepEqual, fill, summarize } from './format.ts'
-import { defaultChainValue, normalizeNamedChain, normalizeHealth, validate } from './validate.ts'
+import { defaultChainValue, normalizeNamedChain, normalizeHealth, normalizeHandoff, validate } from './validate.ts'
+import type { Problem } from './validate.ts'
 import { defaultChainOf, effectiveChains } from '../chain.ts'
-import { pruneTimeline } from '../timeline.ts'
+import { pruneTimeline, TIMELINE_RETENTION_SECONDS } from '../timeline.ts'
 import { configuredRouteList, routeKeyOf, routeParts } from '../routes.ts'
-import { DEFAULT_FIRST_HOP_MAX_RETRIES, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKEN_CONTINUES, MAX_RETRIES, MAX_TOKEN_CONTINUES, POLICY_VERSION } from '../defaults.ts'
+import { DEFAULT_FIRST_HOP_MAX_RETRIES, DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE, DEFAULT_MAX_RETRIES, DEFAULT_MAX_TOKEN_CONTINUES, HANDOFF_ATTACH_ITEMS, HANDOFF_FAILOVER_INHERIT, MAX_RETRIES, MAX_TOKEN_CONTINUES, POLICY_VERSION } from '../defaults.ts'
 import { RELEASE_VERSION } from '../release.generated.ts'
 
 /** Where the browser remembers the last release whose notes it has shown. */
 var SEEN_VERSION_KEY = 'dsh-models-router:seen-version'
+
+/**
+ * 故障转移抽屉往回看多远，毫秒。与健康时间线的保留时长同一个数字（24 h），
+ * 但它是抽屉自己的窗口：账本条目跨会话折进来没有别的裁剪，不给窗口就会把很久
+ * 以前的转移当成"最近"。理由与锚点的差别见 `foldFailoverRows`。
+ */
+var FAILOVER_WINDOW_MS = TIMELINE_RETENTION_SECONDS * 1000
 
 /**
  * The release whose notes this browser last acknowledged, or null when it has
@@ -55,6 +66,123 @@ export function notesForCurrentVersion() {
   return seenVersion() !== RELEASE_VERSION
 }
 
+/** What one manual run found, kept on screen until the next run. */
+interface RunSummary {
+  total: number
+  counts: Record<string, number>
+  text: string
+}
+
+/**
+ * The workbench's view state.
+ *
+ * Nothing here is config: it is not saved, not part of the draft, and not
+ * compared for dirtiness. Declared because most of these fields start empty
+ * (`null`, `{}`, `[]`) and only the declaration says what they will hold — a
+ * `null` inferred from the initializer would reject the first real write.
+ */
+interface RouterUi {
+  /** `'__health__'` / `'__roster__'` / `'__chain__'`, or nothing selected yet. */
+  activeId: string | null
+  /** Which chain the editor is on (null = the default chain). */
+  chainId: string | null
+  /** Which roster entry the editor is on (null = none). */
+  rosterId: string | null
+  modal: { kind: string } | null
+  riskAck: boolean
+  /** The Host's catalog payload (`session/modelCatalog`), or null until read. */
+  catalog: ModelCatalog | null
+  catalogFailed: boolean
+  catalogLoading: boolean
+  drawerOpen: boolean
+  drawerLoading: boolean
+  drawerError: boolean
+  /** One row per session with entries inside the window (see `foldFailoverRows`). */
+  drawerRows: readonly FailoverRow[]
+  passive: Record<string, unknown>
+  discover: Record<string, unknown>
+  checking: boolean
+  checkingRoutes: Record<string, boolean>
+  probe: Record<string, unknown>
+  probing: boolean
+  probingRoutes: Record<string, boolean>
+  checkSummary: RunSummary | null
+  probeSummary: RunSummary | null
+  /** Why the passive read failed, or null when it was whole. */
+  passiveError: string | null
+  notesOpen: boolean
+  updateOpen: boolean
+  updateChecking: boolean
+  /** The Host's answer to "is there a newer release". */
+  updateResult: UpdateCheck | null
+  updateError: string | null
+}
+
+/**
+ * One session's slice of the failover history, as the drawer reads it.
+ *
+ * The envelope is typed; the two payload columns stay `unknown` on purpose. They
+ * do have types — `ChannelHealthRecord` (`health.ts:76`) and `FailoverEntry`
+ * (`lineage.ts:29`) — but importing either here is not a type-only decision:
+ * those modules import the **host** session entries, and pulling them into this
+ * program replaces the browser's `Context.sessions` merge with the host face, so
+ * `refreshProjections` / `refresh` / `subagentAddress` vanish and the fleet code
+ * stops compiling (measured 2026-10-24: three errors, that shape). The columns
+ * are folded on the Host and reach the drawer through `any` props, so naming
+ * them here would buy a comment, not a check — not worth un-typing the client
+ * session store for.
+ */
+interface HistoryRead {
+  sessionId: string
+  /** The session's `router/channel-health` map, keyed by route; null when absent. */
+  health: Record<string, unknown> | null
+  /** Its `router/failover-history` ledger entries, oldest first. */
+  entries: readonly unknown[]
+}
+
+/**
+ * One row the failover dialog paints: the session and the entries that survived
+ * the window, oldest first. Health is deliberately not carried — that view reads
+ * the same fold and needs the other column.
+ */
+interface FailoverRow {
+  sessionId: string
+  entries: readonly unknown[]
+}
+
+/** The page's editable config value: the Host's section, normalized for the form. */
+interface ConfigDraft {
+  enabled: boolean
+  chains: NamedChain[]
+  defaultChainId: string
+  health: HealthConfig
+  handoff: HandoffConfig
+}
+
+/**
+ * What the store publishes, which is what the page renders.
+ *
+ * Declared because this is the seam that used to drift silently: `ui` is the same
+ * bag the controller mutates, minus `chainId` (which chain the editor is on is
+ * the controller's own business — the page reads the derived `draft.chain`), so
+ * `Omit` keeps one list of fields instead of two, and `project()` has to supply
+ * every one of them. `page.ts` types the value it renders from the store with
+ * this, so a field that stops being published breaks the reader, not the user.
+ */
+export interface RouterSnapshot {
+  /** The config scope answered; a pending read renders the unavailable line. */
+  available: boolean
+  writable: boolean
+  dirty: boolean
+  invalid: boolean
+  saving: boolean
+  failed: boolean
+  /** The draft plus the `chain` alias the one-chain editor reads. */
+  draft: ConfigDraft & { chain: NamedChain }
+  problems: Problem[]
+  ui: Omit<RouterUi, 'chainId'>
+}
+
 /**
  * @param initialNotesOpen - whether to open the release notes on this activation.
  */
@@ -73,15 +201,19 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       // three tiers are re-derived here so one old row cannot leave the UI
       // reading `undefined` for a tier that has a perfectly good default.
       health: normalizeHealth(value.health),
+      // 委派名册：旧配置里没有这一节，缺省即"整段的默认值"（总闸关），不是"用户全关了"。
+      handoff: normalizeHandoff(value.handoff),
     }
   }
   var host = seed()
   var draft = seed()
-  var ui = {
+  var ui: RouterUi = {
     activeId: null,
     // 链列表里正在编辑的那一条（null = 默认链）。这是视图状态，不是配置：不写进 draft，
     // 也不参与脏检查——"我在看哪条链"与"配置改了什么"是两件事。
     chainId: null,
+    // 名册里正在编辑的那一个角色（null = 没选）。同一条规矩：视图状态不进 draft。
+    rosterId: null,
     modal: null,
     riskAck: false,
     catalog: null,
@@ -90,9 +222,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     drawerOpen: false,
     drawerLoading: false,
     drawerError: false,
-    // 读不全的原因（部分或全部会话读不到）。空 = 上一次读取是完整的：
-    // 抽屉里"没有记录"与"读不到"必须是两种渲染。
-    drawerPartial: null,
+    // 抽屉里"没有记录"与"读不到"必须是两种渲染：后者是 drawerError
+    // （整份列表被拒），前者是读到了一条窗口内的记录都没有。
     drawerRows: [],
     // Passive observation, folded by the host projection out of real
     // conversation outcomes. Keyed by route, merged across recent sessions.
@@ -142,7 +273,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   // 它有没有模态、是哪個模态，不告诉它哪个设置面在前台。
   var surfaceCount = 0
 
-  function project() {
+  function project(): RouterSnapshot {
     var snapshot = scope.getSnapshot()
     var problems = validate(draft)
     // The store freezes what it is given, so the published state must be a
@@ -163,6 +294,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       problems: problems,
       ui: {
         activeId: ui.activeId,
+        rosterId: ui.rosterId,
         modal: ui.modal,
         riskAck: ui.riskAck,
         catalog: ui.catalog,
@@ -171,7 +303,6 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
         drawerOpen: ui.drawerOpen,
         drawerLoading: ui.drawerLoading,
         drawerError: ui.drawerError,
-        drawerPartial: ui.drawerPartial,
         drawerRows: ui.drawerRows,
         passive: ui.passive,
         discover: ui.discover,
@@ -210,7 +341,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
    * 巡检节奏，保存成功才重新武装——与宿主侧探针定时器"保存即 fiber 重启按新周期
    * 重武装"是同一套语义。
    */
-  var discoverTimer = null
+  var discoverTimer: ReturnType<typeof setInterval> | null = null
   var armedSeconds = -1
   // 忙态的最短可见时长：长到看得清、短到不觉慢。见 controller.holdBusy 的注释——
   // 预检即失败的路由（NO_ADAPTER / MISSING_CREDENTIAL）会在微任务里 resolve，
@@ -254,8 +385,17 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   /**
    * 合并一条渠道在新旧两份记录里的观测。时间线取**去重后的并集**并按时间排序——
    * 可用率是全局事实：同一个渠道这个会话用、那个会话也用，并发三个会话更是同时在用，
-   * 统计必须合在一起算，没有"属于哪个会话"这一说。标量（状态/延迟/吞吐/最后错误）
-   * 取较新那份：最近一次观测说什么就是什么。调用方保证 older 来自较旧的会话。
+   * 统计必须合在一起算，没有"属于哪个会话"这一说。
+   *
+   * 标量（状态/延迟/吞吐/最后错误）取**观测时间**较新的那份，不是"后合进来的那份"。
+   * 参数名 older/newer 只表示调用方的合并顺序，不构成观测新旧：`readSessionBlocks`
+   * 按会话的 `updatedAt` 排序，而那个读数是"哪个会话最近有人说话"
+   * （`session.list` 的 `max(createdAt, lastPromptAt)`），冷会话那份来自会滞后的
+   * 持久化投影缓存——拿它当观测新旧，就会让"排序靠前但观测更晚"的记录输给
+   * "排序靠后但观测更早"的记录。所以判据是记录自带的 `lastCheckedAt`。
+   *
+   * 两份里只有一份写了 `lastCheckedAt` 时无从比较，退回调用方顺序（修复前的行为）：
+   * 未知既不是 0，也不等于最新——不声明观测时间的记录不构成排名证据。
    *
    * 去重是必须的：`loadPassive()` 会在挂载、打开健康页、每轮巡检后重读同样 20 个
    * 会话，同一批观测点会被反复并进来。不按 time 去重，数组随页面停留时间无界增长，
@@ -264,6 +404,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
    *
    * Note: 为何不是"整记录覆盖 + 最新会话赢"、为何不合并时间线窗口 —— 见
    * .agents/notes/implemented/2026-10-15-health-monitoring-cross-session-merge.md
+   * Note: 为何标量按 lastCheckedAt 而不是会话顺序 —— 见
+   * .agents/notes/implemented/2026-10-24-health-scalars-by-observation-time.md
    */
   function mergeHealthRecord(older, newer) {
     if (older === undefined || older === null) return newer
@@ -280,7 +422,20 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     // 按时间戳保留 24 小时 + 条数上限）。此前这里是"最近 24 次观测"，与 host 的
     // 同一句注释说的是两件事——合并后看到的比投影里存的多/少，而时间轴现在画的是
     // 固定格数 × 时长桶，裁剪规则不一致就会让柱子与可用率各算一套。
-    return Object.assign({}, newer, { timeline: pruneTimeline(points) })
+    var olderAt = observationTime(older)
+    var newerAt = observationTime(newer)
+    // 只有两份都写明了观测时间才重排；任一缺失就退回调用方顺序（= 修复前行为）。
+    var base = olderAt !== null && newerAt !== null && olderAt > newerAt ? older : newer
+    return Object.assign({}, base, { timeline: pruneTimeline(points) })
+  }
+
+  /**
+   * 记录自带的观测时间，作为"哪份标量更新"的唯一判据。缺失返回 `null` 而不是 0：
+   * 一个不声明观测时间的记录不构成排名证据，未知不等于最新。
+   */
+  function observationTime(record) {
+    var at = record === undefined || record === null ? undefined : record.lastCheckedAt
+    return typeof at === 'number' && isFinite(at) ? at : null
   }
 
   /**
@@ -298,6 +453,35 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     return target
   }
 
+  /**
+   * 故障转移历史的跨会话窗口与行序，两件事都只由条目自身的 `time` 决定。
+   *
+   * 账本没有"哪条最新"的跨会话读数可用：会话的 `updatedAt` 是会滞后的缓存水位
+   * （`max(createdAt, lastPromptAt)`），拿它挑成员正是上一版 20 会话窗口的毛病。
+   * 所以这里只做一次纯折叠：每条会话的条目按窗口筛，行按各自最新条目的时间降序
+   * 排，筛空的会话整行不出现。条目缺时间戳按未知处理（未知不是 0）。
+   *
+   * 窗口从**墙上时钟**算，不从最新条目算：抽屉标题是"最近故障转移历史"，
+   * 三天前的转移不是最近。24 h 与健康时间线保留的时长同一个数字
+   * （../timeline.ts 的 TIMELINE_RETENTION_SECONDS），但锚点不同——那边从最新
+   * 观测算，因为冷会话是事后才折进来的，按墙上时钟会把它的整段历史丢掉；抽屉
+   * 回答的是"现在往回看最近发生过什么"。
+   */
+  function foldFailoverRows(reads, now) {
+    var oldest = now - FAILOVER_WINDOW_MS
+    var rows: Array<{ sessionId: string, entries: any[], newest: number }> = []
+    reads.forEach(function (read) {
+      var kept = read.entries.filter(function (entry) {
+        return typeof entry.time === 'number' && entry.time >= oldest
+      })
+      if (kept.length === 0) return
+      var ordered = kept.slice().sort(function (a, b) { return a.time - b.time })
+      rows.push({ sessionId: read.sessionId, entries: ordered, newest: ordered[ordered.length - 1].time })
+    })
+    rows.sort(function (a, b) { return b.newest - a.newest })
+    return rows.map(function (row) { return { sessionId: row.sessionId, entries: row.entries } })
+  }
+
   /** An error as one line of text, for a message that has to be shown as-is. */
   function describeError(error) {
     if (error && typeof error.message === 'string' && error.message.length > 0) return error.message
@@ -305,52 +489,38 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   }
 
   /**
-   * The recent sessions' projection values, read once for both views that need
-   * them: the passive health fold and the failover history.
+   * Fold `session.list` into the two projection blocks both views need: the
+   * passive health map and the failover ledger, one entry per session.
    *
-   * A refused read is reported, never folded into "this session has nothing":
-   * the two render identically, and telling them apart is the whole job of both
-   * views. Failures are returned rather than thrown, so one unreadable session
-   * cannot take the other nineteen with it.
+   * This is a pure fold over DSH's own listing. `session.list` returns **every**
+   * visible session, already ordered by `updatedAt`, and each row inlines its
+   * `projections` block (`packages/api/session-controller/src/list.ts:132-165`,
+   * `types.ts:178-191`; `hintsOf` carries the wire values out unchanged,
+   * `list.ts:321-329`). So the previous shape — one `session.projections()`
+   * round-trip per session inside a self-invented "last 20" window — is gone.
+   * That window picked its members by `updatedAt`, a read that lags the log by up
+   * to 13.7 h on this machine, so the newest observation could sit outside it.
    *
-   * @returns the successful reads (old → new, each with the two projection
-   *   keys), the failure messages, and how many sessions were asked about.
+   * A missing key means "this session never wrote it" (a session that never used
+   * the router has neither block, and `hintsOf` only emits a block that holds
+   * values), not "the read failed". The one real refusal left is the list itself,
+   * which the callers report as a wholesale failure.
    *
    * Note: 为何两个视图必须共用这一份读取、失败为何不能折成空 —— 见
    * .agents/notes/implemented/2026-10-23-honest-surfaces.md
+   * Note: 为何去掉 20 会话窗口、抽屉为何自带时间窗 —— 见
+   * .agents/notes/implemented/2026-10-24-folds-the-whole-session-list.md
    */
-  function readRecentSessions(session, limit) {
+  function readSessionBlocks(session) {
     return session.list({}).then(function (result) {
       if (!result.ok) throw new Error(describeError(result.error) || 'session.list was refused')
-      // 数组按更新时间从旧到新，最后一条才是最近一次观测：合并顺序就是语义。
-      // 两个坑都实测踩过：① 在并发回调里直接 assign，谁最后 resolve 谁赢——
-      // 同一条路由时而显示三天前的延迟、时而显示今天的，刷新就变；② 数组新的
-      // 在前时最后 assign 的是最旧一条，语义恰好反了。
-      var sessions = (result.value?.items ?? []).slice()
-        .sort(function (a, b) { return (a.updatedAt ?? 0) - (b.updatedAt ?? 0) })
-        .slice(-limit)
-      var failures = []
-      return Promise.all(sessions.map(function (entry) {
-        return session.projections({ sessionId: entry.sessionId }).then(function (read) {
-          // The live read is `{ asOfSeq, values }`; a migration-required read
-          // carries cached values only. Either way the key is read straight out
-          // of `values` — no `kind` gate (the wire payload does not carry one).
-          if (!read.ok) throw new Error(describeError(read.error) || 'the projection read was refused')
-          var values = read.value !== null ? (read.value.values ?? {}) : {}
-          return {
-            sessionId: entry.sessionId,
-            health: values['router/channel-health'] ?? null,
-            entries: values['router/failover-history'] ?? [],
-          }
-        }).catch(function (error) {
-          failures.push(describeError(error))
-          return null
-        })
-      })).then(function (reads) {
+      return (result.value?.items ?? []).map(function (entry) {
+        var block = entry.projections
+        var values = block !== undefined && block !== null ? (block.values ?? {}) : {}
         return {
-          reads: reads.filter(function (row) { return row !== null }),
-          failures: failures,
-          total: sessions.length,
+          sessionId: entry.sessionId,
+          health: values['router/channel-health'] ?? null,
+          entries: values['router/failover-history'] ?? [],
         }
       })
     })
@@ -358,24 +528,23 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
 
   /**
    * Read the host projection's passive records. Health is a cross-session
-   * fact, so this folds the same window the failover history reads rather
-   * than pretending one session is the whole story.
+   * fact, so this folds every session DSH lists rather than pretending one
+   * session is the whole story; the per-record `lastCheckedAt` decides which
+   * scalars win (see `mergeHealthRecord`).
    */
   function loadPassive() {
     var session = ctx.remote && ctx.remote.session
     if (!session) return
-    readRecentSessions(session, 20).then(function (page) {
+    readSessionBlocks(session).then(function (reads) {
       // 先拷贝再写入：store 的 set 会 dev-freeze 它收到的对象，之后往原对象上
       // 赋值在 dev 构建里会静默失败（圆点永远显示"未探测"）。所以折进一张新表，
       // 折完整体换上——也顺便让"这批会话之外"的旧记录自然消失。
       var folded = {}
-      for (var i = 0; i < page.reads.length; i++) mergeHealthRecords(folded, page.reads[i].health)
+      for (var i = 0; i < reads.length; i++) mergeHealthRecords(folded, reads[i].health)
       ui.passive = folded
-      ui.passiveError = page.failures.length === 0
-        ? null
-        : page.failures.length === page.total
-          ? fill(t('healthHistoryUnreadable'), { error: page.failures[0] })
-          : fill(t('healthHistoryPartial'), { failed: page.failures.length, total: page.total, error: page.failures[0] })
+      // 整份列表读到了就没有"部分失败"可言：一条缺块的行只说明那个会话没写过，
+      // 不是读不到（见 readSessionBlocks）。真正的失败走下面的 catch。
+      ui.passiveError = null
       publish()
     }).catch(function (error) {
       // The list itself failed, so not one session was read. Say that instead of
@@ -413,10 +582,10 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   // 不等于"0 后果"——UI 走了还继续打端点既是浪费，也可能把渠道打出限流。
   // 信号经 Typert 的 cancellation 通道到宿主（描述符声明 signal 末参即注入，
   // 与 probeAll 同一机制），宿主把取消传进 discoverModels。
-  var checkAborts = new Set()
+  var checkAborts = new Set<AbortController>()
   // 在飞的探测：与连通性检查同契约。探测花的是真 token，面板一关就必须停，
   // 不能只靠宿主侧的超时兜底。
-  var probeAborts = new Set()
+  var probeAborts = new Set<AbortController>()
   function runCheck(routes, signal) {
     var health = ctx.remote && ctx.remote.routerHealth
     var cannotCheck = function () {
@@ -485,6 +654,15 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     return 'chain-' + String(Date.now())
   }
 
+  /** 新角色的 id：role-2、role-3… 同样取第一个没被占用的（工具与账本按 id 引用）。 */
+  function nextRosterId(roster) {
+    for (var index = 2; index < 1000; index += 1) {
+      var candidate = 'role-' + index
+      if (!roster.some(function (entry) { return entry.id === candidate })) return candidate
+    }
+    return 'role-' + String(Date.now())
+  }
+
   var controller = {
     store: store,
     /** The dialog's workbench mounted. */
@@ -540,8 +718,70 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       if (ui.chainId === id) ui.chainId = null
       publish()
     },
+    // ---- delegation roster (P2) ----
+    //
+    // 三个动作覆盖整页：一个标量（含嵌套路径）、一条角色、以及新增/删除。写的是
+    // 同一份 draft，保存仍走 save() 的那一次 mutate —— 页签没有自己的保存链路。
+    /** Set one scalar in the handoff section, by path (`['limits','maxReviewsPerUserMessage']`). */
+    setHandoffField: function (path, value) {
+      var target = draft.handoff
+      for (var index = 0; index < path.length - 1; index += 1) {
+        if (target[path[index]] === undefined || target[path[index]] === null) return
+        target = target[path[index]]
+      }
+      target[path[path.length - 1]] = value
+      publish()
+    },
+    /** Select one role in the master list (view state, not config). */
+    selectRoster: function (id) {
+      ui.rosterId = id
+      publish()
+    },
+    /** Add an empty role and select it: the empty state's one action. */
+    addRoster: function () {
+      var id = nextRosterId(draft.handoff.roster)
+      draft.handoff.roster.push({
+        id: id,
+        name: '',
+        role: 'work',
+        purpose: '',
+        instructions: '',
+        preset: '',
+        provider: '',
+        model: '',
+        reasoningEffort: '',
+        maxTokens: 0,
+        failover: HANDOFF_FAILOVER_INHERIT,
+        attach: HANDOFF_ATTACH_ITEMS.slice(),
+        maxRunsPerUserMessage: DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
+      })
+      ui.rosterId = id
+      publish()
+    },
+    /** Edit one field of one role. `id` may itself be changing, so rows are addressed by identity. */
+    updateRoster: function (id, field, value) {
+      var entry = draft.handoff.roster.filter(function (candidate) { return candidate.id === id })[0]
+      if (entry === undefined) return
+      entry[field] = value
+      // 改 id 时选中项跟着走：选中是视图状态，不是"第 N 行"，否则改完 id 列表跳走。
+      if (field === 'id' && ui.rosterId === id) ui.rosterId = value
+      publish()
+    },
+    removeRoster: function (id) {
+      draft.handoff.roster = draft.handoff.roster.filter(function (entry) { return entry.id !== id })
+      if (ui.rosterId === id) ui.rosterId = null
+      // 兜底角色指向一个已删除的 id 会变成永远不会发生的自动派：一起清掉，而不是留给
+      // 结构校验去拒绝（那条规则留给手写配置）。
+      if (draft.handoff.onUnreceiptedStop.delegateTo === id) draft.handoff.onUnreceiptedStop.delegateTo = ''
+      publish()
+    },
     setActive: function (id) {
       ui.activeId = id
+      // 打开名册页时默认选中第一个角色：主从布局的编辑器不能一进来就是空面板，
+      // 而"用户还没选"与"没有角色"是两件事。选中是视图状态，不改 draft。
+      if (id === '__roster__' && ui.rosterId === null && draft.handoff.roster.length > 0) {
+        ui.rosterId = draft.handoff.roster[0].id
+      }
       // 打开健康工作台时重取一次被动快照。它原本只在控制器创建时读一次，
       // 故障转移发生后工作台还显示着旧延迟/旧可用率——监控视图在事故进行中
       // 给人看旧数字，比没有这个数字更糟。重取是同一套 20 会话合并，代价是
@@ -553,6 +793,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     discard: function () {
       draft = seed()
       ui.chainId = null
+      ui.rosterId = null
       failed = false
       publish()
     },
@@ -575,6 +816,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
         // 用户在这里取消的勾选就永远不算数。
         { op: 'set', path: ['policyVersion'], value: POLICY_VERSION },
         { op: 'set', path: ['health'], value: draft.health },
+        // 委派名册：整段一次写。它不是第二个保存链路——同一次 mutate、同一个 revision。
+        { op: 'set', path: ['handoff'], value: draft.handoff },
       ], scope.getSnapshot().revision).then(function (accepted) {
         saving = false
         failed = !accepted
@@ -705,17 +948,13 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ui.drawerOpen = true
       ui.drawerLoading = true
       ui.drawerError = false
-      ui.drawerPartial = null
       ui.drawerRows = []
       publish()
-      // 与健康历史走同一次读取（readRecentSessions）：那是同一批会话、同一套
+      // 与健康历史走同一次读取（readSessionBlocks）：那是同一批会话、同一套
       // 失败口径。此前这里是第二份实现，还把逐会话失败吞成空记录——"读不到"
       // 于是渲染成"没有转移"，正是健康历史那轮修掉的同一句话。
-      readRecentSessions(ctx.remote.session, 20).then(function (page) {
-        ui.drawerPartial = page.failures.length === 0
-          ? null
-          : fill(t('failoverHistoryPartial'), { failed: page.failures.length, total: page.total, error: page.failures[0] })
-        ui.drawerRows = page.reads.filter(function (row) { return row.entries.length > 0 })
+      readSessionBlocks(ctx.remote.session).then(function (reads) {
+        ui.drawerRows = foldFailoverRows(reads, Date.now())
         ui.drawerLoading = false
         publish()
       }).catch(function () {
@@ -903,7 +1142,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
           ui.probe = next
           ui.probeSummary = summarizeProbes(result.value.routes ?? [], t)
         }
-        loadProbeReport()
+        controller.loadProbeReport()
         controller.holdBusy(started, function () {
           ui.probing = false
           publish()
@@ -1018,3 +1257,4 @@ function summarizeProbes(routes, t) {
     { key: 'unknown', label: t('probeSummaryUnknown') },
   ])
 }
+
