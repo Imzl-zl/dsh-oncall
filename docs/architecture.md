@@ -2,7 +2,7 @@
 title: "DSH Model Router — 架构"
 status: "implemented"
 kind: "architecture-overview"
-last_updated: "2026-10-21"
+last_updated: "2026-10-24"
 ---
 
 # DSH Model Router — 架构
@@ -16,6 +16,10 @@ last_updated: "2026-10-21"
 - [产品形态与配置面](design/product-plan.md)：用户视角这是什么、能配什么、看得到什么、做不了什么、分期。
 - [详细架构与行为提案](design/architecture.md)：请求路径、路由配置、失败策略、Session 与 UI 影响。
 - [工作台布局重构](design/ui-layout-redesign.md)：DSH 原生页面契约、分区/行/弹窗的布局规格、落地状态与同步修的逻辑语义。
+- [Agent Fleet 右栏与三页签配置中枢](design/agent-fleet-drawer.md)：右栏全局/单会话、三页签配置、数据口径与实施偏离记录。
+- [运行时对齐与委派名册（P2）](design/p2-roster-and-runtime-alignment.md)：基线对齐到 `0.2.1-rc.3`、名册 host→UI 次序与验收。
+- [P2 后续会话交接](design/p2-next-session-brief.md)：已落地的事实、已定语义、原生能力核对、剩余缺口与验证配方。
+- [Gemini 模板审查](design/ui-review-gemini-template.md)：模板的载体、关系图、数据与排版问题，以及可保留的部分。
 - [DSH 能力边界](design/dsh-capability-boundary.md)：DSH 原生支持什么、不支持什么、每个缺口的最优雅补法、外置插件须遵守的社区规范。
 - [DSH 源码地图](design/source-map.md)：已核实的扩展点与消费者。
 - [未决问题](design/open-questions.md)：仍需产品 owner 决定或技术 spike 验证的事项。

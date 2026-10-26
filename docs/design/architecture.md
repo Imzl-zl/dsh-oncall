@@ -130,7 +130,7 @@ DSH `installModelSelection()` 在 `agent/request` listener 调用 `next()` 后�
 选项 A（用户选真实模型，插件按策略改用候选）会产生三个确定性后果，均已在源码核实，属产品决策而非待验证项：
 
 1. **每次 failover 在下一步追加一条 durable "model changed" notice**。`agent/pre-step` 的 prepend listener 比较 `selection.assembled` 与 `session.requestHeader()?.config`，不同即向本步消息追加 user-role notice（[`model-selection.ts:113-126`](file:///D:/sudy/github/deepseek-harness/packages/core/agent/src/model-selection.ts#L113)）。failover 后 last header 是候选渠道，与用户选择不同，故 notice 必然触发，且它是 model-visible 的 user 消息。文本为真但用户从未请求；抑制它需抢在 host 的 prepend listener 之前，比接受更差。
-2. **UI `next` 停留在未兑现的 pending**。`next = pending ?? lastUsed`，pending 只在某个 `request/header` 与它完全相等时清除（[`model-selection-projection.ts:52,65`](file:///D:/sudy/github/deepseek-harness/packages/api/session-controller/src/model-selection-projection.ts#L52)）。failover 后 `lastUsed` 是实际候选，`next` 仍指向用户选择。
+2. **UI `next` 停留在未兑现的 pending**。`next = pending ?? lastUsed`，pending 只在某个 `request/header` 与它完全相等时清除（[`model-selection.ts:52,82-84`](file:///D:/sudy/github/deepseek-harness/packages/core/agent/src/model-selection.ts#L52)）。failover 后 `lastUsed` 是实际候选，`next` 仍指向用户选择。
 3. **`request/header` 记 `reason: 'change'`**（[`agent.ts:643-648`](file:///D:/sudy/github/deepseek-harness/packages/core/agent-loop/src/agent.ts#L643)），Session 留下真实渠道变更轨迹。
 
 以下仅为待决设计选项，并非完整方案：

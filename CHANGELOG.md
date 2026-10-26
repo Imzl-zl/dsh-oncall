@@ -4,7 +4,7 @@
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循
 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-`1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围（`0.2.0-rc.2`）
+`1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围（当前 `^0.2.1-rc.3`）
 随之移动。
 
 ## [0.5.0] — 2026-10-22

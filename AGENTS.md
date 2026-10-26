@@ -11,7 +11,7 @@
 
 - 环境：Windows；参考 DSH checkout 为 `D:\sudy\github\deepseek-harness`（只读）。
 - 语言/运行时：设计文档以中文为主；插件技术栈遵循 DSH 当前 Cordis/TypeScript 包规范（schemastery Config、函数插件形态、`Volatile` 配置访问）。
-- 当前交付：Markdown 设计 + 插件实现（`packages/dsh-models-router/`：命名链与按会话绑定、失败切换与插件自有重试、立即切换白名单、截断续跑、候选预校验、渠道健康与探测、中文通知；35 个真实 Loader 组合场景 0 失败）。
+- 当前交付：Markdown 设计 + 插件实现（`packages/dsh-models-router/`：命名链与按会话绑定、失败切换与插件自有重试、立即切换白名单、截断续跑、候选预校验、渠道健康与探测、中文通知、Agent Fleet 右栏、委派名册与交接（handoff）；35 个真实 Loader 组合场景 0 失败）。
 - 配置根目录：插件经 cordis overlay（开发）或 `dsh.bundle`（交付）安装；配置 ns = bundle patch 行 id（`model-router`）。
 - 标准验证命令：`npm test`（四套件：unit / client-controller / remote / run）；`npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-models-router/src/index.ts`（类型检查）；交付前逐项核对 Markdown 本地链接、官方来源和 DSH 源码引用。
 
@@ -44,7 +44,7 @@
 - 外部先例：[主流方案对照](docs/references/prior-art.md)。
 - 用户待决问题：[未决事项](docs/design/open-questions.md)。
 - DSH 参考 checkout：`D:\sudy\github\deepseek-harness`。
-- 组合测试已实跑（35/35 场景 0 失败，`packages/dsh-models-router/tests/run.mjs`；四套件合计 unit 193 / client-controller 92 / remote 21）；不得声称运行过尚未编写的测试。
+- 组合测试已实跑（35/35 场景 0 失败，`packages/dsh-models-router/tests/run.mjs`；四套件合计 unit 233 / client-controller 123 / remote 25）；不得声称运行过尚未编写的测试。
 
 ## 6. 项目特定规则
 

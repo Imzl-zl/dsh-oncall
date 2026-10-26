@@ -1,0 +1,2143 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Model Router · Agent Fleet 设计原型</title>
+<style>
+/* =====================================================================
+   DSH token 底座（取自 ui-theme/design-platform.css）
+   ===================================================================== */
+:root {
+  --font-text: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', Consolas, 'Cascadia Mono', monospace;
+  --r-xs: 4px; --r-sm: 8px; --r-md: 12px; --r-lg: 16px;
+  --dur: .18s; --ease: cubic-bezier(.4,0,.2,1);
+  --app-w: 1440px; --left-w: 280px; --right-w: 648px;
+  --page-w: 960px;
+}
+html[data-theme="light"] {
+  --bg-base: #ffffff;
+  --bg-layer-1: #ffffff;
+  --bg-layer-2: #f9fafb;
+  --bg-layer-3: #f1f3f5;
+  --bg-overlay: #e9ecf2;
+  --border-l1: rgba(0,0,0,.04);
+  --border-l2: rgba(0,0,0,.10);
+  --border-l3: rgba(0,0,0,.12);
+  --border-l4: rgba(0,0,0,.16);
+  --label-primary: #0f1115;
+  --label-secondary: #61666b;
+  --label-tertiary: #81858c;
+  --label-caption: #adb2b8;
+  --accent: #4A65E8;
+  --accent-strong: #3B53C9;
+  --accent-text: color-mix(in srgb, #4A65E8 80%, black);
+  --accent-soft: rgba(74,101,232,.08);
+  --accent-border: rgba(74,101,232,.24);
+  --ok: #22c55e; --ok-text: #166534; --ok-soft: rgba(34,197,94,.10);
+  --warn: #f59e0b; --warn-text: #92400e; --warn-soft: rgba(245,158,11,.12);
+  --bad: #ef4444; --bad-text: #991b1b; --bad-soft: rgba(239,68,68,.10);
+  --review: #61666b; --review-text: #3f4448; --review-soft: rgba(0,0,0,.04);
+  --hover: rgba(0,0,0,.04);
+  --selected: rgba(74,101,232,.07);
+  --shadow-card: 0 1px 2px rgba(0,0,0,.04);
+  --shadow-panel: -8px 0 28px rgba(0,0,0,.06);
+  --canvas: #e8ebf0;
+}
+html[data-theme="dark"] {
+  --bg-base: #151517;
+  --bg-layer-1: #232324;
+  --bg-layer-2: #1d1d1f;
+  --bg-layer-3: #2c2c2e;
+  --bg-overlay: #0f0f10;
+  --border-l1: rgba(255,255,255,.06);
+  --border-l2: rgba(255,255,255,.12);
+  --border-l3: rgba(255,255,255,.16);
+  --border-l4: rgba(255,255,255,.20);
+  --label-primary: #f9fafb;
+  --label-secondary: #cfd3d6;
+  --label-tertiary: #adb2b8;
+  --label-caption: #7f858c;
+  --accent: #7a9bff;
+  --accent-strong: #93a7ff;
+  --accent-text: color-mix(in srgb, #7a9bff 72%, white);
+  --accent-soft: rgba(122,155,255,.12);
+  --accent-border: rgba(122,155,255,.26);
+  --ok: #4ade80; --ok-text: #86efac; --ok-soft: rgba(74,222,128,.10);
+  --warn: #fbbf24; --warn-text: #fcd34d; --warn-soft: rgba(251,191,36,.10);
+  --bad: #f87171; --bad-text: #fca5a5; --bad-soft: rgba(248,113,113,.10);
+  --review: #adb2b8; --review-text: #cfd3d6; --review-soft: rgba(255,255,255,.06);
+  --hover: rgba(255,255,255,.06);
+  --selected: rgba(122,155,255,.12);
+  --shadow-card: 0 1px 2px rgba(0,0,0,.3);
+  --shadow-panel: -8px 0 28px rgba(0,0,0,.35);
+  --canvas: #0d0d0e;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; overflow: hidden; background: var(--canvas);
+  color: var(--label-primary); font-family: var(--font-text);
+  font-size: 13px; line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+svg { display: block; flex: none; }
+.num, time, .mono { font-variant-numeric: tabular-nums; }
+.mono { font-family: var(--font-mono); }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* ---------- demo chrome ---------- */
+.demobar {
+  height: 46px; display: flex; align-items: center; gap: 10px; padding: 0 12px;
+  background: var(--bg-layer-1); border-bottom: .5px solid var(--border-l2);
+  overflow-x: auto; white-space: nowrap; position: relative; z-index: 50;
+}
+.demo-brand { display: flex; align-items: center; gap: 8px; font-size: 12px; flex: none; }
+.demo-logo {
+  width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center;
+  background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; letter-spacing: .02em;
+}
+.demo-brand b { font-size: 12.5px; font-weight: 600; }
+.demo-ver { color: var(--label-tertiary); font-family: var(--font-mono); font-size: 10.5px; }
+.demo-sep { width: 1px; height: 20px; background: var(--border-l2); flex: none; }
+.demo-group { display: flex; align-items: center; gap: 3px; flex: none; }
+.demo-label { color: var(--label-tertiary); font-size: 10.5px; margin-right: 2px; }
+.demo-btn {
+  height: 26px; padding: 0 8px; border: .5px solid transparent; background: transparent;
+  border-radius: 6px; color: var(--label-secondary); font-size: 11.5px;
+}
+.demo-btn:hover { background: var(--hover); color: var(--label-primary); }
+.demo-btn.is-active { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-border); }
+.demo-spacer { flex: 1; min-width: 8px; }
+.stage {
+  height: calc(100vh - 46px); overflow: auto; padding: 14px; display: flex;
+  justify-content: center; align-items: flex-start; background: var(--canvas);
+}
+.app {
+  width: var(--app-w); height: calc(100vh - 74px); min-height: 620px;
+  display: grid; grid-template-columns: var(--left-w) minmax(0,1fr) var(--right-w);
+  background: var(--bg-base); border-radius: 10px; overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0,0,0,.14); border: .5px solid var(--border-l2);
+  position: relative;
+}
+.app[data-screen="console"] { grid-template-columns: var(--left-w) minmax(0,1fr); }
+.app[data-w="1440"] { --app-w: 1440px; --left-w: 280px; --right-w: 648px; }
+.app[data-w="1280"] { --app-w: 1280px; --left-w: 280px; --right-w: 576px; }
+.app[data-w="1024"] { --app-w: 1024px; --left-w: 280px; --right-w: 344px; }
+.app[data-w="900"]  { --app-w: 900px;  --left-w: 56px; --right-w: 405px; }
+.app[data-w="800"]  { --app-w: 800px;  --left-w: 56px; --right-w: 344px; }
+.app[data-w="full"] { --app-w: 1440px; grid-template-columns: minmax(0,1fr); }
+.app[data-w="full"] .leftrail,
+.app[data-w="full"] .maincol { display: none; }
+body.no-chrome .demobar { display: none; }
+body.no-chrome .stage { display: block; height: calc(100vh - var(--legend-h, 0px)); padding: 0; }
+body.no-chrome .app { width: 100%; height: calc(100vh - var(--legend-h, 0px)); border: 0; border-radius: 0; box-shadow: none; }
+
+/* ---------- left rail ---------- */
+.leftrail {
+  min-height: 0; display: flex; flex-direction: column;
+  background: var(--bg-layer-2); border-right: .5px solid var(--border-l1);
+  overflow: hidden;
+}
+.rail-top { padding: 12px 10px 8px; display: flex; flex-direction: column; gap: 8px; }
+.rail-brand { display: flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600; }
+.rail-brand .dotmark { width: 18px; height: 18px; border-radius: 6px; background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 9px; font-weight: 700; }
+.rail-brand small { margin-left: auto; font-size: 10px; color: var(--label-tertiary); font-weight: 400; }
+.rail-new {
+  height: 30px; border: .5px solid var(--border-l3); border-radius: var(--r-sm);
+  background: var(--bg-layer-1); color: var(--label-primary); font-size: 12px;
+  display: flex; align-items: center; justify-content: center; gap: 5px;
+}
+.rail-new:hover { background: var(--hover); }
+.rail-search {
+  height: 28px; border: .5px solid var(--border-l2); border-radius: var(--r-sm);
+  background: var(--bg-layer-1); display: flex; align-items: center; gap: 6px;
+  padding: 0 8px; color: var(--label-tertiary); font-size: 11.5px;
+}
+.rail-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 6px 8px; }
+.rail-group { margin-top: 10px; }
+.rail-group-head {
+  display: flex; align-items: center; gap: 5px; padding: 3px 4px;
+  color: var(--label-tertiary); font-size: 10.5px; letter-spacing: .02em;
+}
+.rail-group-head b { color: var(--label-secondary); font-weight: 500; font-size: 11px; }
+.rail-group-head .count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.rail-row {
+  display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 4px 6px;
+  border-radius: 6px; color: var(--label-secondary); font-size: 11.5px;
+}
+.rail-row:hover { background: var(--hover); }
+.rail-row.is-current { background: var(--selected); color: var(--label-primary); }
+.rail-row .status-dot { width: 5px; height: 5px; }
+.rail-row span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-foot { border-top: .5px solid var(--border-l1); padding: 8px 10px; display: flex; gap: 10px; color: var(--label-tertiary); font-size: 11px; }
+.rail-mini { display: none; flex-direction: column; align-items: center; gap: 10px; padding: 10px 0; flex: 1; color: var(--label-tertiary); }
+.rail-mini .mini-btn { width: 32px; height: 32px; border-radius: 8px; display: grid; place-items: center; border: 0; background: transparent; color: inherit; }
+.rail-mini .mini-btn.is-active { background: var(--selected); color: var(--accent-text); }
+.app[data-w="900"] .leftrail .wide,
+.app[data-w="800"] .leftrail .wide { display: none; }
+.app[data-w="900"] .leftrail .rail-mini,
+.app[data-w="800"] .leftrail .rail-mini { display: flex; }
+.app[data-w="900"] .leftrail,
+.app[data-w="800"] .leftrail { align-items: stretch; }
+
+/* ---------- main column / conversation ---------- */
+.maincol { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg-base); }
+.conv-head {
+  flex: none; display: flex; align-items: flex-start; gap: 12px;
+  padding: 12px 20px 10px; border-bottom: .5px solid var(--border-l1);
+}
+.conv-head-main { min-width: 0; flex: 1; }
+.conv-title-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.conv-title-row h1 { margin: 0; font-size: 14px; line-height: 20px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 3px; font-size: 11px; color: var(--label-tertiary); }
+.conv-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+.conv-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 24px 12px; }
+.thread { max-width: 680px; margin: 0 auto; display: flex; flex-direction: column; gap: 18px; }
+.msg { display: flex; flex-direction: column; gap: 6px; }
+.msg-head { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--label-tertiary); }
+.msg-head b { font-weight: 550; color: var(--label-secondary); }
+.msg-body { font-size: 13px; line-height: 1.75; color: var(--label-primary); }
+.msg.user { align-items: flex-end; }
+.msg.user .msg-body {
+  background: var(--bg-layer-3); border-radius: 10px; padding: 8px 12px; max-width: 86%;
+}
+.msg.assistant .msg-body p { margin: 0 0 8px; }
+.msg.assistant .msg-body p:last-child { margin-bottom: 0; }
+.msg.assistant ul { margin: 4px 0 0; padding-left: 18px; color: var(--label-secondary); }
+.msg.assistant li { margin: 3px 0; }
+.event-card {
+  border: .5px solid var(--border-l2); border-radius: 10px; background: var(--bg-layer-2);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 7px;
+}
+.event-card .ec-head { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 550; }
+.event-card .ec-meta { font-size: 11.5px; color: var(--label-tertiary); }
+.agent-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.agent-chip {
+  display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px;
+  border: .5px solid var(--border-l2); border-radius: 999px; background: var(--bg-layer-1);
+  font-size: 10.5px; color: var(--label-secondary);
+}
+.composer {
+  flex: none; margin: 8px 20px 16px; border: .5px solid var(--border-l3); border-radius: 12px;
+  background: var(--bg-layer-1); padding: 8px 10px 7px; box-shadow: var(--shadow-card);
+}
+.composer .c-input { min-height: 34px; font-size: 12.5px; color: var(--label-tertiary); padding: 6px 2px; }
+.composer .c-foot { display: flex; align-items: center; gap: 8px; }
+.composer .c-foot .grow { flex: 1; }
+.composer .c-chip { height: 22px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: .5px solid var(--border-l2); border-radius: 6px; color: var(--label-secondary); font-size: 10.5px; background: transparent; }
+.composer .c-chip:hover { background: var(--hover); }
+.chip-popover {
+  position: absolute; left: 10px; bottom: 54px; width: 266px; z-index: 30;
+  background: var(--bg-base); border: .5px solid var(--border-l2); border-radius: 10px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18); padding: 10px;
+}
+.chip-popover .pop-title { display: flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 600; margin-bottom: 7px; }
+.chip-popover .pop-row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 10.5px; color: var(--label-secondary); }
+.chip-popover .pop-row .mono { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.chip-popover .pop-row .input { width: 58px; height: 26px; text-align: center; }
+.chip-popover .hint { margin: 6px 0 0; }
+.composer .c-send { width: 26px; height: 26px; border-radius: 7px; border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; }
+
+/* ---------- generic bits ---------- */
+.iconbtn {
+  border: 0; background: transparent; color: var(--label-tertiary); width: 26px; height: 26px;
+  border-radius: 6px; display: inline-grid; place-items: center; flex: none;
+}
+.iconbtn:hover { background: var(--hover); color: var(--label-primary); }
+.iconbtn.is-active { background: var(--accent-soft); color: var(--accent-text); }
+.btn {
+  height: 28px; padding: 0 10px; border-radius: 7px; border: .5px solid var(--border-l3);
+  background: var(--bg-layer-1); color: var(--label-primary); font-size: 11.5px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px; white-space: nowrap;
+}
+.btn:hover { background: var(--hover); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { background: var(--accent-strong); }
+.btn.ghost { border-color: transparent; background: transparent; color: var(--label-secondary); }
+.btn.ghost:hover { background: var(--hover); }
+.btn.sm { height: 24px; padding: 0 8px; font-size: 11px; border-radius: 6px; }
+.tag {
+  display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px;
+  border-radius: 4px; border: .5px solid var(--border-l2); background: transparent;
+  color: var(--label-secondary); font-size: 10.5px; line-height: 16px; white-space: nowrap;
+}
+.tag.accent { color: var(--accent-text); background: var(--accent-soft); border-color: var(--accent-border); }
+.tag.ok { color: var(--ok-text); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 28%, transparent); }
+.tag.warn { color: var(--warn-text); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 30%, transparent); }
+.tag.bad { color: var(--bad-text); background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 28%, transparent); }
+.tag.review { color: var(--review-text); background: var(--review-soft); border-color: color-mix(in srgb, var(--review) 28%, transparent); }
+.tag.subtle { color: var(--label-tertiary); }
+.status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--label-caption); flex: none; display: inline-block; }
+.status-dot.ok { background: var(--ok); }
+.status-dot.warn { background: var(--warn); }
+.status-dot.bad { background: var(--bad); }
+.status-dot.review { background: var(--review); }
+.status-dot.pulse { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 16%, transparent); animation: breathe 2.4s ease-in-out infinite; }
+@keyframes breathe { 0%,100% { box-shadow: 0 0 0 2px color-mix(in srgb, var(--ok) 12%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--ok) 18%, transparent); } }
+.dotsep { width: 2px; height: 2px; border-radius: 50%; background: var(--label-caption); flex: none; }
+.hint { color: var(--label-tertiary); font-size: 11.5px; line-height: 1.5; }
+.section { margin-bottom: 14px; }
+.section-head { display: flex; align-items: baseline; gap: 7px; min-height: 24px; margin-bottom: 6px; }
+.section-head h3 { margin: 0; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--label-primary); }
+.section-head .count { font-size: 10.5px; color: var(--label-tertiary); font-variant-numeric: tabular-nums; }
+.section-head .right { margin-left: auto; display: flex; align-items: center; gap: 4px; }
+
+/* ---------- right sidebar / dockkit chrome ---------- */
+.rightbar {
+  min-width: 0; min-height: 0; display: flex; flex-direction: column;
+  background: var(--bg-base); border-left: .5px solid var(--border-l2);
+  box-shadow: var(--shadow-panel); position: relative;
+}
+.resize-handle {
+  position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; z-index: 8;
+  cursor: col-resize; background: transparent; border: 0; padding: 0;
+}
+.resize-handle::after {
+  content: ""; position: absolute; left: 2px; top: 0; bottom: 0; width: 1px;
+  background: var(--border-l2); opacity: .45; transition: background var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.resize-handle:hover::after, .resize-handle:focus-visible::after { background: var(--accent); opacity: 1; }
+.app[data-w="full"] .resize-handle { display: none; }
+body.is-resizing, body.is-resizing * { cursor: col-resize !important; user-select: none !important; }
+.tabstrip {
+  flex: none; height: 38px; padding: 10px 6px 0 10px; display: flex; align-items: center; gap: 4px;
+  border-bottom: .5px solid var(--border-l1); position: relative;
+}
+.tabchips { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; flex: 0 1 auto; }
+.tabchip {
+  height: 26px; padding: 0 8px; border: .5px solid transparent; border-radius: 7px;
+  background: transparent; color: var(--label-tertiary); font-size: 11px;
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; flex: none;
+}
+.tabchip:hover { background: var(--hover); color: var(--label-secondary); }
+.tabchip.is-active { background: var(--bg-layer-3); border-color: var(--border-l2); color: var(--label-primary); }
+.tabchip .tabbadge { min-width: 14px; height: 14px; padding: 0 3px; border-radius: 4px; background: var(--accent-soft); color: var(--accent-text); font-size: 9.5px; display: grid; place-items: center; font-variant-numeric: tabular-nums; }
+.tabchip .tabbadge.bad { background: var(--bad-soft); color: var(--bad-text); }
+.tabfill { flex: 1 1 0; min-width: 0; }
+.tabtools { display: flex; align-items: center; gap: 2px; flex: none; }
+.tabtools .iconbtn { width: 24px; height: 24px; }
+.tabstrip .pin { top: 1px; right: 1px; }
+.drawer { flex: 1; min-height: 0; display: flex; flex-direction: column; container: drawer / inline-size; }
+.drawer-head {
+  flex: none; padding: 9px 14px 8px; border-bottom: .5px solid var(--border-l1);
+  background: var(--bg-base); position: relative; z-index: 3;
+}
+.dh-row { display: flex; align-items: center; gap: 7px; min-height: 26px; }
+.dh-title { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1; }
+.dh-title h2 { margin: 0; font-size: 13px; line-height: 20px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dh-title .glyph { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent-text); flex: none; }
+.dh-tools { display: flex; align-items: center; gap: 2px; flex: none; }
+.dh-scope { display: flex; align-items: center; gap: 8px; margin-top: 7px; min-height: 26px; }
+.dh-note { margin-left: auto; color: var(--label-tertiary); font-size: 10.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.seg { display: inline-flex; padding: 2px; background: var(--bg-layer-3); border-radius: 7px; gap: 1px; }
+.seg button {
+  height: 22px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--label-tertiary); font-size: 10.5px; white-space: nowrap;
+}
+.seg button:hover { color: var(--label-primary); }
+.seg button.is-active { background: var(--bg-base); color: var(--label-primary); box-shadow: 0 1px 2px rgba(0,0,0,.08); font-weight: 550; }
+.drawer-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 16px; }
+.drawer-foot {
+  flex: none; border-top: .5px solid var(--border-l2); padding: 8px 14px;
+  display: flex; align-items: center; gap: 6px; background: var(--bg-base);
+}
+.drawer-foot .hint { flex: 1; min-width: 0; }
+.summary {
+  display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px;
+  background: var(--border-l1); border: .5px solid var(--border-l2); border-radius: 10px;
+  overflow: hidden; margin-bottom: 12px;
+}
+.metric { background: var(--bg-layer-2); padding: 8px 10px; min-width: 0; }
+.metric .k { display: block; font-size: 10px; color: var(--label-tertiary); white-space: nowrap; }
+.metric .v { display: block; font-size: 17px; line-height: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.metric .s { display: block; font-size: 10px; color: var(--label-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.metric .v.warn { color: var(--warn-text); }
+.metric .v.bad { color: var(--bad-text); }
+.searchrow { display: flex; gap: 6px; margin-bottom: 10px; }
+.searchbox {
+  flex: 1; min-width: 0; height: 30px; border: .5px solid var(--border-l2); border-radius: 7px;
+  background: var(--bg-layer-1); display: flex; align-items: center; gap: 6px; padding: 0 8px;
+  color: var(--label-tertiary);
+}
+.searchbox input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--label-primary); font-size: 11.5px; }
+.searchbox input::placeholder { color: var(--label-tertiary); }
+.filter-select {
+  height: 30px; border: .5px solid var(--border-l2); border-radius: 7px; background: var(--bg-layer-1);
+  color: var(--label-secondary); font-size: 11px; padding: 0 6px; max-width: 94px;
+}
+.attention { border: .5px solid var(--border-l2); border-radius: 9px; overflow: hidden; background: var(--bg-layer-1); }
+.att-row {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 9px; border: 0;
+  border-bottom: .5px solid var(--border-l1); background: transparent; text-align: left;
+}
+.att-row:last-child { border-bottom: 0; }
+.att-row:hover { background: var(--hover); }
+.att-more { justify-content: center; color: var(--accent-text); font-size: 10.5px; padding: 6px 8px; border-top: .5px solid var(--border-l1); }
+.att-icon { width: 20px; height: 20px; border-radius: 6px; display: grid; place-items: center; flex: none; }
+.att-icon.warn { background: var(--warn-soft); color: var(--warn-text); }
+.att-icon.bad { background: var(--bad-soft); color: var(--bad-text); }
+.att-main { min-width: 0; flex: 1; }
+.att-main b { display: block; font-size: 11.5px; font-weight: 550; line-height: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-main em { display: block; font-style: normal; font-size: 10.5px; color: var(--label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.att-time { flex: none; color: var(--label-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.group { margin-bottom: 10px; }
+.group-head {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 5px;
+  padding: 5px 2px 5px; background: var(--bg-base); border-bottom: .5px solid var(--border-l1);
+  color: var(--label-tertiary); font-size: 10.5px; min-height: 28px;
+}
+.group-head b { color: var(--label-secondary); font-weight: 550; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-head .gpath { font-family: var(--font-mono); font-size: 9.5px; color: var(--label-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 40%; }
+.group-head .gcount { margin-left: auto; flex: none; font-variant-numeric: tabular-nums; }
+.srow {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 6px 7px 8px;
+  border: 0; border-bottom: .5px solid var(--border-l1); background: transparent;
+  text-align: left; position: relative; min-height: 48px; border-radius: 6px;
+}
+.srow:hover { background: var(--hover); }
+.srow.is-current { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.srow .srow-main { flex: 1; min-width: 0; }
+.srow .srow-title { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 12px; line-height: 17px; font-weight: 550; }
+.srow .srow-title span.t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .srow-meta { display: flex; align-items: center; gap: 5px; margin-top: 1px; color: var(--label-tertiary); font-size: 10px; min-width: 0; }
+.srow .srow-meta .m { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.srow .srow-side { flex: none; display: flex; align-items: center; gap: 3px; color: var(--label-tertiary); font-size: 9.5px; }
+.srow .srow-side .iconbtn { width: 22px; height: 22px; opacity: 0; }
+.srow:hover .srow-side .iconbtn, .srow:focus-visible .srow-side .iconbtn { opacity: 1; }
+.srow .agent-count { display: inline-flex; align-items: center; gap: 3px; height: 16px; padding: 0 4px; border-radius: 4px; background: var(--bg-layer-3); color: var(--label-secondary); font-size: 9.5px; }
+.load-link { border: 0; background: transparent; color: var(--accent-text); font-size: 9.5px; padding: 0 2px; height: 16px; flex: none; }
+.scope-note {
+  display: flex; align-items: flex-start; gap: 6px; padding: 7px 8px; margin-top: 2px;
+  border: .5px dashed var(--border-l2); border-radius: 7px; color: var(--label-tertiary);
+  font-size: 10.5px; line-height: 1.5;
+}
+.scope-note .grow { flex: 1; min-width: 0; }
+.session-head { padding: 1px 0 8px; border-bottom: .5px solid var(--border-l1); margin-bottom: 10px; }
+.session-title-line { display: flex; align-items: flex-start; gap: 6px; }
+.session-title-line h2 { margin: 0; font-size: 13.5px; line-height: 19px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 5px; margin-top: 4px; font-size: 10.5px; color: var(--label-tertiary); }
+.session-meta .mono { font-size: 10px; }
+.statusline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; font-size: 10.5px; color: var(--label-secondary); }
+.statusline .push { margin-left: auto; }
+.budget {
+  display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 1px;
+  background: var(--border-l1); border: .5px solid var(--border-l2); border-radius: 9px; overflow: hidden; margin-bottom: 12px;
+}
+.budget .b { background: var(--bg-layer-2); padding: 7px 9px; min-width: 0; }
+.budget .b .k { display: flex; align-items: center; gap: 4px; font-size: 9.5px; color: var(--label-tertiary); white-space: nowrap; }
+.budget .b .v { font-size: 14px; line-height: 18px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 1px; }
+.budget .b .v small { font-size: 10px; font-weight: 400; color: var(--label-tertiary); }
+.budget .track { height: 3px; background: var(--bg-layer-3); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.budget .track i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.budget .track i.warn { background: var(--warn); }
+.budget-note { margin: -6px 0 10px; color: var(--label-tertiary); font-size: 10px; line-height: 1.5; }
+.topology {
+  border: .5px solid var(--border-l2); border-radius: 10px; background: var(--bg-layer-2);
+  padding: 9px 10px; margin-bottom: 12px; position: relative; overflow: hidden;
+}
+.topo-root { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.topo-root .avatar { width: 24px; height: 24px; font-size: 10px; }
+.topo-root .tr-main { min-width: 0; flex: 1; }
+.topo-root .tr-main b { display: block; font-size: 11.5px; font-weight: 600; line-height: 16px; }
+.topo-root .tr-main em { display: block; font-style: normal; color: var(--label-tertiary); font-size: 9.5px; line-height: 14px; }
+.topo-rail { width: 1px; height: 10px; background: var(--border-l3); margin-left: 12px; }
+.topo-children { display: flex; align-items: center; gap: 5px; position: relative; padding-top: 7px; overflow: hidden; max-width: 420px; }
+.topo-summary { display: none; position: absolute; right: 12px; bottom: 9px; align-items: center; gap: 8px; color: var(--label-tertiary); font-size: 9.5px; }
+.topo-summary b { color: var(--label-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
+@container drawer (min-width: 700px) { .topo-summary { display: flex; } }
+.global-col { width: 100%; max-width: 920px; margin: 0 auto; }
+.topo-children::before { content: ""; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--border-l3); }
+.topo-node {
+  position: relative; width: 26px; height: 26px; border-radius: 8px; border: .5px solid var(--border-l2);
+  background: var(--bg-base); color: var(--label-secondary); display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 600; flex: none; z-index: 1;
+}
+.topo-node::before { content: ""; position: absolute; left: 50%; top: -8px; width: 1px; height: 7px; background: var(--border-l3); }
+.topo-node.running { border-color: color-mix(in srgb, var(--ok) 40%, var(--border-l2)); color: var(--ok-text); }
+.topo-node.review { border-color: color-mix(in srgb, var(--review) 35%, var(--border-l2)); color: var(--review-text); }
+.topo-node.failed { border-color: color-mix(in srgb, var(--bad) 40%, var(--border-l2)); color: var(--bad-text); }
+.topo-node.done { opacity: .62; }
+.topo-node.queued { border-style: dashed; color: var(--label-tertiary); }
+.topo-node .flowdot { position: absolute; top: -3px; left: 50%; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--ok); animation: drip 1.8s linear infinite; }
+@keyframes drip { 0% { transform: translateY(-1px); opacity: 0; } 30% { opacity: 1; } 100% { transform: translateY(8px); opacity: 0; } }
+.topo-more { height: 26px; padding: 0 6px; border-radius: 8px; border: .5px dashed var(--border-l3); color: var(--label-tertiary); font-size: 9.5px; display: grid; place-items: center; flex: none; background: transparent; }
+.topo-legend { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 7px; color: var(--label-tertiary); font-size: 9.5px; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 7px; }
+.agent-card {
+  border: .5px solid var(--border-l2); border-radius: 9px; background: var(--bg-layer-1);
+  padding: 8px 9px 7px; min-width: 0; position: relative; box-shadow: var(--shadow-card);
+}
+.agent-card.running { border-color: color-mix(in srgb, var(--ok) 30%, var(--border-l2)); }
+.agent-card.failed { border-color: color-mix(in srgb, var(--bad) 35%, var(--border-l2)); }
+.agent-card.review { border-style: dashed; }
+.agent-card.queued { border-style: dashed; opacity: .82; }
+.agent-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.avatar {
+  width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 9.5px; font-weight: 650; flex: none; background: var(--bg-layer-3); color: var(--label-secondary);
+  border: .5px solid var(--border-l2);
+}
+.avatar.c0 { background: var(--accent-soft); color: var(--accent-text); border-color: var(--accent-border); }
+.avatar.c1 { background: var(--review-soft); color: var(--review-text); border-color: color-mix(in srgb, var(--review) 25%, transparent); }
+.avatar.c2 { background: var(--ok-soft); color: var(--ok-text); border-color: color-mix(in srgb, var(--ok) 25%, transparent); }
+.avatar.c3 { background: var(--warn-soft); color: var(--warn-text); border-color: color-mix(in srgb, var(--warn) 25%, transparent); }
+.agent-name { font-size: 11px; line-height: 16px; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-role { flex: none; }
+.agent-task { margin-top: 5px; font-size: 10.5px; line-height: 1.45; color: var(--label-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 30px; }
+.agent-foot { display: flex; align-items: center; gap: 5px; margin-top: 5px; color: var(--label-tertiary); font-size: 9.5px; }
+.agent-foot .model { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-foot .sep { width: 2px; height: 2px; border-radius: 50%; background: var(--label-caption); flex: none; }
+.agent-foot .budget-pill { margin-left: auto; height: 15px; padding: 0 4px; border-radius: 4px; background: var(--bg-layer-3); color: var(--label-secondary); font-variant-numeric: tabular-nums; }
+.progress { height: 2px; background: var(--bg-layer-3); border-radius: 2px; margin-top: 5px; overflow: hidden; }
+.progress i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+.agent-card.failed .progress i { background: var(--bad); }
+.agent-card.done .progress i { background: var(--ok); }
+.agent-error { margin-top: 4px; font-size: 9.5px; color: var(--bad-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed { min-width: 0; }
+.feed-list { border-left: 1px solid var(--border-l2); margin-left: 4px; }
+.feed-row { display: flex; gap: 6px; padding: 0 0 9px 9px; position: relative; min-width: 0; }
+.feed-row::before { content: ""; position: absolute; left: -3px; top: 4px; width: 5px; height: 5px; border-radius: 50%; background: var(--border-l4); }
+.feed-row.ok::before { background: var(--ok); }
+.feed-row.warn::before { background: var(--warn); }
+.feed-row.bad::before { background: var(--bad); }
+.feed-row .ft { flex: none; width: 34px; color: var(--label-tertiary); font-family: var(--font-mono); font-size: 9px; line-height: 15px; }
+.feed-row .fc { min-width: 0; }
+.feed-row .fc b { display: block; font-size: 10.5px; line-height: 15px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.feed-row .fc em { display: block; font-style: normal; font-size: 9.5px; line-height: 14px; color: var(--label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.content-grid { display: grid; grid-template-columns: minmax(0,1fr); gap: 12px; }
+@container drawer (min-width: 700px) {
+  .content-grid { grid-template-columns: minmax(0,1fr) 282px; gap: 16px; }
+}
+@container drawer (max-width: 430px) {
+  .summary { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .group-head .gpath { display: none; }
+  .srow .srow-meta .optional { display: none; }
+  .dh-note { display: none; }
+  .searchrow .filter-select { max-width: 82px; }
+  .drawer-foot { flex-wrap: wrap; gap: 5px; }
+  .drawer-foot .hint { flex: 1 0 100%; order: -1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
+@container drawer (max-width: 360px) {
+  .drawer-head { padding-left: 10px; padding-right: 10px; }
+  .drawer-scroll { padding-left: 10px; padding-right: 10px; }
+  .tabchip { padding: 0 6px; }
+  .budget .b { padding: 6px 7px; }
+  .agent-grid { grid-template-columns: 1fr; }
+}
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 28px 16px; text-align: center; border: .5px dashed var(--border-l2); border-radius: 10px; color: var(--label-tertiary); }
+.empty-state .es-icon { width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center; background: var(--bg-layer-3); color: var(--label-tertiary); }
+.empty-state b { color: var(--label-secondary); font-size: 12px; font-weight: 550; }
+.empty-state p { margin: 0; font-size: 10.5px; line-height: 1.6; max-width: 260px; }
+.error-state { padding: 16px; border: .5px solid color-mix(in srgb, var(--bad) 30%, var(--border-l2)); border-radius: 10px; background: var(--bad-soft); }
+.error-state b { display: block; color: var(--bad-text); font-size: 12px; }
+.error-state p { margin: 4px 0 10px; color: var(--label-secondary); font-size: 10.5px; line-height: 1.6; }
+.skeleton { height: 10px; border-radius: 4px; background: var(--bg-layer-3); margin: 6px 0; animation: shimmer 1.4s ease-in-out infinite; }
+@keyframes shimmer { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* ---------- config console ---------- */
+.console { height: 100%; min-height: 0; display: flex; flex-direction: column; padding: 0 clamp(16px, 3vw, 32px); }
+.page-head { flex: none; width: 100%; max-width: 960px; margin: 0 auto; padding: 18px 0 10px; display: flex; align-items: flex-start; gap: 14px; }
+.page-head-main { min-width: 0; flex: 1; }
+.page-kicker { color: var(--label-tertiary); font-family: var(--font-mono); font-size: 10px; letter-spacing: .04em; text-transform: uppercase; }
+.page-title { margin: 2px 0 2px; font-size: 20px; line-height: 28px; font-weight: 500; }
+.page-sub { margin: 0; color: var(--label-tertiary); font-size: 11.5px; line-height: 1.55; max-width: 620px; }
+.page-head-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex: none; }
+.page-tabs { flex: none; width: 100%; max-width: 960px; margin: 0 auto; padding: 0; display: flex; align-items: center; gap: 8px; }
+.page-tabs .seg { padding: 2px; }
+.page-tabs .seg button { height: 26px; padding: 0 10px; font-size: 11.5px; display: inline-flex; align-items: center; gap: 5px; }
+.page-tabs .seg button .n { color: var(--label-tertiary); font-size: 10px; font-variant-numeric: tabular-nums; }
+.page-tabs .seg button.is-active .n { color: var(--label-secondary); }
+.page-scroll { flex: 1; min-height: 0; width: 100%; max-width: 960px; margin: 0 auto; overflow-y: auto; padding: 12px 0 20px; }
+.page-col { width: 100%; max-width: var(--page-w); margin: 0 auto; }
+.card { border: .5px solid var(--border-l2); border-radius: 10px; background: var(--bg-layer-1); padding: 12px 14px; box-shadow: var(--shadow-card); }
+.card + .card { margin-top: 10px; }
+.card-title { margin: 0; font-size: 12px; line-height: 18px; font-weight: 600; }
+.card-hint { margin: 2px 0 0; color: var(--label-tertiary); font-size: 10.5px; line-height: 1.55; }
+.row { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: .5px solid var(--border-l1); min-width: 0; }
+.row:last-child { border-bottom: 0; }
+.row-main { flex: 1; min-width: 0; }
+.row-title { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 550; min-width: 0; }
+.row-title .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-sub { margin-top: 2px; display: flex; align-items: center; gap: 5px; flex-wrap: wrap; color: var(--label-tertiary); font-size: 10px; }
+.row-sub .mono { font-size: 9.5px; }
+.row-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.retry-inline { display: inline-flex; align-items: center; gap: 3px; color: var(--label-tertiary); font-size: 10.5px; white-space: nowrap; }
+.retry-inline .input { width: 42px; height: 24px; padding: 0 4px; text-align: center; font-size: 11px; }
+.chip-bar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.chain-pill { height: 26px; padding: 0 9px; border-radius: 7px; border: .5px solid var(--border-l2); background: var(--bg-layer-1); color: var(--label-secondary); font-size: 11px; display: inline-flex; align-items: center; gap: 5px; }
+.chain-pill.is-active { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-text); }
+.chain-pill .n { color: var(--label-tertiary); font-size: 9.5px; }
+.field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.field > label, .field .flabel { font-size: 11px; line-height: 16px; color: var(--label-secondary); font-weight: 500; }
+.field .fhint { color: var(--label-tertiary); font-size: 10px; line-height: 1.5; }
+.input, .select, .textarea {
+  width: 100%; border: .5px solid var(--border-l3); border-radius: 7px; background: var(--bg-layer-1);
+  color: var(--label-primary); font-size: 11.5px; padding: 0 8px; height: 30px; outline: 0;
+}
+.textarea { height: 74px; padding: 6px 8px; resize: vertical; line-height: 1.55; font-family: var(--font-text); }
+.input:focus, .select:focus, .textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.input.invalid, .textarea.invalid { border-color: var(--bad); }
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.three-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+.check { display: flex; align-items: flex-start; gap: 6px; font-size: 11px; line-height: 16px; color: var(--label-secondary); min-width: 0; }
+.check input { margin: 2px 0 0; accent-color: var(--accent); width: 13px; height: 13px; flex: none; }
+.switch { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--label-secondary); }
+.switch .track { width: 28px; height: 16px; border-radius: 999px; background: var(--bg-layer-3); border: .5px solid var(--border-l2); position: relative; flex: none; transition: var(--dur) var(--ease); }
+.switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: 10px; height: 10px; border-radius: 50%; background: var(--label-tertiary); transition: var(--dur) var(--ease); }
+.switch.on .track { background: var(--accent); border-color: var(--accent); }
+.switch.on .track::after { left: 14px; background: #fff; }
+.formula { padding: 8px 10px; border-radius: 7px; background: var(--bg-layer-2); border: .5px solid var(--border-l1); color: var(--label-secondary); font-size: 10.5px; line-height: 1.6; }
+.formula code { font-family: var(--font-mono); font-size: 10px; color: var(--label-primary); }
+.page-footer {
+  flex: none; width: 100%; max-width: 960px; margin: 0 auto; border-top: .5px solid var(--border-l2);
+  background: var(--bg-base); padding: 8px 0; display: flex; align-items: center; gap: 10px;
+}
+.page-footer .status { flex: 1; min-width: 0; color: var(--label-tertiary); font-size: 10.5px; }
+.page-footer .status b { color: var(--label-secondary); font-weight: 500; }
+.roster-layout { display: grid; grid-template-columns: 224px minmax(0,1fr); gap: 12px; align-items: start; }
+.roster-list { border: .5px solid var(--border-l2); border-radius: 10px; overflow-y: auto; background: var(--bg-layer-1); max-height: 420px; position: relative; }
+.roster-item { width: 100%; display: flex; align-items: center; gap: 7px; padding: 7px 9px; border: 0; border-bottom: .5px solid var(--border-l1); background: transparent; text-align: left; min-height: 46px; }
+.roster-item:last-child { border-bottom: 0; }
+.roster-item:hover { background: var(--hover); }
+.roster-item.is-active { background: var(--selected); box-shadow: inset 2px 0 0 var(--accent); }
+.roster-item .ri-main { min-width: 0; flex: 1; }
+.roster-item b { display: block; font-size: 11px; line-height: 16px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-item em { display: block; font-style: normal; font-size: 9.5px; line-height: 14px; color: var(--label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.roster-editor { min-width: 0; }
+.editor-section { padding: 10px 0; border-bottom: .5px solid var(--border-l1); }
+.editor-section:first-child { padding-top: 0; }
+.editor-section:last-child { border-bottom: 0; padding-bottom: 0; }
+.editor-section h4 { margin: 0 0 6px; font-size: 11px; line-height: 16px; font-weight: 600; color: var(--label-primary); }
+.editor-section .fhint { margin-top: 4px; }
+.form-error {
+  display: flex; align-items: flex-start; gap: 6px; margin: 8px 0 0; padding: 7px 9px;
+  border: .5px solid color-mix(in srgb, var(--bad) 32%, var(--border-l2)); border-radius: 8px;
+  background: var(--bad-soft); color: var(--bad-text); font-size: 10.5px; line-height: 1.5;
+}
+.editor-actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 10px; }
+.health-row { padding: 8px 0; border-bottom: .5px solid var(--border-l1); }
+.health-row:last-child { border-bottom: 0; }
+.health-top { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.health-top .btn { margin-left: auto; flex: none; }
+.health-main { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; min-width: 0; }
+.health-name { font-size: 11.5px; font-weight: 550; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.health-meta { display: flex; align-items: center; gap: 8px; color: var(--label-tertiary); font-size: 10px; flex-wrap: wrap; margin-top: 3px; }
+.bars { display: flex; align-items: flex-end; gap: 2px; height: 22px; margin-top: 5px; }
+.bars i { flex: 1; min-width: 2px; border-radius: 1.5px; background: var(--bg-layer-3); height: 8%; }
+.bars i.ok { background: color-mix(in srgb, var(--ok) 72%, transparent); }
+.bars i.warn { background: color-mix(in srgb, var(--warn) 75%, transparent); }
+.bars i.bad { background: color-mix(in srgb, var(--bad) 70%, transparent); }
+.bars i.empty { background: var(--bg-layer-3); }
+.kpi-strip { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; background: var(--border-l1); border: .5px solid var(--border-l2); border-radius: 9px; overflow: hidden; }
+.kpi { background: var(--bg-layer-2); padding: 8px 10px; min-width: 0; }
+.kpi .k { font-size: 9.5px; color: var(--label-tertiary); white-space: nowrap; }
+.kpi .v { font-size: 15px; line-height: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.kpi .s { font-size: 9.5px; color: var(--label-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- annotations + legend ---------- */
+.pin {
+  position: absolute; z-index: 20; width: 16px; height: 16px; padding: 0; border-radius: 50%;
+  border: 1.5px solid var(--accent); background: var(--bg-base); color: var(--accent-text);
+  font-size: 9px; font-weight: 700; line-height: 13px; text-align: center;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 15%, transparent);
+  display: inline-grid; place-items: center; top: -6px; right: -6px;
+}
+.pin:hover { background: var(--accent); color: #fff; }
+.pin.inline {
+  position: static; width: 15px; height: 15px; margin: 0 0 0 2px; flex: none;
+  box-shadow: none; font-size: 8px; vertical-align: middle;
+}
+.anno-label {
+  display: flex; align-items: center; gap: 4px; margin: -2px 0 5px;
+  color: var(--label-tertiary); font-size: 10px; letter-spacing: .02em;
+}
+.section-head .pin.inline { transform: translateY(1px); }
+.legend {
+  height: 92px; border-top: .5px solid var(--border-l2); background: var(--bg-layer-1);
+  padding: 6px 12px; overflow-y: auto; display: none; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 2px 14px; align-content: start;
+}
+.legend.is-open { display: grid; }
+.legend-item { display: flex; gap: 6px; align-items: flex-start; font-size: 10px; line-height: 14px; color: var(--label-tertiary); padding: 2px 0; }
+.legend-item .n { width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--accent); color: var(--accent-text); font-size: 8px; display: grid; place-items: center; flex: none; }
+.legend-item b { color: var(--label-secondary); font-weight: 550; }
+.toast {
+  position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%);
+  background: var(--label-primary); color: var(--bg-base); font-size: 11.5px;
+  padding: 7px 12px; border-radius: 8px; z-index: 200; box-shadow: 0 6px 24px rgba(0,0,0,.18);
+  max-width: 80vw;
+}
+[hidden] { display: none !important; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--border-l3); border-radius: 6px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+</style>
+</head>
+<body>
+
+<div class="demobar">
+  <div class="demo-brand"><span class="demo-logo">MR</span><b>Agent Fleet 设计原型</b><span class="demo-ver">2026-10-23</span></div>
+  <span class="demo-sep"></span>
+  <div class="demo-group" data-group="screen">
+    <span class="demo-label">屏幕</span>
+    <button class="demo-btn is-active" data-action="screen" data-value="drawer">会话协同</button>
+    <button class="demo-btn" data-action="screen" data-value="console">配置中枢</button>
+  </div>
+  <span class="demo-sep"></span>
+  <div class="demo-group" data-group="theme">
+    <span class="demo-label">主题</span>
+    <button class="demo-btn is-active" data-action="theme" data-value="light">浅色</button>
+    <button class="demo-btn" data-action="theme" data-value="dark">深色</button>
+  </div>
+  <span class="demo-sep"></span>
+  <div class="demo-group" data-group="scenario">
+    <span class="demo-label">场景</span>
+    <button class="demo-btn is-active" data-action="scenario" data-value="normal">常规</button>
+    <button class="demo-btn" data-action="scenario" data-value="stress">压力</button>
+    <button class="demo-btn" data-action="scenario" data-value="partial">部分数据</button>
+    <button class="demo-btn" data-action="scenario" data-value="empty">空</button>
+    <button class="demo-btn" data-action="scenario" data-value="error">异常</button>
+  </div>
+  <span class="demo-sep"></span>
+  <div class="demo-group" data-group="width">
+    <span class="demo-label">宽度</span>
+    <button class="demo-btn is-active" data-action="width" data-value="1440">1440</button>
+    <button class="demo-btn" data-action="width" data-value="1280">1280</button>
+    <button class="demo-btn" data-action="width" data-value="1024">1024</button>
+    <button class="demo-btn" data-action="width" data-value="900">900</button>
+    <button class="demo-btn" data-action="width" data-value="800">800</button>
+    <button class="demo-btn" data-action="width" data-value="full">全屏</button>
+  </div>
+  <span class="demo-spacer"></span>
+  <button class="demo-btn is-active" data-action="anno">标注 开</button>
+</div>
+
+<div class="stage" id="stage">
+  <div class="app" id="app" data-w="1440" data-screen="drawer">
+    <aside class="leftrail" id="leftrail" aria-label="DSH 工作区与会话"></aside>
+    <main class="maincol" id="maincol"></main>
+    <aside class="rightbar" id="rightbar" aria-label="DSH 右侧抽屉"></aside>
+  </div>
+</div>
+<div class="legend" id="legend" aria-label="设计标注"></div>
+<div class="toast" id="toast" hidden></div>
+
+<script>
+/* =====================================================================
+   原型状态与数据
+   ===================================================================== */
+const $ = (sel, root = document) => root.querySelector(sel);
+const app = $('#app');
+const stage = $('#stage');
+const leftrail = $('#leftrail');
+const maincol = $('#maincol');
+const rightbar = $('#rightbar');
+const legend = $('#legend');
+const toastEl = $('#toast');
+
+const state = {
+  screen: 'drawer',
+  theme: 'light',
+  scenario: 'normal',
+  width: '1440',
+  anno: true,
+  consoleTab: 'chain',
+  rosterId: 'coder-expert',
+  drawerScope: 'global',
+  selectedSession: null,
+  filter: 'all',
+  query: '',
+  rightWidth: null,
+  toastTimer: 0,
+};
+
+const ICONS = {
+  search: '<circle cx="6.8" cy="6.8" r="4.3"/><path d="M10 10l3.2 3.2"/>',
+  refresh: '<path d="M13.2 7.2A5.2 5.2 0 1 0 13 10"/><path d="M13.4 3v3.4H10"/>',
+  chevronDown: '<path d="M4 6.5l4 4 4-4"/>',
+  chevronRight: '<path d="M6.5 4l4 4-4 4"/>',
+  arrowLeft: '<path d="M12 8H4"/><path d="M7.5 4.5L4 8l3.5 3.5"/>',
+  external: '<path d="M9 3h4v4"/><path d="M13 3L7.5 8.5"/><path d="M12 9.5V13H3V4h3.5"/>',
+  more: '<circle cx="3.5" cy="8" r="1"/><circle cx="8" cy="8" r="1"/><circle cx="12.5" cy="8" r="1"/>',
+  plus: '<path d="M8 3v10M3 8h10"/>',
+  close: '<path d="M4 4l8 8M12 4l-8 8"/>',
+  folder: '<path d="M2.5 5.5V12h11V5.5H8L6.5 4H2.5z"/>',
+  bot: '<rect x="3" y="5" width="10" height="8" rx="2.5"/><path d="M8 3v2"/><circle cx="6" cy="8" r=".8" fill="currentColor" stroke="none"/><circle cx="10" cy="8" r=".8" fill="currentColor" stroke="none"/><path d="M6 11h4"/>',
+  file: '<path d="M4 2.5h5l3 3V13.5H4z"/><path d="M9 2.5v3h3"/>',
+  terminal: '<rect x="2.5" y="4" width="11" height="8.5" rx="1.5"/><path d="M5 7l2 2-2 2M8.5 11h2.5"/>',
+  split: '<rect x="2.5" y="3.5" width="11" height="9" rx="1.5"/><path d="M8 3.5v9"/>',
+  check: '<path d="M3.5 8.5l3 3 6-7"/>',
+  alert: '<path d="M8 2.8l5.5 10H2.5z"/><path d="M8 6.2v3.2"/><circle cx="8" cy="11.2" r=".7" fill="currentColor" stroke="none"/>',
+  clock: '<circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.2"/>',
+  info: '<circle cx="8" cy="8" r="5.5"/><path d="M8 7.2v3.4"/><circle cx="8" cy="5" r=".7" fill="currentColor" stroke="none"/>',
+  layers: '<path d="M8 2.5l5.5 3L8 8.5 2.5 5.5z"/><path d="M2.5 8.5L8 11.5l5.5-3"/>',
+  settings: '<circle cx="8" cy="8" r="2.2"/><path d="M8 2.5v1.2M8 12.3v1.2M2.5 8h1.2M12.3 8h1.2M4.1 4.1l.9.9M11 11l.9.9M11.9 4.1l-.9.9M5 11l-.9.9"/>',
+};
+
+function icon(name, size = 14) {
+  return `<svg viewBox="0 0 16 16" width="${size}" height="${size}" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ''}</svg>`;
+}
+
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+const WORKSPACES = [
+  { id: 'w1', name: 'DSH Model Router', path: 'D:\\sudy\\myproject\\dsh-model-router' },
+  { id: 'w2', name: 'DSH 插件开发', path: 'D:\\sudy\\github\\deepseek-harness' },
+  { id: 'w3', name: 'Web GUI', path: 'C:\\work\\dsh-web' },
+  { id: 'w0', name: '未分组', path: '' },
+];
+
+const BASE_SESSIONS = [
+  {
+    id: 's1', ws: 'w1', title: '重构右侧智能体抽屉与全局总览', model: 'DeepSeek-V4', chain: '编程长文本链',
+    running: true, agents: 4, totalAgents: 6, updated: 12, current: true, loaded: true,
+    tokens: '14.2k', attention: null, reviewGap: true, ledger: { delegated: 5, reviews: 1, newSessions: 0 },
+  },
+  {
+    id: 's2', ws: 'w1', title: '修复健康时间轴的可用率公式', model: 'DeepSeek-V4', chain: '默认全局链',
+    running: false, agents: 1, totalAgents: 1, updated: 420, loaded: true,
+    tokens: '6.8k', attention: { kind: 'review', title: '复核缺口：2 项未解决', detail: 'security-auditor · “缺少浏览器实测证据”', time: '7m' },
+  },
+  {
+    id: 's3', ws: 'w1', title: '整理交接协议的默认值', model: 'DeepSeek-V4', chain: '默认全局链',
+    running: false, agents: 0, totalAgents: 0, updated: 7200, loaded: true,
+    tokens: '3.1k', attention: null,
+  },
+  {
+    id: 's4', ws: 'w2', title: '右栏标签注册与 split 行为核对', model: 'Claude 3.5 Sonnet', chain: '编程长文本链',
+    running: true, agents: 2, totalAgents: 2, updated: 74, loaded: true,
+    tokens: '9.4k', attention: null,
+  },
+  {
+    id: 's5', ws: 'w2', title: '终端面板焦点回收', model: 'GPT-4o', chain: '默认全局链',
+    running: false, agents: 0, totalAgents: 0, updated: 10800, loaded: true,
+    tokens: '1.2k', attention: null,
+  },
+  {
+    id: 's6', ws: 'w3', title: '多工作区会话列表性能', model: 'DeepSeek-V4', chain: '编程长文本链',
+    running: true, agents: 1, totalAgents: 3, updated: 246, loaded: true,
+    tokens: '11.7k', attention: { kind: 'question', title: '需要你的选择：是否继续加载冷会话', detail: '已读 12 / 22 个会话的投影', time: '4m' },
+  },
+  {
+    id: 's7', ws: 'w3', title: '主题 token 对比度回归', model: 'GPT-4o', chain: '视觉识图专用链',
+    running: false, agents: 0, totalAgents: 1, updated: 900, loaded: true,
+    tokens: '2.4k', attention: { kind: 'approval', title: '权限审批：运行截图脚本', detail: '等待确认 · playwright screenshot --all', time: '15m' },
+  },
+  {
+    id: 's8', ws: 'w0', title: 'Agent Fleet 原型截图', model: 'Claude 3.5 Sonnet', chain: '默认全局链',
+    running: false, agents: 0, totalAgents: 0, updated: 1800, loaded: true,
+    tokens: '820', attention: null,
+  },
+  {
+    id: 's9', ws: 'w0', title: 'screenshot 脚本', model: 'DeepSeek-V4', chain: '默认全局链',
+    running: false, agents: 0, totalAgents: 0, updated: 300, loaded: true, unread: true,
+    tokens: '1.9k', attention: null,
+  },
+];
+
+const STRESS_SESSIONS = [
+  { id: 's10', ws: 'w1', title: '把子智能体名册的 instructions 长度限制、保存校验与错误文案一起补齐', model: 'Claude 3.5 Sonnet', chain: '编程长文本链', running: true, agents: 6, totalAgents: 8, updated: 31, loaded: true, tokens: '22.4k', attention: null },
+  { id: 's11', ws: 'w1', title: '跨工作区并发压测：22 个会话同时运行时右侧抽屉的列表稳定性', model: 'DeepSeek-V4', chain: '编程长文本链', running: true, agents: 3, totalAgents: 5, updated: 52, loaded: true, tokens: '18.1k', attention: { kind: 'approval', title: '权限审批：启动 8 个并发子会话', detail: '等待确认 · handoff delegate × 8', time: '1m' } },
+  { id: 's12', ws: 'w1', title: '右栏 344px 断点：长标题、长工作区路径、长角色名的截断策略', model: 'GPT-4o', chain: '视觉识图专用链', running: true, agents: 2, totalAgents: 4, updated: 95, loaded: true, tokens: '7.3k', attention: null },
+  { id: 's13', ws: 'w1', title: '复核账本投影与收工闸门', model: 'DeepSeek-V4', chain: '默认全局链', running: false, agents: 1, totalAgents: 1, updated: 640, loaded: true, tokens: '5.2k', attention: { kind: 'review', title: '复核缺口：3 项未解决', detail: 'code-reviewer · “缺少 344px 实测截图”', time: '10m' } },
+  { id: 's14', ws: 'w2', title: 'dockkit 分屏后每个 pane 的容器查询是否按 pane 宽度而不是视口宽度生效', model: 'Claude 3.5 Sonnet', chain: '编程长文本链', running: true, agents: 4, totalAgents: 4, updated: 18, loaded: true, tokens: '16.9k', attention: null },
+  { id: 's15', ws: 'w2', title: '标签页溢出时 80px chip 底线与关闭按钮的优先级', model: 'GPT-4o', chain: '默认全局链', running: false, agents: 0, totalAgents: 0, updated: 4600, loaded: true, tokens: '2.1k', attention: null },
+  { id: 's16', ws: 'w2', title: '子会话结算消息在父会话 idle / running 两种状态下的 followup 与 steer 路径', model: 'DeepSeek-V4', chain: '编程长文本链', running: false, agents: 0, totalAgents: 2, updated: 8800, loaded: true, tokens: '4.8k', attention: null },
+  { id: 's17', ws: 'w3', title: '全局摘要带的数字口径：运行中会话、运行中子智能体、待处理、异常', model: 'DeepSeek-V4', chain: '默认全局链', running: true, agents: 1, totalAgents: 1, updated: 122, loaded: true, tokens: '3.7k', attention: null },
+  { id: 's18', ws: 'w3', title: '明暗主题下状态点、Tag 与进度条的对比度回归', model: 'Claude 3.5 Sonnet', chain: '视觉识图专用链', running: false, agents: 0, totalAgents: 0, updated: 12600, loaded: true, tokens: '1.4k', attention: null },
+  { id: 's19', ws: 'w3', title: 'cold session 投影按需加载：最近 30 个会话的批量读取与并发上限', model: 'GPT-4o', chain: '默认全局链', running: true, agents: 2, totalAgents: 2, updated: 260, loaded: false, tokens: '—', attention: null },
+  { id: 's20', ws: 'w0', title: '临时验证：subagentCatalog 在未打开会话里是否可用', model: 'Qwen3-235B', chain: '默认全局链', running: false, agents: null, totalAgents: null, updated: 720, loaded: false, tokens: '—', attention: null },
+  { id: 's21', ws: 'w0', title: '截图脚本：1440 / 1024 / 800 三档与明暗双主题', model: 'DeepSeek-V4', chain: '默认全局链', running: false, agents: 0, totalAgents: 0, updated: 3600, loaded: true, tokens: '980', attention: null },
+  { id: 's22', ws: 'w0', title: '失败的子智能体如何在不打开会话的情况下被看见', model: 'Claude 3.5 Sonnet', chain: '编程长文本链', running: false, agents: 1, totalAgents: 1, updated: 2100, loaded: true, tokens: '2.8k', attention: { kind: 'failed', title: '子智能体失败：researcher', detail: 'RATE_LIMIT · 已消耗 1 次派发预算', time: '35m' } },
+];
+
+const AGENTS = [
+  { id: 'a1', roleId: 'coder-expert', initial: 'C', cls: 'c0', role: 'work', status: 'running', model: 'Claude 3.5 Sonnet', task: '重构右栏信息架构与组件，按 344px 与 648px 两档排版', elapsed: '2m14s', step: 'Step 2/3', budget: '2/6', progress: 42 },
+  { id: 'a2', roleId: 'ui-designer', initial: 'U', cls: 'c1', role: 'work', status: 'running', model: 'GPT-4o', task: '检查 344px 窄栏下长标题与预算条的换行', elapsed: '48s', step: 'Step 1/2', budget: '1/6', progress: 24 },
+  { id: 'a3', roleId: 'security-auditor', initial: 'S', cls: 'c3', role: 'review', status: 'waiting', model: 'GPT-4o', task: '复核设计文档的权限与数据口径，列出缺口', elapsed: '12s', step: '待验工件', budget: '1/2', progress: 0 },
+  { id: 'a4', roleId: 'code-reviewer', initial: 'R', cls: 'c2', role: 'review', status: 'done', model: 'DeepSeek-V4', task: '审查原型 HTML 的结构与可访问性', elapsed: '4m12s', step: '已结算', budget: '1/2', progress: 100 },
+  { id: 'a5', roleId: 'researcher', initial: 'Q', cls: 'c0', role: 'work', status: 'failed', model: 'Gemini 2.5 Pro', task: '收集右栏交互先例与外部官方文档', elapsed: '30s', step: 'RATE_LIMIT', budget: '0/6', progress: 0 },
+  { id: 'a6', roleId: 'doc-writer', initial: 'D', cls: 'c1', role: 'work', status: 'queued', model: 'Claude 3.5 Sonnet', task: '写设计文档的参考章节与偏离记录', elapsed: '排队中', step: '等待派发', budget: '0/6', progress: 0 },
+  { id: 'a7', roleId: 'tester', initial: 'T', cls: 'c2', role: 'work', status: 'done', model: 'GPT-4o', task: '跑截图脚本并核对三档宽度', elapsed: '3m08s', step: '已结算', budget: '1/6', progress: 100 },
+  { id: 'a8', roleId: 'data-analyst', initial: 'A', cls: 'c3', role: 'work', status: 'idle', model: 'Qwen3-235B', task: '统计会话并发数据，给摘要带口径', elapsed: '空闲', step: '无活动', budget: '0/6', progress: 0 },
+];
+
+const EXTRA_AGENTS = [
+  { id: 'a9', roleId: 'perf-tester', initial: 'P', cls: 'c0', role: 'work', status: 'running', model: 'DeepSeek-V4', task: '压测 22 个会话同时运行时抽屉的滚动与重渲染', elapsed: '1m02s', step: 'Step 1/2', budget: '1/6', progress: 55 },
+  { id: 'a10', roleId: 'translator', initial: 'L', cls: 'c1', role: 'work', status: 'queued', model: 'GPT-4o', task: '把右栏文案翻成英文并检查长度', elapsed: '排队中', step: '等待派发', budget: '0/6', progress: 0 },
+];
+
+const ROLES_BASE = [
+  { id: 'coder-expert', name: '代码工程师', initial: 'C', cls: 'c0', role: 'work', model: 'pi-ai / claude-3.5-sonnet', preset: 'coder', maxRuns: 6, purpose: '负责系统级代码重构、组件拆分与复杂前端排版；适合需要读代码、改代码、跑测试的任务。', instructions: '先读现有实现与布局契约，再动手。\n只改与任务相关的文件，不顺手重写。\n改完跑最窄的检查；不能运行时说明原因。\n输出：改动文件、验证命令、未解决风险。', attach: ['goal', 'todos', 'userRequest', 'stats'] },
+  { id: 'ui-designer', name: '界面设计师', initial: 'U', cls: 'c1', role: 'work', model: 'openai / gpt-4o', preset: 'designer', maxRuns: 6, purpose: '负责布局、排版、配色与交互细节；适合需要在给定设计系统内做视觉与信息层级判断的任务。', instructions: '只使用 DSH token，不引入新的强调色。\n先给窄栏方案，再给宽栏增强。\n每个视觉选择写一句理由。', attach: ['goal', 'userRequest'] },
+  { id: 'security-auditor', name: '安全复核', initial: 'S', cls: 'c3', role: 'review', model: 'openai / gpt-4o', preset: 'reviewer', maxRuns: 2, purpose: '只读复核：检查权限、数据边界、密钥与危险操作；不修改文件。', instructions: '只读，不改文件。\n逐条列出缺口，标文件与行号。\n没有证据就写“未验证”。', attach: ['goal', 'todos', 'userRequest', 'stats'] },
+  { id: 'code-reviewer', name: '代码复核', initial: 'R', cls: 'c2', role: 'review', model: 'deepseek-official / deepseek-v4', preset: 'reviewer', maxRuns: 2, purpose: '只读复核：检查代码结构、重复逻辑、死代码与测试覆盖。', instructions: '先看 diff，再看调用点。\n问题按 Critical / Important / Nit 分级。\n不为了通过而降低断言。', attach: ['goal', 'todos', 'stats'] },
+  { id: 'researcher', name: '资料研究员', initial: 'Q', cls: 'c0', role: 'work', model: 'google / gemini-2.5-pro', preset: '', maxRuns: 4, purpose: '收集外部官方文档与先例；适合需要事实核验、链接与引用的任务。', instructions: '只引用官方文档或一手来源。\n区分产品事实、设计建议与未确认事项。\n每条结论带 URL。', attach: ['userRequest', 'goal'] },
+  { id: 'doc-writer', name: '文档工程师', initial: 'D', cls: 'c1', role: 'work', model: 'pi-ai / claude-3.5-sonnet', preset: 'writer', maxRuns: 4, purpose: '写设计文档、决策记录与实施说明；适合需要把事实、方案和待决项分开的任务。', instructions: '先列事实，再列方案，最后列待决项。\n不把建议写成已实现。\n每个 DSH 事实带源码路径。', attach: ['goal', 'todos', 'userRequest', 'stats'] },
+];
+
+const ROLES_EXTRA = [
+  { id: 'tester', name: '测试工程师', initial: 'T', cls: 'c2', role: 'work', model: 'openai / gpt-4o', preset: 'tester', maxRuns: 6, purpose: '写测试、跑测试、给最小复现；适合需要验证行为而不是改实现的场景。', instructions: '先写会红的测试，再改实现。\n断言值从生产路径取，不手抄常量。\n失败要贴原始输出。', attach: ['goal', 'todos', 'stats'] },
+  { id: 'data-analyst', name: '数据分析', initial: 'A', cls: 'c3', role: 'work', model: 'dashscope / qwen3-235b', preset: '', maxRuns: 4, purpose: '统计会话、代理与预算数据，给出口径与样本量；适合需要数字而不是感觉的任务。', instructions: '每个数字写口径与样本量。\n没有数据的项写“未知”，不要写 0。\n区分会话级事实与投影事实。', attach: ['stats', 'goal'] },
+  { id: 'perf-tester', name: '性能测试', initial: 'P', cls: 'c0', role: 'work', model: 'deepseek-official / deepseek-v4', preset: 'tester', maxRuns: 4, purpose: '压测列表、滚动与重渲染；适合需要可重复的性能证据的任务。', instructions: '先固定数据规模与视口。\n记录掉帧、长任务与内存。\n结论必须带复现步骤。', attach: ['goal', 'stats'] },
+  { id: 'translator', name: '本地化', initial: 'L', cls: 'c1', role: 'work', model: 'openai / gpt-4o', preset: '', maxRuns: 4, purpose: '把中文界面文案翻成英文并检查长度与语气；适合需要 i18n 检查的任务。', instructions: '保留产品名与代码标识。\n英文比中文长约 30%，按最窄栏检查。\n不改变原文含义。', attach: ['userRequest'] },
+  { id: 'release-manager', name: '发布经理', initial: 'M', cls: 'c2', role: 'work', model: 'deepseek-official / deepseek-v4', preset: 'writer', maxRuns: 2, purpose: '核对版本、变更日志、安装包与回滚步骤；适合发布前检查。', instructions: '逐项核对清单。\n任何一项未验证就标阻塞。\n写明回滚路径。', attach: ['goal', 'stats'] },
+  { id: 'docs-reviewer', name: '文档复核', initial: 'V', cls: 'c3', role: 'review', model: 'pi-ai / claude-3.5-sonnet', preset: 'reviewer', maxRuns: 2, purpose: '只读复核文档中的事实、链接与状态标注；不修改正文。', instructions: '逐条打开链接核对。\n区分提案与已实现。\n缺口按章节列出。', attach: ['goal', 'todos', 'userRequest'] },
+];
+
+const CHAINS = [
+  { id: 'default', name: '默认全局链', count: 3, active: false },
+  { id: 'coding', name: '编程长文本链', count: 4, active: true },
+  { id: 'vision', name: '视觉识图专用链', count: 2, active: false },
+  { id: 'cheap', name: '低成本兜底链', count: 2, active: false },
+];
+
+const CANDIDATES = [
+  { id: 'c1', name: 'Claude 3.5 Sonnet', route: 'pi-ai / claude-3.5-sonnet', health: 'ok', healthLabel: '正常', retry: 5 },
+  { id: 'c2', name: 'GPT-4o', route: 'openai / gpt-4o', health: 'warn', healthLabel: '限流', retry: 5 },
+  { id: 'c3', name: 'Qwen3-235B', route: 'dashscope / qwen3-235b', health: 'ok', healthLabel: '正常', retry: 3, weight: 2 },
+  { id: 'c4', name: 'Gemini 2.5 Pro', route: 'google / gemini-2.5-pro', health: 'ok', healthLabel: '正常', retry: 5 },
+  { id: 'c5', name: 'Local Llama 3.3 70B', route: 'ollama / llama3.3-70b', health: 'warn', healthLabel: '慢', retry: 3 },
+];
+
+const CHANNELS = [
+  { id: 'h1', name: 'DeepSeek-Official / DeepSeek-V4', ok: 99.7, calls: 142, latency: '1.8s', tps: '84 t/s', bars: 'ok', note: '最近 24 桶 · 被动观测' },
+  { id: 'h2', name: 'Pi-AI / Claude 3.5 Sonnet', ok: 98.9, calls: 76, latency: '2.4s', tps: '61 t/s', bars: 'oneWarn', note: '1 个桶限流' },
+  { id: 'h3', name: 'OpenAI / GPT-4o', ok: 97.2, calls: 58, latency: '2.1s', tps: '72 t/s', bars: 'twoWarn', note: '2 个桶限流' },
+  { id: 'h4', name: 'Google / Gemini 2.5 Pro', ok: null, calls: 0, latency: '—', tps: '—', bars: 'empty', note: '没有样本' },
+  { id: 'h5', name: 'DashScope / Qwen3-235B', ok: 99.1, calls: 31, latency: '1.6s', tps: '90 t/s', bars: 'ok', note: '样本较少' },
+  { id: 'h6', name: 'Ollama / Llama 3.3 70B', ok: 93.4, calls: 12, latency: '6.8s', tps: '18 t/s', bars: 'twoBad', note: '本地端点，延迟高' },
+];
+
+const ANNOTATIONS = [
+  { n: 1, title: '原生停靠', text: '复用 DSH 右侧栏（dockkit）；不遮罩、不抢焦点，宽度随用户拖动与窗口变化。' },
+  { n: 2, title: '全局 / 本会话', text: '默认全局；下钻单会话只读查看，打开会话用 DSH 原生导航。' },
+  { n: 3, title: '摘要带', text: '四个可行动数字：运行会话、运行子智能体、待处理、异常；不是装饰 KPI。' },
+  { n: 4, title: '待处理队列', text: '审批、提问、复核缺口、失败优先；按紧急度排序，点击直接处理。' },
+  { n: 5, title: '会话行', text: '状态点 + 标题 + 路由 + 智能体计数 + 相对时间；长标题截断，操作只在 hover/focus 出现。' },
+  { n: 6, title: '数据范围', text: '写明已加载多少会话、哪些投影未加载；未知不写 0，提供按需刷新。' },
+  { n: 7, title: '三本预算', text: '派发 / 复核 / 开新会话各自计数；用户发言才重置，接力不重置。' },
+  { n: 8, title: '拓扑条', text: '主会话 + 直接子智能体；最多 8 个节点，溢出显示 +N；动画只表示真实活动。' },
+  { n: 9, title: '智能体卡', text: '角色、模型、任务、耗时、步数、预算；复核角色是独立标记，不是子节点链。' },
+  { n: 10, title: '活动流', text: '派发、结算、复核、收工、失败；时间线可筛异常，替代“伪终端”文本。' },
+  { n: 11, title: '三页签', text: '路由链 / 委派名册 / 渠道健康；会话绑定回到会话 chip 与右栏，不占第 4 页签。' },
+  { n: 12, title: '名册主从', text: '左侧角色列表 + 右侧编辑器；长 instructions 进双栏编辑器，不塞进卡片。' },
+  { n: 13, title: '健康口径', text: '24 桶被动观测；无样本显示“未观测”，不伪造 TTFT 与全局可用率。' },
+  { n: 14, title: '排版与保存条', text: '960 列、13.5/20 行标题、12/18 辅助、11.5/16 mono；保存条常驻吸底。' },
+];
+
+/* =====================================================================
+   数据派生
+   ===================================================================== */
+function sessionsForScenario() {
+  if (state.scenario === 'empty' || state.scenario === 'error') return [];
+  if (state.scenario === 'stress') {
+    const all = BASE_SESSIONS.concat(STRESS_SESSIONS);
+    return all.map(s => s.id === 's1' ? { ...s, agents: 6, totalAgents: 10, ledger: { delegated: 7, reviews: 1, newSessions: 0 } } : s);
+  }
+  if (state.scenario === 'partial') {
+    return BASE_SESSIONS.map(s => (s.id === 's2' || s.id === 's7')
+      ? { ...s, loaded: false, agents: null, totalAgents: null, attention: null }
+      : s);
+  }
+  return BASE_SESSIONS;
+}
+
+function selectedSession() {
+  const all = sessionsForScenario();
+  return all.find(s => s.id === state.selectedSession) || (state.selectedSession === 's1' ? BASE_SESSIONS[0] : null);
+}
+
+function agentsFor(session) {
+  if (!session || session.loaded === false) return [];
+  if (session.id === 's1') return state.scenario === 'stress' ? AGENTS.concat(EXTRA_AGENTS) : AGENTS;
+  const count = Math.max(0, Math.min(session.agents || 0, 6));
+  return AGENTS.slice(0, count);
+}
+
+function rolesForScenario() {
+  return state.scenario === 'stress' ? ROLES_BASE.concat(ROLES_EXTRA) : ROLES_BASE;
+}
+
+function candidatesForScenario() {
+  return state.scenario === 'stress' ? CANDIDATES : CANDIDATES.slice(0, 3);
+}
+
+function channelsForScenario() {
+  return state.scenario === 'stress' ? CHANNELS : CHANNELS.slice(0, 4);
+}
+
+function relativeTime(seconds) {
+  if (seconds == null) return '—';
+  if (seconds < 60) return seconds + 's';
+  if (seconds < 3600) return Math.round(seconds / 60) + 'm';
+  return Math.round(seconds / 3600) + 'h';
+}
+
+function sessionTone(s) {
+  if (s.running) return 'ok';
+  if (s.attention && s.attention.kind === 'approval') return 'warn';
+  if (s.attention && s.attention.kind === 'failed') return 'bad';
+  return 'idle';
+}
+
+function statusInfo(agent) {
+  switch (agent.status) {
+    case 'running': return { tone: 'ok', label: '运行中' };
+    case 'waiting': return { tone: 'warn', label: '待复核' };
+    case 'done': return { tone: 'ok', label: '已完成' };
+    case 'failed': return { tone: 'bad', label: '失败' };
+    case 'queued': return { tone: 'idle', label: '排队中' };
+    default: return { tone: 'idle', label: '空闲' };
+  }
+}
+
+function roleById(id) {
+  return ROLES_BASE.concat(ROLES_EXTRA).find(r => r.id === id);
+}
+
+/* =====================================================================
+   小组件
+   ===================================================================== */
+function tag(text, tone = '') {
+  return `<span class="tag ${tone}">${esc(text)}</span>`;
+}
+
+function inlinePin(n) {
+  if (!state.anno) return '';
+  const a = ANNOTATIONS.find(x => x.n === n);
+  return `<button class="pin inline" data-action="pin" data-note="${n}" title="A${n} · ${esc(a ? a.title : '')}" aria-label="标注 ${n}">${n}</button>`;
+}
+
+function switchControl(label, on, action = 'toggle-switch') {
+  return `<button class="switch ${on ? 'on' : ''}" data-action="${action}" type="button" aria-pressed="${on ? 'true' : 'false'}"><span class="track" aria-hidden="true"></span><span>${esc(label)}</span></button>`;
+}
+
+function bars(pattern) {
+  const count = 24;
+  const out = [];
+  for (let i = 0; i < count; i += 1) {
+    let cls = 'ok';
+    let h = 92 + ((i * 7) % 9);
+    if (pattern === 'empty') { cls = 'empty'; h = 8; }
+    if (pattern === 'oneWarn' && i === 15) { cls = 'warn'; h = 58; }
+    if (pattern === 'twoWarn' && (i === 8 || i === 17)) { cls = 'warn'; h = 62; }
+    if (pattern === 'twoBad' && (i === 6 || i === 18)) { cls = 'bad'; h = 38; }
+    out.push(`<i class="${cls}" style="height:${h}%" title="第 ${i + 1} 桶"></i>`);
+  }
+  return out.join('');
+}
+
+/* =====================================================================
+   左侧栏
+   ===================================================================== */
+function renderLeft() {
+  const sessions = sessionsForScenario();
+  const groups = WORKSPACES.map(w => ({ ...w, sessions: sessions.filter(s => s.ws === w.id) })).filter(g => g.sessions.length > 0);
+  const wide = `
+    <div class="rail-top wide">
+      <div class="rail-brand"><span class="dotmark">DS</span><span>DeepSeek Harness</span><small>本地</small></div>
+      <button class="rail-new" data-action="toast" data-message="新会话（原型不创建）">${icon('plus', 12)} 新会话</button>
+    </div>
+    <div class="rail-top wide" style="padding-top:0;padding-bottom:4px;">
+      <div class="rail-search">${icon('search', 12)}<span>搜索会话、工作区</span></div>
+    </div>
+    <div class="rail-scroll wide">
+      ${groups.map(g => `
+        <div class="rail-group">
+          <div class="rail-group-head">${icon('chevronDown', 10)}<b>${esc(g.name)}</b><span class="count">${g.sessions.length}</span></div>
+          ${g.sessions.map(s => `
+            <div class="rail-row ${s.current ? 'is-current' : ''}" data-action="session" data-id="${s.id}" role="button" tabindex="0">
+              <span class="status-dot ${sessionTone(s)}"></span><span>${esc(s.title)}</span>
+            </div>`).join('')}
+        </div>`).join('')}
+    </div>
+    <div class="rail-foot wide"><span>${icon('layers', 12)} 工作区</span><span>${sessions.length} 会话</span><span style="margin-left:auto;">${icon('settings', 12)}</span></div>
+    <div class="rail-mini">
+      <button class="mini-btn" title="会话">${icon('layers', 16)}</button>
+      <button class="mini-btn" title="搜索">${icon('search', 16)}</button>
+      <button class="mini-btn is-active" title="智能体协同">${icon('bot', 16)}</button>
+      <div style="flex:1"></div>
+      <button class="mini-btn" title="设置">${icon('settings', 16)}</button>
+    </div>`;
+  leftrail.innerHTML = wide;
+}
+
+/* =====================================================================
+   会话主列
+   ===================================================================== */
+function currentSessionForMain() {
+  const all = sessionsForScenario();
+  return all.find(s => s.current) || all[0] || null;
+}
+
+function renderConversation() {
+  const s = currentSessionForMain();
+  if (!s) {
+    maincol.innerHTML = `
+      <header class="conv-head">
+        <button class="iconbtn" title="侧栏" data-action="toast" data-message="DSH 左侧栏（原型）">${icon('layers', 15)}</button>
+        <div class="conv-head-main">
+          <div class="conv-title-row"><h1>新会话</h1></div>
+          <div class="conv-meta"><span>没有正在显示的会话</span></div>
+        </div>
+      </header>
+      <div class="conv-scroll">
+        <div class="thread">
+          <div class="empty-state" style="margin-top:8vh;">
+            <span class="es-icon">${icon('layers', 18)}</span>
+            <b>选择一个会话，或新建一个</b>
+            <p>主列没有会话时，右栏仍可显示全局智能体状态；如果会话列表读取失败，会明确显示错误，而不是空列表。</p>
+          </div>
+        </div>
+      </div>
+      <div class="composer"><div class="c-input">新会话从这里开始…</div><div class="c-foot"><span class="grow"></span><button class="c-send" title="发送">${icon('chevronRight', 14)}</button></div></div>`;
+    return;
+  }
+  const title = s.title;
+  maincol.innerHTML = `
+    <header class="conv-head">
+      <button class="iconbtn" title="收起侧栏" data-action="toast" data-message="DSH 左侧栏（原型）">${icon('layers', 15)}</button>
+      <div class="conv-head-main">
+        <div class="conv-title-row"><h1 title="${esc(title)}">${esc(title)}</h1>${s && s.running ? tag('运行中', 'ok') : ''}</div>
+        <div class="conv-meta">
+          <span>${esc(s ? (WORKSPACES.find(w => w.id === s.ws) || {}).name || '' : '')}</span>
+          <span class="dotsep"></span><span>${esc(s ? s.model : '—')}</span>
+          <span class="dotsep"></span><span>${esc(s ? s.chain : '—')}</span>
+          ${s ? `<span class="dotsep"></span><span class="mono">${esc(s.id)}</span>` : ''}
+        </div>
+      </div>
+      <div class="conv-actions">
+        <button class="btn sm" data-action="open-drawer">${icon('bot', 12)} 协同</button>
+        <button class="iconbtn" title="更多">${icon('more', 15)}</button>
+      </div>
+    </header>
+    <div class="conv-scroll">
+      <div class="thread">
+        <div class="msg user">
+          <div class="msg-head"><span>你</span><span>·</span><time>14:58</time></div>
+          <div class="msg-body">先别按模板直接实现。把全局和单会话两层都压一遍，确认东西都上了之后不挤，再写设计文档和标注。</div>
+        </div>
+        <div class="msg assistant">
+          <div class="msg-head"><span class="status-dot ok"></span><b>DeepSeek-V4</b><span>·</span><time>15:02</time></div>
+          <div class="msg-body">
+            <p>已把右栏拆成“全局 → 单会话”两层，并用 22 个会话、10 个子智能体做压力数据。当前设计取舍：</p>
+            <ul>
+              <li>右栏使用 DSH 原生停靠，不用遮罩浮层；宽度覆盖 344 / 648 / 864 三档。</li>
+              <li>配置中枢保留三个页签：路由链、委派名册、渠道健康；会话绑定不再占第四个页签。</li>
+              <li>子智能体关系按“主会话 → 直接子节点”画，不把复核者画成 coder 的下级。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="event-card">
+          <div class="ec-head">${icon('bot', 14)} 派发了 4 个子智能体 <span class="tag accent">协作中</span></div>
+          <div class="ec-meta">coder-expert · ui-designer · security-auditor · code-reviewer</div>
+          <div class="agent-chips">
+            <span class="agent-chip"><span class="status-dot ok"></span>coder-expert · Step 2/3</span>
+            <span class="agent-chip"><span class="status-dot ok"></span>ui-designer · 48s</span>
+            <span class="agent-chip"><span class="status-dot warn"></span>security-auditor · 待复核</span>
+            <span class="agent-chip"><span class="status-dot ok"></span>code-reviewer · 已通过</span>
+          </div>
+          <div class="ec-meta">子会话预算 5/8 · 复核 1/1 · 开新会话 0/2</div>
+        </div>
+        <div class="msg assistant">
+          <div class="msg-head"><span class="status-dot ok"></span><b>DeepSeek-V4</b><span>·</span><time>15:04</time></div>
+          <div class="msg-body"><p>右侧抽屉已经打开“全局”视图。先看右上角的待处理队列，再点任意会话下钻。</p></div>
+        </div>
+      </div>
+    </div>
+    <div class="composer" style="position:relative;">
+      <div class="c-input">给当前会话发消息…</div>
+      <div class="c-foot">
+        <span class="c-chip">${icon('bot', 11)} 编程长文本链</span>
+        <button class="c-chip" data-action="chip-retry" aria-expanded="false" aria-controls="chipRetryPopover">${icon('layers', 11)} 5 次重试</button>
+        <span class="grow"></span>
+        <button class="c-send" title="发送">${icon('chevronRight', 14)}</button>
+      </div>
+      <div class="chip-popover" id="chipRetryPopover" hidden>
+        <div class="pop-title">本会话路由与重试 <span class="tag subtle">覆盖链默认</span></div>
+        <div class="pop-row"><span>链</span><select class="select" style="height:26px;font-size:10.5px;"><option>编程长文本链</option><option>默认全局链</option><option>视觉识图专用链</option></select></div>
+        <div class="pop-row"><span class="mono">claude-3.5-sonnet</span><input class="input" type="number" min="0" max="99" value="5" aria-label="Claude 重试次数"><span>次</span></div>
+        <div class="pop-row"><span class="mono">gpt-4o</span><input class="input" type="number" min="0" max="99" placeholder="跟随链 5" aria-label="GPT-4o 重试次数"><span>次</span></div>
+        <p class="hint">留空跟随链；这里只覆盖本会话。链行是默认值，chip 是本会话覆盖——同一概念的两个入口。</p>
+        <div style="display:flex;justify-content:flex-end;gap:6px;margin-top:6px;"><button class="btn sm" data-action="chip-retry">取消</button><button class="btn primary sm" data-action="toast" data-message="本会话重试覆盖已保存（原型）">应用</button></div>
+      </div>
+    </div>`;
+}
+
+/* =====================================================================
+   右栏：全局
+   ===================================================================== */
+function globalMetrics(sessions) {
+  const runningSessions = sessions.filter(s => s.running).length;
+  const runningAgents = sessions.reduce((n, s) => n + (s.loaded === false ? 0 : (s.running ? (s.agents || 0) : 0)), 0);
+  const pending = sessions.filter(s => s.attention).length;
+  const abnormal = sessions.filter(s => s.attention && (s.attention.kind === 'failed' || s.attention.kind === 'review')).length;
+  const unknown = sessions.filter(s => s.loaded === false).length;
+  return { runningSessions, runningAgents, pending, abnormal, unknown };
+}
+
+function attentionRows(sessions) {
+  const order = { approval: 0, question: 1, failed: 2, review: 3 };
+  return sessions
+    .filter(s => s.attention)
+    .sort((a, b) => (order[a.attention.kind] ?? 9) - (order[b.attention.kind] ?? 9));
+}
+
+function renderAttention(sessions) {
+  const all = attentionRows(sessions);
+  if (!all.length) return '';
+  const rows = all.slice(0, state.scenario === 'stress' ? 4 : 3);
+  const more = all.length - rows.length;
+  return `
+    <section class="section">
+      <div class="section-head"><h3>待你处理</h3><span class="count">${all.length}</span>${inlinePin(4)}<span class="right hint">按紧急度</span></div>
+      <div class="attention">
+        ${rows.map(s => {
+          const kind = s.attention.kind;
+          const tone = kind === 'approval' ? 'warn' : (kind === 'failed' ? 'bad' : (kind === 'review' ? 'warn' : 'warn'));
+          return `<button class="att-row" data-action="session" data-id="${s.id}">
+            <span class="att-icon ${tone}">${icon(kind === 'failed' ? 'alert' : (kind === 'approval' ? 'alert' : (kind === 'review' ? 'check' : 'info')), 12)}</span>
+            <span class="att-main"><b>${esc(s.attention.title)}</b><em>${esc(s.attention.detail)}</em></span>
+            <span class="att-time">${esc(s.attention.time)}</span>
+          </button>`;
+        }).join('')}
+        ${more ? `<button class="att-row att-more" data-action="filter-attention">还有 ${more} 个待处理，查看全部</button>` : ''}
+      </div>
+    </section>`;
+}
+
+function renderGroup(g) {
+  const running = g.sessions.filter(s => s.running).length;
+  const rows = g.sessions.slice().sort((a, b) => (Number(b.running) - Number(a.running)) || (a.updated - b.updated));
+  return `
+    <section class="group">
+      <div class="group-head">
+        ${icon('chevronDown', 10)}${icon('folder', 11)}<b>${esc(g.name)}</b>
+        ${g.path ? `<span class="gpath">${esc(g.path)}</span>` : ''}
+        ${g.sessions.some(s => s.current) ? inlinePin(5) : ''}
+        <span class="gcount">${running ? `${running} 运行 · ` : ''}${g.sessions.length} 会话</span>
+      </div>
+      ${rows.map(s => {
+        const tone = sessionTone(s);
+        const agentText = s.loaded === false ? '智能体未知' : (s.agents ? `${s.agents} 个${s.totalAgents && s.totalAgents > s.agents ? ` / ${s.totalAgents}` : ''}` : '无子智能体');
+        return `
+          <div class="srow ${s.current ? 'is-current' : ''}" data-action="session" data-id="${s.id}" role="button" tabindex="0">
+            <span class="status-dot ${tone}"></span>
+            <span class="srow-main">
+              <span class="srow-title"><span class="t" title="${esc(s.title)}">${esc(s.title)}</span>${s.current ? tag('当前', 'accent') : ''}${s.unread ? tag('完成', 'ok') : ''}</span>
+              <span class="srow-meta">
+                <span class="m">${esc(s.model)}</span>
+                <span class="dotsep optional"></span><span class="m optional">${esc(s.chain)}</span>
+                <span class="dotsep"></span><span class="agent-count">${icon('bot', 9)} ${esc(agentText)}</span>
+                ${s.loaded === false ? `<button class="load-link" data-action="load-projection" data-id="${s.id}">加载</button>` : ''}
+              </span>
+            </span>
+            <span class="srow-side"><time>${relativeTime(s.updated)}</time><button class="iconbtn" title="打开会话" data-action="open-session" data-id="${s.id}">${icon('external', 12)}</button></span>
+          </div>`;
+      }).join('')}
+    </section>`;
+}
+
+function renderGlobal() {
+  const all = sessionsForScenario();
+  const error = state.scenario === 'error';
+  const empty = state.scenario === 'empty' || all.length === 0;
+  const m = globalMetrics(all);
+  const groups = WORKSPACES.map(w => ({ ...w, sessions: all.filter(s => s.ws === w.id) })).filter(g => g.sessions.length > 0);
+  const filteredGroups = groups.map(g => ({
+    ...g,
+    sessions: g.sessions.filter(s => {
+      if (state.filter === 'running' && !s.running) return false;
+      if (state.filter === 'attention' && !s.attention) return false;
+      if (state.filter === 'abnormal' && !(s.attention && (s.attention.kind === 'failed' || s.attention.kind === 'review'))) return false;
+      if (state.query.trim()) {
+        const q = state.query.trim().toLowerCase();
+        const hay = `${s.title} ${s.model} ${s.chain} ${g.name}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    }),
+  })).filter(g => g.sessions.length > 0);
+
+  return `
+    <div class="drawer-scroll">
+      <div class="global-col">
+      ${state.anno ? `<div class="anno-label"><span>全局概览</span>${inlinePin(3)}</div>` : ''}
+      <div class="summary">
+        <div class="metric"><span class="k">运行中会话</span><span class="v">${error ? '—' : m.runningSessions}</span><span class="s">${error ? '读取失败' : `共 ${all.length} 个会话`}</span></div>
+        <div class="metric"><span class="k">运行中智能体</span><span class="v">${error ? '—' : m.runningAgents}</span><span class="s">${error ? '读取失败' : (m.unknown ? `${m.unknown} 个会话未知` : '直接子智能体')}</span></div>
+        <div class="metric"><span class="k">待你处理</span><span class="v ${!error && m.pending ? 'warn' : ''}">${error ? '—' : m.pending}</span><span class="s">${error ? '读取失败' : '审批 / 提问 / 复核'}</span></div>
+        <div class="metric"><span class="k">异常</span><span class="v ${!error && m.abnormal ? 'bad' : ''}">${error ? '—' : m.abnormal}</span><span class="s">${error ? '读取失败' : '失败 / 复核缺口'}</span></div>
+      </div>
+      ${!error && !empty ? `<div class="searchrow">
+        <label class="searchbox">${icon('search', 12)}<input id="fleetSearch" type="search" placeholder="搜索会话、工作区或角色" value="${esc(state.query)}" aria-label="搜索会话"></label>
+        <select class="filter-select" id="fleetFilter" aria-label="筛选会话">
+          <option value="all" ${state.filter === 'all' ? 'selected' : ''}>全部</option>
+          <option value="running" ${state.filter === 'running' ? 'selected' : ''}>运行中</option>
+          <option value="attention" ${state.filter === 'attention' ? 'selected' : ''}>待处理</option>
+          <option value="abnormal" ${state.filter === 'abnormal' ? 'selected' : ''}>异常</option>
+        </select>
+      </div>` : ''}
+      ${error ? `
+        <div class="error-state">
+          <b>会话列表读取失败</b>
+          <p><span class="mono">remote.session.list</span> 返回 <span class="mono">transport/closed</span>。本次读取失败不画成 0，也不伪装成空列表；重试成功后恢复。</p>
+          <button class="btn sm" data-action="retry">${icon('refresh', 12)} 重试</button>
+        </div>` : ''}
+      ${!error && empty ? `
+        <div class="empty-state">
+          <span class="es-icon">${icon('bot', 18)}</span>
+          <b>还没有可显示的会话</b>
+          <p>DSH 里没有正在运行的会话，或宿主尚未返回会话列表。抽屉不会用空图表冒充“全部正常”。</p>
+        </div>` : ''}
+      ${!error && !empty ? renderAttention(all) : ''}
+      ${!error && !empty && filteredGroups.length === 0 ? `
+        <div class="empty-state"><span class="es-icon">${icon('search', 18)}</span><b>没有匹配的会话</b><p>清掉搜索词或把筛选切回“全部”。</p></div>` : ''}
+      ${!error && !empty ? filteredGroups.map(renderGroup).join('') : ''}
+      ${!error && !empty ? `
+        <div class="scope-note">
+          ${inlinePin(6)}
+          <span>${icon('info', 11)}</span>
+          <span class="grow">已加载最近 ${all.filter(s => s.loaded !== false).length} 个会话的子智能体状态${m.unknown ? `；${m.unknown} 个会话尚未加载，显示为“未知”` : ''}。打开会话或点刷新按需读取。</span>
+          <button class="btn ghost sm" data-action="retry">刷新</button>
+        </div>` : ''}
+      </div>
+    </div>`;
+}
+
+/* =====================================================================
+   右栏：单会话
+   ===================================================================== */
+function renderTopology(agents) {
+  const shown = agents.slice(0, 8);
+  const more = agents.length - shown.length;
+  const running = agents.filter(a => a.status === 'running').length;
+  const reviews = agents.filter(a => a.role === 'review').length;
+  const failed = agents.filter(a => a.status === 'failed').length;
+  return `
+    <div class="topology">
+      <div class="topo-root">
+        <span class="avatar c0">M</span>
+        <span class="tr-main"><b>主会话 · ${esc((currentSessionForMain() || {}).model || 'DeepSeek-V4')}</b><em>第 4 轮 · 直接子智能体 ${agents.length} 个</em></span>
+        ${tag('运行中', 'ok')}
+      </div>
+      <div class="topo-rail"></div>
+      <div class="topo-children">
+        ${shown.map(a => {
+          const info = statusInfo(a);
+          const cls = a.status === 'running' ? 'running' : (a.status === 'failed' ? 'failed' : (a.role === 'review' && a.status === 'waiting' ? 'review' : (a.status === 'done' ? 'done' : (a.status === 'queued' ? 'queued' : ''))));
+          return `<button class="topo-node ${cls}" data-action="scroll-agent" data-id="${a.id}" title="${esc(a.roleId)} · ${info.label}" aria-label="${esc(a.roleId)}，${info.label}">${a.initial}${a.status === 'running' ? '<i class="flowdot"></i>' : ''}</button>`;
+        }).join('')}
+        ${more > 0 ? `<button class="topo-more" data-action="toast" data-message="还有 ${more} 个智能体，已折叠">+${more}</button>` : ''}
+      </div>
+      <div class="topo-summary"><span><b>${running}</b> 运行</span><span><b>${reviews}</b> 复核</span><span><b>${failed}</b> 失败</span></div>
+      <div class="topo-legend"><span class="status-dot ok"></span>运行 <span class="status-dot warn"></span>待复核 <span class="status-dot bad"></span>失败 <span class="status-dot"></span>完成 / 空闲</div>
+    </div>`;
+}
+
+function renderAgentCard(a) {
+  const info = statusInfo(a);
+  const role = roleById(a.roleId) || {};
+  const cls = a.status === 'failed' ? 'failed' : (a.role === 'review' ? 'review' : (a.status === 'queued' ? 'queued' : (a.status === 'running' ? 'running' : 'done')));
+  return `
+    <article class="agent-card ${cls}" id="agent-${a.id}" data-action="open-agent" data-id="${a.id}" role="button" tabindex="0">
+      <div class="agent-head">
+        <span class="avatar ${a.cls}">${a.initial}</span>
+        <span class="agent-name" title="${esc(a.roleId)}">${esc(a.roleId)}</span>
+        <span class="agent-role">${a.role === 'review' ? tag('复核', 'review') : tag('工作', 'subtle')}</span>
+        <span class="status-dot ${info.tone}" style="margin-left:auto"></span>
+      </div>
+      <div class="agent-task">${esc(a.task)}</div>
+      ${a.status === 'failed' ? `<div class="agent-error">RATE_LIMIT · 已消耗 1 次派发预算</div>` : ''}
+      <div class="agent-foot">
+        <span class="model">${esc(a.model)}</span><span class="sep"></span><span>${esc(a.elapsed)}</span>
+        <span class="budget-pill" title="本角色自最近一条用户消息以来已派发 / 上限">${esc(a.budget)}</span>
+      </div>
+      <div class="progress" aria-hidden="true"><i style="width:${a.progress}%"></i></div>
+    </article>`;
+}
+
+function renderFeed() {
+  const rows = [
+    { t: '13:42', tone: 'ok', title: '派发 coder-expert', sub: '第 4 轮 · 注入 goal / todos / stats' },
+    { t: '13:41', tone: 'warn', title: '复核 security-auditor：有缺口', sub: '2 项 · 缺少 344px 实测截图' },
+    { t: '13:39', tone: 'ok', title: '结算 code-reviewer：通过', sub: '4m12s · 结构化结论 verdict=done' },
+    { t: '13:38', tone: 'bad', title: 'researcher 失败：RATE_LIMIT', sub: '第 4 轮 · 已消耗 1 次派发预算' },
+    { t: '13:34', tone: 'ok', title: '用户发言：预算重置', sub: '派发 / 复核 / 新会话三本账归零' },
+    { t: '13:32', tone: 'warn', title: '收工回执 needs_user', sub: '等待人拍板 · 附 3 项缺口' },
+  ];
+  if (state.scenario === 'stress') {
+    rows.unshift({ t: '13:44', tone: 'ok', title: '派发 perf-tester', sub: '第 4 轮 · 22 会话压测' });
+  }
+  return rows.map(r => `<div class="feed-row ${r.tone}"><time class="ft">${r.t}</time><div class="fc"><b>${esc(r.title)}</b><em>${esc(r.sub)}</em></div></div>`).join('');
+}
+
+function renderSessionDetail(session) {
+  const agents = agentsFor(session);
+  const loaded = session.loaded !== false;
+  const firstRunning = agents.find(a => a.status === 'running') || agents[0];
+  const total = session.totalAgents || agents.length;
+  const ledger = session.ledger || {
+    delegated: Math.min(8, agents.length),
+    reviews: agents.some(a => a.role === 'review') ? 1 : 0,
+    newSessions: 0,
+  };
+  const delegated = ledger.delegated;
+  const reviewUsed = ledger.reviews;
+  return `
+    <div class="drawer-scroll">
+      <div class="session-head">
+        <div class="session-title-line"><h2 title="${esc(session.title)}">${esc(session.title)}</h2>${session.running ? tag('运行中', 'ok') : tag('空闲', '')}</div>
+        <div class="session-meta">
+          <span>${esc((WORKSPACES.find(w => w.id === session.ws) || {}).name || '')}</span><span class="dotsep"></span>
+          <span>${esc(session.model)}</span><span class="dotsep"></span><span>${esc(session.chain)}</span><span class="dotsep"></span>
+          <span class="mono">${esc(session.id)}</span>
+        </div>
+      </div>
+      ${!loaded ? `
+        <div class="scope-note"><span>${icon('info', 11)}</span><span class="grow">该会话的智能体投影尚未加载。下面只显示会话级事实，不把未知写成 0。</span><button class="btn ghost sm" data-action="load-projection">加载</button></div>` : ''}
+      <div class="statusline">
+        <span class="status-dot ${session.running ? 'ok pulse' : ''}"></span><span>${session.running ? `运行中 · 第 4 轮` : '当前无运行回合'}</span>
+        ${session.reviewGap ? tag('复核有缺口', 'warn') : ''}
+        <span class="push"></span><span class="mono">${esc(session.tokens || '—')} tokens</span>
+      </div>
+      ${loaded ? `
+      ${state.anno ? `<div class="anno-label"><span>三本预算</span>${inlinePin(7)}</div>` : ''}
+      <div class="budget">
+        <div class="b"><span class="k">派发</span><span class="v">${delegated} <small>/ 8</small></span><div class="track"><i style="width:${Math.round(delegated / 8 * 100)}%"></i></div></div>
+        <div class="b"><span class="k">复核</span><span class="v">${reviewUsed} <small>/ 1</small></span><div class="track"><i style="width:${Math.min(100, reviewUsed / 1 * 100)}%;background:var(--warn)"></i></div></div>
+        <div class="b"><span class="k">开新会话</span><span class="v">${ledger.newSessions || 0} <small>/ 2</small></span><div class="track"><i style="width:${Math.min(100, (ledger.newSessions || 0) / 2 * 100)}%"></i></div></div>
+      </div>
+      <div class="budget-note">用户发言后重置；接力不重置。上限不是配额，复核第一次通过即可收工。</div>
+      ` : ''}
+      ${loaded && agents.length ? `<div class="section-head"><h3>智能体拓扑</h3><span class="count">${agents.length} 个直接子节点</span>${inlinePin(8)}</div>` : ''}
+      ${loaded && agents.length ? renderTopology(agents) : ''}
+      ${loaded && !agents.length ? `
+        <div class="empty-state"><span class="es-icon">${icon('bot', 18)}</span><b>本会话还没有派发子智能体</b><p>主模型调用 handoff 的 delegate 动作后会出现在这里；没有子智能体不是错误。</p></div>` : ''}
+      ${loaded && agents.length ? `
+        <div class="content-grid">
+          <div>
+            <div class="section-head"><h3>智能体</h3><span class="count">${agents.length}${total > agents.length ? ` / ${total}` : ''}</span>${inlinePin(9)}<span class="right hint">按状态排序</span></div>
+            <div class="agent-grid">${agents.map(renderAgentCard).join('')}</div>
+          </div>
+          <aside class="feed">
+            <div class="section-head"><h3>最近活动</h3>${inlinePin(10)}<span class="right"><button class="btn ghost sm" data-action="toast" data-message="活动筛选：异常（原型）">异常</button></span></div>
+            <div class="feed-list">${renderFeed()}</div>
+          </aside>
+        </div>` : ''}
+    </div>
+    <div class="drawer-foot">
+      <span class="hint">${loaded ? `${agents.filter(a => a.status === 'running').length} 个运行中 · 实时同步` : '投影未加载'}</span>
+      <button class="btn ghost sm" data-action="copy-id" data-id="${session.id}">复制 ID</button>
+      <button class="btn sm" data-action="open-agent" data-id="${firstRunning ? firstRunning.id : ''}">${icon('external', 12)} 子会话</button>
+      <button class="btn primary sm" data-action="open-main" data-id="${session.id}">打开主会话</button>
+    </div>`;
+}
+
+function renderRight() {
+  if (state.screen === 'console') { rightbar.innerHTML = ''; return; }
+  const session = state.selectedSession ? selectedSession() : null;
+  const inDetail = Boolean(session);
+  const title = inDetail ? '会话协同' : '智能体协同';
+  const scope = inDetail ? 'session' : 'global';
+  const count = state.scenario === 'error' ? '!' : sessionsForScenario().filter(s => s.running).length;
+  const countBad = state.scenario === 'error' ? ' bad' : '';
+  rightbar.innerHTML = `
+    <button class="resize-handle" id="rightResizeHandle" title="拖动调整右栏宽度（等价 DSH 原生拖动）" aria-label="拖动调整右栏宽度"></button>
+    <div class="tabstrip">
+      <div class="tabchips">
+        <button class="tabchip" data-action="toast" data-message="DSH 原生标签页：文件">${icon('file', 11)} 文件</button>
+        <button class="tabchip" data-action="toast" data-message="DSH 原生标签页：终端">${icon('terminal', 11)} 终端</button>
+        <button class="tabchip is-active" aria-current="page">${icon('bot', 11)} 智能体 <span class="tabbadge${countBad}">${count}</span></button>
+        ${inlinePin(1)}
+      </div>
+      <div class="tabfill"></div>
+      <div class="tabtools">
+        <button class="iconbtn" title="新建标签页" data-action="toast" data-message="DSH 原生：新建标签页">${icon('plus', 13)}</button>
+        <button class="iconbtn" title="分屏" data-action="toast" data-message="DSH 原生：分屏">${icon('split', 13)}</button>
+      </div>
+    </div>
+    <div class="drawer">
+      <div class="drawer-head">
+        <div class="dh-row">
+          ${inDetail ? `<button class="iconbtn" title="返回全局" data-action="back">${icon('arrowLeft', 14)}</button>` : `<span class="glyph">${icon('bot', 12)}</span>`}
+          <div class="dh-title"><h2>${title}</h2>${inlinePin(2)}${inDetail ? tag('本会话', 'accent') : tag('全局', 'accent')}</div>
+          <div class="dh-tools">
+            <button class="iconbtn" title="刷新" data-action="retry">${icon('refresh', 13)}</button>
+            <button class="iconbtn" title="更多" data-action="toast" data-message="更多操作（原型）">${icon('more', 13)}</button>
+          </div>
+        </div>
+        <div class="dh-scope">
+          <div class="seg" role="tablist" aria-label="视图范围">
+            <button class="${scope === 'global' ? 'is-active' : ''}" data-action="scope" data-value="global" role="tab" aria-selected="${scope === 'global'}">全局</button>
+            <button class="${scope === 'session' ? 'is-active' : ''}" data-action="scope" data-value="session" role="tab" aria-selected="${scope === 'session'}">本会话</button>
+          </div>
+          <span class="dh-note">${state.scenario === 'error' ? '读取失败' : (inDetail ? `${(agentsFor(session) || []).length} 个子智能体` : `${count} 运行 · ${sessionsForScenario().length} 会话`)}</span>
+        </div>
+      </div>
+      ${inDetail ? renderSessionDetail(session) : renderGlobal()}
+    </div>`;
+}
+
+/* =====================================================================
+   配置中枢
+   ===================================================================== */
+function renderChainView() {
+  const candidates = candidatesForScenario();
+  return `
+    <div class="page-col">
+      <div class="card">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+          <div style="min-width:0;flex:1;">
+            <h3 class="card-title">当前编辑链</h3>
+            <p class="card-hint">链决定“第一跳失败之后往哪走”；不改变你在会话里选中的模型。</p>
+          </div>
+          <div class="chip-bar">
+            ${CHAINS.filter(c => state.scenario === 'stress' || c.id !== 'cheap').map(c => `<button class="chain-pill ${c.active ? 'is-active' : ''}" data-action="toast" data-message="切换链：${esc(c.name)}">${esc(c.name)} <span class="n">${c.count}</span></button>`).join('')}
+            <button class="btn sm" data-action="toast" data-message="新建链（原型）">${icon('plus', 11)} 新建</button>
+          </div>
+        </div>
+      </div>
+
+      <section class="section" style="margin-top:14px;">
+        <div class="section-head"><h3>第一跳</h3><span class="count">1</span><span class="right hint">永远先试当前选中的模型</span></div>
+        <div class="card">
+          <div class="row">
+            <span class="tag accent">★</span>
+            <span class="row-main">
+              <span class="row-title"><span class="t">你当前选中的模型</span>${tag('会话决定', 'subtle')}</span>
+              <span class="row-sub">本会话选中 <b>DeepSeek-V4</b>；失败后在同渠道重试 <b>5</b> 次，额度用完后才进入降级候选。重试由插件执行，白名单里的失败不重试。</span>
+            </span>
+            <span class="row-actions"><input class="input" style="width:52px;height:26px;text-align:center" value="5" aria-label="第一跳重试次数"> <span class="hint">次</span></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h3>降级候选</h3><span class="count">${candidates.length}</span><span class="right"><button class="btn sm primary" data-action="toast" data-message="打开目录选择（原型）">${icon('plus', 11)} 添加候选</button></span></div>
+        <div class="card">
+          ${candidates.map((c, i) => `
+            <div class="row">
+              <span class="order" style="width:20px;color:var(--accent-text);font-weight:600;font-size:11px;">${String(i + 1).padStart(2, '0')}</span>
+              <span class="row-main">
+                <span class="row-title"><span class="t">${esc(c.name)}</span>${tag(c.healthLabel, c.health)}</span>
+                <span class="row-sub"><span class="mono">${esc(c.route)}</span>${c.weight ? `<span class="dotsep"></span><span>权重 ${c.weight}</span>` : ''}</span>
+              </span>
+              <span class="row-actions">
+                <label class="retry-inline">重试 <input class="input" type="number" min="0" max="99" value="${c.retry}" aria-label="${esc(c.name)} 失败后重试次数"> 次</label>
+                <button class="btn ghost sm" data-action="toast" data-message="高级条件：识图三态 / 上下文门槛 / 推理档位">条件</button>
+                <button class="iconbtn" title="上移" data-action="toast" data-message="上移">${icon('chevronDown', 12)}</button>
+                <button class="iconbtn" title="移除" data-action="toast" data-message="移除候选">${icon('close', 12)}</button>
+              </span>
+            </div>
+            ${i === 1 ? `
+              <div style="margin:2px 0 8px 28px;padding:8px 10px;border:.5px solid var(--border-l1);border-radius:8px;background:var(--bg-layer-2);">
+                <div class="three-col">
+                  <div class="field"><span class="flabel">图片输入</span><div class="seg"><button class="is-active">不限</button><button>仅带图</button><button>仅无图</button></div></div>
+                  <div class="field"><span class="flabel">最小上下文</span><input class="input" value="120000" aria-label="最小上下文"></div>
+                  <div class="field"><span class="flabel">推理档位</span><span class="fhint">由预校验自动跳过不支持的候选，不占条件位。</span></div>
+                </div>
+              </div>` : ''}
+          `).join('')}
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h3>失败切换</h3><span class="count">9 键</span><span class="right hint">6 个瞬态 + 3 个立即切换子集</span></div>
+        <div class="two-col">
+          <div class="card">
+            <h3 class="card-title">瞬态错误</h3>
+            <p class="card-hint">勾选代表本插件接管；不勾选交回 DSH 原生策略。</p>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;">
+              ${['限流 429', '服务端 5xx', '超时', '传输中断', '空回复', '其他未分类'].map((x, i) => `<label class="check"><input type="checkbox" checked> ${x}</label>`).join('')}
+            </div>
+          </div>
+          <div class="card">
+            <h3 class="card-title">立即切换白名单</h3>
+            <p class="card-hint">命中即换下一候选，不在死端点等退避。</p>
+            <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+              ${['凭据无效 AUTH', '额度用尽 QUOTA', '参数非法 INVALID_REQUEST'].map(x => `<label class="check"><input type="checkbox" checked> ${x}</label>`).join('')}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h3>输出续跑</h3><span class="right hint">撞到 max-tokens 时继续写</span></div>
+        <div class="card">
+          <div class="row">
+            <span class="row-main">
+              <span class="row-title"><span class="t">自动续跑被截断的输出</span>${tag('默认开', 'ok')}</span>
+              <span class="row-sub">输出撞到 max-tokens 时自动 steer 继续写；续满仍截断，才按降级链换下一条候选接力。</span>
+            </span>
+            <span class="row-actions">
+              <label class="retry-inline">最多 <input class="input" type="number" min="0" max="9" value="2" aria-label="输出截断最多续跑次数"> 次</label>
+              ${switchControl('自动续跑', true)}
+            </span>
+          </div>
+          <div class="formula" style="margin-top:8px;">这里只配“截断后继续”的次数；每条候选的重试次数在各自行上配置，不存在单独的“单请求最多调用”配置。</div>
+        </div>
+      </section>
+
+      <div class="scope-note">
+        ${icon('info', 11)}
+        <span class="grow">本会话绑定：<b>编程长文本链</b>。改绑在会话输入框的模型路由芯片里完成；全局抽屉只读显示，不重复配置入口。</span>
+      </div>
+    </div>`;
+}
+
+function renderRosterView() {
+  const roles = rolesForScenario();
+  const role = roles.find(r => r.id === state.rosterId) || roles[0];
+  const [provider, modelId] = String(role.model || '').split(' / ');
+  const invalid = state.scenario === 'stress' && role && role.id === 'translator';
+  return `
+    <div class="page-col">
+      <div class="card">
+        <div style="display:flex;align-items:flex-start;gap:12px;flex-wrap:wrap;">
+          <div style="min-width:0;flex:1;">
+            <h3 class="card-title">智能体委派基础设施</h3>
+            <p class="card-hint">注册 handoff 工具；主模型根据名册自主选人；循环收敛靠三本账，人说话才清零。默认关闭，关时不注册工具。</p>
+          </div>
+          ${tag('默认关闭', 'subtle')}
+          ${switchControl('启用委派', false)}
+        </div>
+        <div class="three-col" style="margin-top:10px;">
+          <div class="field"><label>派发（每用户消息）</label><input class="input" type="number" value="8" aria-label="每用户消息最多派发"><span class="fhint">每回合最多 1 次</span></div>
+          <div class="field"><label>复核（每用户消息）</label><input class="input" type="number" value="1" aria-label="每用户消息最多复核"><span class="fhint">上限不是配额，通过即收工</span></div>
+          <div class="field"><label>开新会话（每用户消息）</label><input class="input" type="number" value="2" aria-label="每用户消息最多开新会话"><span class="fhint">接力不重置</span></div>
+        </div>
+        <div class="three-col" style="margin-top:8px;">
+          <div class="field"><label>派发后端</label><select class="select"><option>spawn（默认）</option><option>fork</option></select></div>
+          <div class="field"><label>每回合派发</label><input class="input" type="number" value="1" aria-label="每回合派发上限"><span class="fhint">maxDelegationsPerTurn</span></div>
+          <div class="field"><label>每日派发上限</label><input class="input" type="number" value="24" aria-label="每日派发上限"><span class="fhint">进程内累计，重启归零</span></div>
+        </div>
+      </div>
+
+      <div class="section" style="margin-top:14px;">
+        <div class="section-head"><h3>工牌名册</h3><span class="count">${roles.length}</span>${inlinePin(12)}<span class="right"><button class="btn sm primary" data-action="toast" data-message="签发新工牌（原型）">${icon('plus', 11)} 签发新工牌</button></span></div>
+        <div class="roster-layout">
+          <div class="roster-list">
+            ${roles.map(r => `
+              <button class="roster-item ${r.id === role.id ? 'is-active' : ''}" data-action="roster" data-id="${r.id}">
+                <span class="avatar ${r.cls}" style="width:22px;height:22px;font-size:9px;">${r.initial}</span>
+                <span class="ri-main"><b>${esc(r.id)}</b><em>${esc(r.name)} · ${esc(r.model.split(' / ').pop())}</em></span>
+                ${r.role === 'review' ? tag('复核', 'review') : ''}
+              </button>`).join('')}
+          </div>
+          <div class="roster-editor">
+            <div class="card">
+              <div style="display:flex;align-items:flex-start;gap:10px;margin-bottom:4px;">
+                <div style="min-width:0;flex:1;">
+                  <h3 class="card-title">${esc(role.id)} <span class="tag ${role.role === 'review' ? 'review' : 'subtle'}">${role.role === 'review' ? '复核' : '工作'}</span></h3>
+                  <p class="card-hint">purpose 只给主模型看；instructions 只给子智能体。一个字段只有一个读者。</p>
+                </div>
+                <button class="btn ghost sm" data-action="toast" data-message="删除工牌需要二次确认">删除</button>
+              </div>
+              ${invalid ? `<div class="form-error">${icon('alert', 12)}<span>保存被拒：instructions 与 preset 至少一个非空，当前两者都为空。</span></div>` : ''}
+              <div class="editor-section">
+                <h4>身份</h4>
+                <div class="two-col">
+                  <div class="field"><label>ID</label><input class="input" value="${esc(role.id)}"></div>
+                  <div class="field"><label>显示名</label><input class="input" value="${esc(role.name)}"></div>
+                  <div class="field"><label>角色</label><select class="select"><option ${role.role === 'work' ? 'selected' : ''}>工作（work）</option><option ${role.role === 'review' ? 'selected' : ''}>复核（review）</option></select></div>
+                </div>
+              </div>
+              <div class="editor-section">
+                <h4>选人依据（purpose，主模型读）</h4>
+                <div class="field"><textarea class="textarea" style="height:58px">${esc(role.purpose)}</textarea><span class="fhint">这段话会编进 handoff 工具描述，每轮进主模型上下文。写“适合什么、不适合什么”。</span></div>
+              </div>
+              <div class="editor-section">
+                <h4>工作规范（instructions，子智能体读）</h4>
+                <div class="field">
+                  <textarea class="textarea ${invalid ? 'invalid' : ''}" style="height:86px">${esc(role.instructions)}</textarea>
+                  <span class="fhint">${invalid ? '<span style="color:var(--bad-text)">instructions 与 preset 至少一个非空；当前两者都为空。</span>' : `${role.instructions.length} / 4000 字符 · 每次派发都会重复进入上下文，别写密钥。`}</span>
+                </div>
+              </div>
+              <div class="editor-section">
+                <h4>运行</h4>
+                <div class="two-col">
+                  <div class="field"><label>Agent Preset</label><input class="input" value="${esc(role.preset || '')}" placeholder="不指定（用 instructions）"></div>
+                  <div class="field"><label>Provider</label><input class="input" value="${esc(provider || '')}"></div>
+                  <div class="field"><label>Model</label><input class="input" value="${esc(modelId || '')}"></div>
+                  <div class="field"><label>推理档位</label><select class="select"><option>自动（不指定）</option><option>low</option><option>medium</option><option>high</option></select></div>
+                  <div class="field"><label>maxTokens</label><input class="input" type="number" value="32000" aria-label="maxTokens"></div>
+                  <div class="field"><label>失败后</label><select class="select"><option>跟随父会话链（inherit）</option><option>不降级（none）</option><option>指定链…</option></select></div>
+                  <div class="field"><label>每用户消息上限</label><input class="input" type="number" value="${role.maxRuns}" style="width:88px" aria-label="每用户消息上限"></div>
+                  <div class="field"><label>结构化结论</label><select class="select"><option>不要求</option><option ${role.role === 'review' ? 'selected' : ''}>verdict + gaps + recommend</option><option>自定义 JSON…</option></select><span class="fhint">需要 provider 支持 outputSchema</span></div>
+                </div>
+              </div>
+              <div class="editor-section">
+                <h4>备料（插件给事实，不给自述）</h4>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;">
+                  ${['goal', 'todos', 'userRequest', 'stats'].map(x => `<label class="check"><input type="checkbox" ${role.attach.includes(x) ? 'checked' : ''}> ${x}</label>`).join('')}
+                </div>
+              </div>
+              <div class="editor-actions">
+                <button class="btn sm" data-action="toast" data-message="放弃修改（原型）">放弃</button>
+                <button class="btn primary sm" data-action="toast" data-message="保存工牌（原型）">保存工牌</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <section class="section">
+        <div class="section-head"><h3>协议与接力</h3><span class="right hint">一个工具，四个动作</span></div>
+        <div class="two-col">
+          <div class="card">
+            <h3 class="card-title">工具动作</h3>
+            <p class="card-hint">delegate / finish / facts 可关，关掉的不进入工具 schema；newSession 在工具里，由下方接力配置控制。</p>
+            <div class="three-col" style="margin-top:8px;">
+              <label class="check"><input type="checkbox" checked> delegate 派人</label>
+              <label class="check"><input type="checkbox" checked> finish 收工</label>
+              <label class="check"><input type="checkbox" checked> facts 看事实</label>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:7px;">
+              <span class="check" style="color:var(--label-primary);font-weight:550;">newSession 开新会话</span>
+              <span class="tag subtle">随接力配置</span>
+            </div>
+            <div class="formula" style="margin-top:8px;">四个动作同属一个 handoff 工具；newSession 不是 finish 的专属后续，也不是第五个工具。</div>
+          </div>
+          <div class="card">
+            <h3 class="card-title">接力（newSession）</h3>
+            <div class="field" style="margin-top:6px;">
+              <label>收工后自动开新会话（onFinish，可多选）</label>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                <label class="check"><input type="checkbox"> done</label>
+                <label class="check"><input type="checkbox"> needs_user</label>
+                <label class="check"><input type="checkbox"> abandoned</label>
+              </div>
+              <span class="fhint">全不勾 = 不自动开；开新会话不重置三本账。</span>
+            </div>
+            <div class="two-col" style="margin-top:8px;">
+              <div class="field"><label>下一步（nextAction）</label><select class="select"><option>continue</option><option>review</option><option>review-then-continue</option></select></div>
+              <div class="field"><label>旧 goal</label><label class="check" style="height:30px;align-items:center;"><input type="checkbox" checked> keepGoal</label></div>
+              <div class="field"><label>主模型</label><label class="check" style="height:30px;align-items:center;"><input type="checkbox" checked> carrySelection</label></div>
+              <div class="field"><label>链绑定</label><label class="check" style="height:30px;align-items:center;"><input type="checkbox" checked> carryChainBinding</label></div>
+            </div>
+            <div class="field" style="margin-top:8px;">
+              <label>简报备料（briefing）</label>
+              <div style="display:flex;gap:9px;flex-wrap:wrap;">
+                ${['goal', 'todos', 'userRequest', 'lastReview', 'stats'].map(x => `<label class="check"><input type="checkbox" checked> ${x}</label>`).join('')}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-head"><h3>收工闸门与兜底</h3><span class="right hint">默认保守</span></div>
+        <div class="card">
+          <div class="field">
+            <label>强制复核的收工结果（requireReviewFor）</label>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;">
+              <label class="check"><input type="checkbox"> done</label>
+              <label class="check"><input type="checkbox"> needs_user</label>
+              <label class="check"><input type="checkbox"> abandoned</label>
+            </div>
+            <span class="fhint">全不勾 = 不强制复核。强制时只认最近一条用户消息之后、最近一次通过的复核。</span>
+          </div>
+          <div class="two-col" style="margin-top:8px;">
+            <label class="check"><input type="checkbox" checked> 允许写明理由跳过复核</label>
+            <label class="check"><input type="checkbox"> 没签字就停时追问一次</label>
+            <label class="check"><input type="checkbox" checked> 停止时报告用户</label>
+            <label class="check"><input type="checkbox"> 自动派兜底角色</label>
+          </div>
+          <div class="two-col" style="margin-top:8px;">
+            <div class="field"><label>兜底角色（delegateTo）</label><select class="select"><option>空：只报告</option><option>security-auditor</option><option>code-reviewer</option></select></div>
+            <div class="field"><label>每回合追问上限（maxNudgesPerTurn）</label><input class="input" type="number" value="1" aria-label="每回合追问上限"></div>
+          </div>
+          <div class="formula" style="margin-top:8px;">默认：<code>requireReviewFor []</code> / <code>allowReviewOverride true</code> / <code>nudge false</code> / <code>delegateTo ""</code> / <code>onFinish []</code>。会真实跑的自动动作默认关。</div>
+        </div>
+      </section>
+    </div>`;
+}
+
+function renderHealthView() {
+  const channels = channelsForScenario();
+  const observed = channels.filter(c => c.ok != null).length;
+  return `
+    <div class="page-col">
+      ${state.anno ? `<div class="anno-label"><span>健康概览</span>${inlinePin(13)}</div>` : ''}
+      <div class="kpi-strip">
+        <div class="kpi"><div class="k">监控端点</div><div class="v">${channels.length}</div><div class="s">${observed} 个有观测</div></div>
+        <div class="kpi"><div class="k">窗口可用率</div><div class="v">${observed ? '98.9%' : '—'}</div><div class="s">24 桶 · 被动观测</div></div>
+        <div class="kpi"><div class="k">平均步内延迟</div><div class="v">2.3s</div><div class="s">不是 TTFT</div></div>
+        <div class="kpi"><div class="k">熔断隔离</div><div class="v">0</div><div class="s">冷却后自动探测</div></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:12px 0 6px;">
+        <div class="seg"><button class="is-active" data-action="toast" data-message="筛选：全部">全部</button><button data-action="toast" data-message="筛选：正常">正常</button><button data-action="toast" data-message="筛选：异常">异常</button><button data-action="toast" data-message="筛选：未观测">未观测</button></div>
+        <span style="flex:1"></span>
+        <button class="btn sm" data-action="toast" data-message="检查全部渠道连通性（原型）">${icon('refresh', 11)} 检查连通性</button>
+        <button class="btn sm" data-action="toast" data-message="健康设置（原型）">设置</button>
+        <button class="btn sm" data-action="toast" data-message="故障转移历史（原型）">历史</button>
+      </div>
+      <div class="card">
+        ${channels.map(c => `
+          <div class="health-row">
+            <div class="health-top">
+              <div class="health-main">
+                <span class="status-dot ${c.ok == null ? '' : (c.ok >= 99 ? 'ok' : (c.ok >= 95 ? 'warn' : 'bad'))}"></span>
+                <span class="health-name">${esc(c.name)}</span>
+                ${c.ok == null ? tag('未观测', 'subtle') : tag(`${c.ok}%`, c.ok >= 99 ? 'ok' : (c.ok >= 95 ? 'warn' : 'bad'))}
+              </div>
+              <button class="btn ghost sm" data-action="toast" data-message="探活 ${esc(c.name)}">探活</button>
+            </div>
+            <div class="health-meta"><span>${c.calls} 次调用</span><span>步内延迟 ${c.latency}</span><span>吞吐 ${c.tps}</span><span>${esc(c.note)}</span></div>
+            <div class="bars" title="最近 24 个桶的成功率；空槽代表无观测">${bars(c.bars)}</div>
+          </div>`).join('')}
+      </div>
+      <div class="scope-note" style="margin-top:10px;">${icon('info', 11)}<span class="grow">柱高是桶内成功率，不是延迟；没有样本的桶画成空槽。TTFT 属于 DSH 的 sessionStats，不由本插件采集。</span></div>
+    </div>`;
+}
+
+function renderConsole() {
+  const tab = state.consoleTab;
+  const roleCount = rolesForScenario().length;
+  const channelCount = channelsForScenario().length;
+  maincol.innerHTML = `
+    <div class="console">
+      <div class="page-head">
+        <div class="page-head-main">
+          <div class="page-kicker">DSH Model Router</div>
+          <h1 class="page-title">模型路由与委派</h1>
+          <p class="page-sub">为 Agent 主请求提供跨 provider 故障转移，给子智能体一张可复用的名册。配置与运行分开：配置在这里，实时协同在右栏。</p>
+        </div>
+        <div class="page-head-actions">
+          ${tag('接管中', 'ok')}
+          <button class="btn sm" data-action="toast" data-message="更新日志（原型）">更新日志</button>
+          <button class="btn sm" data-action="toast" data-message="故障转移历史（原型）">历史</button>
+          ${switchControl('接管路由', true)}
+        </div>
+      </div>
+      <div class="page-tabs">
+        <div class="seg" role="tablist" aria-label="配置视图">
+          <button class="${tab === 'chain' ? 'is-active' : ''}" data-action="console-tab" data-value="chain" role="tab" aria-selected="${tab === 'chain'}">路由链 <span class="n">${state.scenario === 'stress' ? '5 候选' : '3 候选'}</span></button>
+          <button class="${tab === 'roster' ? 'is-active' : ''}" data-action="console-tab" data-value="roster" role="tab" aria-selected="${tab === 'roster'}">委派名册 <span class="n">${roleCount} 岗位</span></button>
+          <button class="${tab === 'health' ? 'is-active' : ''}" data-action="console-tab" data-value="health" role="tab" aria-selected="${tab === 'health'}">渠道健康 <span class="n">${channelCount} 渠道</span></button>
+        </div>
+        ${inlinePin(11)}
+      </div>
+      <div class="page-scroll">
+        ${tab === 'chain' ? renderChainView() : (tab === 'roster' ? renderRosterView() : renderHealthView())}
+      </div>
+      <div class="page-footer">
+        <span class="status"><b>所有修改已保存</b> · Ctrl+S 保存 · 保存后 Cordis 重启插件 fiber</span>
+        ${inlinePin(14)}
+        <button class="btn sm" data-action="toast" data-message="没有可放弃的修改">放弃</button>
+        <button class="btn primary sm" data-action="toast" data-message="保存配置（原型）">保存</button>
+      </div>
+    </div>`;
+}
+
+/* =====================================================================
+   渲染入口与交互
+   ===================================================================== */
+function renderLegend() {
+  const noChrome = document.body.classList.contains('no-chrome');
+  const legendH = state.anno ? (window.innerWidth < 1000 ? 140 : (window.innerWidth < 1200 ? 116 : 92)) : 0;
+  legend.style.height = legendH + 'px';
+  if (!state.anno) {
+    legend.classList.remove('is-open');
+    legend.innerHTML = '';
+    stage.style.height = noChrome ? '100vh' : 'calc(100vh - 46px)';
+    app.style.height = noChrome ? '100vh' : 'calc(100vh - 74px)';
+    return;
+  }
+  legend.classList.add('is-open');
+  legend.innerHTML = ANNOTATIONS.map(a => `<div class="legend-item"><span class="n">${a.n}</span><span><b>${esc(a.title)}</b> · ${esc(a.text)}</span></div>`).join('');
+  stage.style.height = noChrome ? `calc(100vh - ${legendH}px)` : `calc(100vh - ${46 + legendH}px)`;
+  app.style.height = noChrome ? `calc(100vh - ${legendH}px)` : `calc(100vh - ${74 + legendH}px)`;
+}
+
+function syncDemo() {
+  document.querySelectorAll('[data-group]').forEach(group => {
+    const key = group.getAttribute('data-group');
+    group.querySelectorAll('[data-action]').forEach(button => {
+      const action = button.getAttribute('data-action');
+      let current = null;
+      if (action === 'screen') current = state.screen;
+      if (action === 'theme') current = state.theme;
+      if (action === 'scenario') current = state.scenario;
+      if (action === 'width') current = state.width;
+      if (action === 'anno') current = state.anno ? 'on' : 'off';
+      if (current != null) {
+        button.classList.toggle('is-active', action === 'anno' ? state.anno : button.getAttribute('data-value') === current);
+        if (action === 'anno') button.textContent = state.anno ? '标注 开' : '标注 关';
+      }
+    });
+  });
+}
+
+function render() {
+  document.documentElement.setAttribute('data-theme', state.theme);
+  app.setAttribute('data-w', state.width);
+  app.setAttribute('data-screen', state.screen);
+  if (state.rightWidth && state.screen === 'drawer' && state.width !== 'full') {
+    app.style.setProperty('--right-w', state.rightWidth + 'px');
+  } else {
+    app.style.removeProperty('--right-w');
+  }
+  renderLeft();
+  if (state.screen === 'console') {
+    renderConsole();
+    rightbar.innerHTML = '';
+  } else {
+    renderConversation();
+    renderRight();
+  }
+  renderLegend();
+  syncDemo();
+}
+
+function toast(message) {
+  toastEl.textContent = message;
+  toastEl.hidden = false;
+  clearTimeout(state.toastTimer);
+  state.toastTimer = setTimeout(() => { toastEl.hidden = true; }, 2400);
+}
+
+function openSession(id) {
+  const all = sessionsForScenario();
+  const session = all.find(s => s.id === id);
+  if (!session) { toast('该会话不在当前列表'); return; }
+  state.selectedSession = id;
+  state.drawerScope = 'session';
+  renderRight();
+}
+
+function scrollAgent(id) {
+  const el = document.getElementById('agent-' + id);
+  if (el) {
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.style.outline = '2px solid var(--accent)';
+    setTimeout(() => { el.style.outline = ''; }, 1200);
+  }
+}
+
+document.addEventListener('click', event => {
+  const popover = document.getElementById('chipRetryPopover');
+  if (popover && !popover.hidden && !event.target.closest('.composer')) {
+    popover.hidden = true;
+  }
+  const pinEl = event.target.closest('[data-action="pin"]');
+  if (pinEl) {
+    const n = Number(pinEl.getAttribute('data-note'));
+    const a = ANNOTATIONS.find(x => x.n === n);
+    if (a) toast(`A${n} · ${a.title}：${a.text}`);
+    return;
+  }
+  const actionEl = event.target.closest('[data-action]');
+  if (!actionEl) return;
+  const action = actionEl.getAttribute('data-action');
+  const value = actionEl.getAttribute('data-value');
+  if (action === 'screen') { state.screen = value; state.selectedSession = null; state.drawerScope = 'global'; render(); return; }
+  if (action === 'theme') { state.theme = value; render(); return; }
+  if (action === 'scenario') {
+    state.scenario = value;
+    state.selectedSession = null;
+    state.drawerScope = 'global';
+    state.query = '';
+    state.filter = 'all';
+    render();
+    return;
+  }
+  if (action === 'width') { state.rightWidth = null; state.width = value; render(); return; }
+  if (action === 'anno') { state.anno = !state.anno; render(); return; }
+  if (action === 'toggle-switch') {
+    actionEl.classList.toggle('on');
+    actionEl.setAttribute('aria-pressed', actionEl.classList.contains('on') ? 'true' : 'false');
+    return;
+  }
+  if (action === 'chip-retry') {
+    const popover = document.getElementById('chipRetryPopover');
+    if (popover) {
+      popover.hidden = !popover.hidden;
+      document.querySelector('[data-action="chip-retry"].c-chip')?.setAttribute('aria-expanded', String(!popover.hidden));
+    }
+    return;
+  }
+  if (action === 'console-tab') { state.consoleTab = value; render(); return; }
+  if (action === 'roster') {
+    state.rosterId = actionEl.getAttribute('data-id');
+    render();
+    const list = document.querySelector('.roster-list');
+    const active = list && list.querySelector('.roster-item.is-active');
+    if (list && active) list.scrollTop = Math.max(0, active.offsetTop - 6);
+    return;
+  }
+  if (action === 'scope') {
+    if (value === 'global') { state.selectedSession = null; state.drawerScope = 'global'; }
+    else {
+      if (!state.selectedSession) {
+        const s = sessionsForScenario()[0];
+        if (!s) { toast('当前没有会话'); return; }
+        state.selectedSession = s.id;
+      }
+      state.drawerScope = 'session';
+    }
+    renderRight();
+    return;
+  }
+  if (action === 'back') { state.selectedSession = null; state.drawerScope = 'global'; renderRight(); return; }
+  if (action === 'session') { openSession(actionEl.getAttribute('data-id')); return; }
+  if (action === 'open-session' || action === 'open-main') {
+    event.stopPropagation();
+    toast(`调用 ctx.uiWorkspace.openSession(${actionEl.getAttribute('data-id')})`);
+    return;
+  }
+  if (action === 'open-agent') {
+    const id = actionEl.getAttribute('data-id');
+    toast(id ? `在右栏打开子会话 ${id}` : '先选择一个子智能体');
+    return;
+  }
+  if (action === 'scroll-agent') { scrollAgent(actionEl.getAttribute('data-id')); return; }
+  if (action === 'copy-id') { toast(`已复制 ${actionEl.getAttribute('data-id')}`); return; }
+  if (action === 'open-drawer') {
+    if (state.screen !== 'drawer') { state.screen = 'drawer'; render(); }
+    state.selectedSession = null;
+    state.drawerScope = 'global';
+    renderRight();
+    return;
+  }
+  if (action === 'retry') {
+    toast('刷新会话列表与投影…');
+    setTimeout(() => { toast('已刷新'); }, 700);
+    return;
+  }
+  if (action === 'filter-attention') {
+    state.filter = 'attention';
+    renderRight();
+    toast('已筛选：待处理');
+    return;
+  }
+  if (action === 'load-projection') { toast('按需读取该会话的 subagentCatalog / subagentTiming'); return; }
+  if (action === 'toast') { toast(actionEl.getAttribute('data-message') || ''); return; }
+});
+
+let rightDrag = null;
+document.addEventListener('pointerdown', event => {
+  const handle = event.target.closest('#rightResizeHandle');
+  if (!handle || state.screen !== 'drawer' || state.width === 'full') return;
+  const appRect = app.getBoundingClientRect();
+  const leftWidth = parseFloat(getComputedStyle(app).getPropertyValue('--left-w')) || 280;
+  const max = Math.min(appRect.width * 0.7, appRect.width - leftWidth - 400);
+  if (max < 300) { toast('当前视口没有足够的停靠空间，可收起左栏或全屏'); return; }
+  event.preventDefault();
+  rightDrag = { startX: event.clientX, startW: rightbar.getBoundingClientRect().width, max };
+  document.body.classList.add('is-resizing');
+  handle.setPointerCapture?.(event.pointerId);
+});
+document.addEventListener('pointermove', event => {
+  if (!rightDrag) return;
+  const width = Math.round(Math.min(rightDrag.max, Math.max(300, rightDrag.startW - (event.clientX - rightDrag.startX))));
+  state.rightWidth = width;
+  app.style.setProperty('--right-w', width + 'px');
+});
+document.addEventListener('pointerup', () => {
+  if (!rightDrag) return;
+  document.body.classList.remove('is-resizing');
+  rightDrag = null;
+  toast(`右栏宽度 ${state.rightWidth}px · 等价 DSH 原生拖动`);
+});
+
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape') {
+    const popover = document.getElementById('chipRetryPopover');
+    if (popover && !popover.hidden) { popover.hidden = true; return; }
+    if (state.selectedSession) { state.selectedSession = null; state.drawerScope = 'global'; renderRight(); }
+    return;
+  }
+  if (event.target.id === 'rightResizeHandle' && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+    event.preventDefault();
+    const appRect = app.getBoundingClientRect();
+    const leftWidth = parseFloat(getComputedStyle(app).getPropertyValue('--left-w')) || 280;
+    const max = Math.min(appRect.width * 0.7, appRect.width - leftWidth - 400);
+    const current = rightbar.getBoundingClientRect().width;
+    const next = Math.round(Math.min(max, Math.max(300, current + (event.key === 'ArrowRight' ? -20 : 20))));
+    state.rightWidth = next;
+    app.style.setProperty('--right-w', next + 'px');
+    return;
+  }
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.matches('[data-action="session"]')) {
+    event.preventDefault();
+    openSession(event.target.getAttribute('data-id'));
+  }
+});
+
+document.addEventListener('input', event => {
+  if (event.target.id === 'fleetSearch') {
+    state.query = event.target.value;
+    renderRight();
+    const input = document.getElementById('fleetSearch');
+    if (input) {
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    }
+  }
+});
+
+document.addEventListener('change', event => {
+  if (event.target.id === 'fleetFilter') {
+    state.filter = event.target.value;
+    renderRight();
+  }
+});
+
+// Reproducible captures: every screenshot in the design doc can be re-shot from a URL.
+// e.g. ?screen=drawer&scenario=stress&theme=dark&width=1440&session=s1&anno=1
+const params = new URLSearchParams(location.search);
+const pick = (key, allowed, apply) => {
+  const value = params.get(key);
+  if (value != null && allowed.includes(value)) apply(value);
+};
+pick('screen', ['drawer', 'console'], v => { state.screen = v; });
+pick('theme', ['light', 'dark'], v => { state.theme = v; });
+pick('scenario', ['normal', 'stress', 'partial', 'empty', 'error'], v => { state.scenario = v; });
+pick('width', ['1440', '1280', '1024', '900', '800', 'full'], v => { state.width = v; });
+pick('tab', ['chain', 'roster', 'health'], v => { state.consoleTab = v; });
+pick('scope', ['global', 'session'], v => { state.drawerScope = v; });
+if (params.get('anno') === '0') state.anno = false;
+if (params.get('chrome') === '0') document.body.classList.add('no-chrome');
+const sessionParam = params.get('session');
+if (sessionParam) {
+  state.selectedSession = sessionParam;
+  state.drawerScope = 'session';
+}
+const rosterParam = params.get('roster');
+if (rosterParam) state.rosterId = rosterParam;
+const rightParam = params.get('right');
+if (rightParam && /^\d+$/.test(rightParam)) state.rightWidth = Math.max(300, Number(rightParam));
+
+render();
+
+requestAnimationFrame(() => {
+  const list = document.querySelector('.roster-list');
+  const active = list && list.querySelector('.roster-item.is-active');
+  if (list && active) list.scrollTop = Math.max(0, active.offsetTop - 6);
+  if (params.get('popover') === '1') {
+    const popover = document.getElementById('chipRetryPopover');
+    if (popover) popover.hidden = false;
+  }
+  if (params.get('scroll') === 'bottom') {
+    const scroller = document.querySelector('.page-scroll') || document.querySelector('.drawer-scroll');
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
+  }
+});
+</script>
+</body>
+</html>
