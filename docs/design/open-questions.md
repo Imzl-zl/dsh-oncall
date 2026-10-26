@@ -206,7 +206,7 @@ last_updated: "2026-10-23"
 
 | # | 问题 | 设计默认 | 影响 |
 |---|---|---|---|
-| 1 | `dsh-model-desk` 改名的**发布与仓库侧动作** | 仓库内改名已落地（[笔记](../../.agents/notes/implemented/2026-10-26-rename-away-from-model-router.md)）；剩余：GitHub 仓库改名、npm 包名发布、发版说明写明「配置 ns 改为 `model-desk`，存量配置需重存」 | 未发版前旧安装仍以 `dsh-models-router` 运行；配置 ns 改名后旧 bundle 行不再被认领 |
+| 1 | `dsh-model-desk` 改名的**发布与仓库侧动作** | 仓库内改名已落地（[笔记](../../.agents/notes/implemented/2026-10-26-rename-away-from-model-router.md)）；剩余：GitHub 仓库改名、npm 包名发布、发版说明写明「配置 ns 改为 `model-desk`，存量配置需重存」 | 未发版前旧安装仍以 `dsh-models-router` 运行。**重装必须先 remove 旧包**：`dsh.profile.bundles` 与 `dependencies` 各有一条，只 add 新包不会清掉旧行，两包并存会出现两条配置行与两个面板。配置 ns 改名后旧 bundle 行的配置不再被认领，链/名册需在新对话框中重存 |
 | 2 | 持久化标识（`model_router_sessions`、`router/failover-history`、`router/channel-health`、`router/handoff`）是否随改名迁移 | **不动**，或迁移另开一轮 | 动了会丢既有会话绑定与历史投影；不动则长期存在「新旧两套词根」的已知债 |
 | 3 | 是否先为 10-23 立即切换白名单与 10-24 交接/名册/Fleet 补 `CHANGELOG` 条目 | **先开 `Unreleased`** | 当前 `release.generated.ts` 内嵌的仍是 0.5.0（10-22）说明，升级弹窗读不到这三项能力 |
 | 4 | 实现与设计页的偏离如何记账 | 待定：约 10 项（页签缺计数、健康页缺四格 KPI、白名单移到重试分区、§3 删除确认弹窗不存在、`styles.ts` 行数不符等）逐条标注「改文档」或「改实现」 | 不记账会让下一次审查重复发现同一批偏差 |
