@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="dsh-models-router" width="640">
+  <img src="docs/assets/banner.svg" alt="dsh-model-desk" width="640">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Imzl-zl/dsh-models-router/actions/workflows/ci.yml"><img src="https://github.com/Imzl-zl/dsh-models-router/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
-  <a href="https://www.npmjs.com/package/dsh-models-router"><img src="https://img.shields.io/npm/v/dsh-models-router?color=4A65E8" alt="npm"></a>
-  <a href="https://github.com/Imzl-zl/dsh-models-router/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-4A65E8.svg" alt="License: MIT"></a>
+  <a href="https://github.com/Imzl-zl/dsh-model-desk/actions/workflows/ci.yml"><img src="https://github.com/Imzl-zl/dsh-model-desk/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://www.npmjs.com/package/dsh-model-desk"><img src="https://img.shields.io/npm/v/dsh-model-desk?color=4A65E8" alt="npm"></a>
+  <a href="https://github.com/Imzl-zl/dsh-model-desk/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-4A65E8.svg" alt="License: MIT"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-4A65E8.svg" alt="DSH 0.2.1-rc.3"></a>
 </p>
 
@@ -58,17 +58,17 @@
 需要 DSH `0.2.1-rc.3`。
 
 ```sh
-dsh plugin add dsh-models-router
+dsh plugin add dsh-model-desk
 ```
 
-从源码安装（包名是 `dsh-models-router`；npm 上的 `dsh-model-router` 是另一个包）：
+从源码安装（包名是 `dsh-model-desk`；npm 上的 `dsh-model-desk` 是另一个包）：
 
 ```sh
-git clone https://github.com/Imzl-zl/dsh-models-router.git
-cd dsh-model-router
+git clone https://github.com/Imzl-zl/dsh-model-desk.git
+cd dsh-model-desk
 npm install
-npm run bundle --prefix packages/dsh-models-router
-dsh plugin --profile web add packages/dsh-models-router
+npm run bundle --prefix packages/dsh-model-desk
+dsh plugin --profile web add packages/dsh-model-desk
 ```
 
 打开侧栏面板列表里的 **模型路由** 配置链。
@@ -78,7 +78,7 @@ dsh plugin --profile web add packages/dsh-models-router
 更新由 DSH 的插件市场（`dshmarket`）原生处理：在「插件」页打开已安装列表，它会按 npm 上的版本检查并提供 **一键更新**；有更新时每行还带 **更新了什么**，内容来自本仓库 GitHub Release 的 notes（即 `CHANGELOG.md` 的对应小节）。插件不自己启动包管理器，也不复制安装算法。
 
 - **更新后**：新版本第一次打开工作台会弹一次该版本的更新日志；之后点页头的「检查更新」再看（已是最新版时会显示当前版本的说明，离线也能看）。
-- **手动更新（CLI）**：`dsh plugin --profile <profile> remove dsh-models-router`，再 `dsh plugin --profile <profile> add dsh-models-router@latest`。
+- **手动更新（CLI）**：`dsh plugin --profile <profile> remove dsh-model-desk`，再 `dsh plugin --profile <profile> add dsh-model-desk@latest`。
 - **桌面版**：在应用自己的「设置 → 插件」里更新，不要直接改它管理的 profile。
 - 版本记录：[CHANGELOG.md](CHANGELOG.md)。
 
@@ -121,8 +121,8 @@ chains:
 
 | 路径 | 是什么 |
 |---|---|
-| `packages/dsh-models-router/src/` | 插件：Host 半包（`index.ts`、`router.ts`、`bindings.ts`、`chain.ts`…）与浏览器半包（`src/client/`）。 |
-| `packages/dsh-models-router/tests/` | 四套件：`unit`、`client-controller`、`remote`（进程内生产组合）、`run`（真 headless Loader 组合，逐场景）。 |
+| `packages/dsh-model-desk/src/` | 插件：Host 半包（`index.ts`、`router.ts`、`bindings.ts`、`chain.ts`…）与浏览器半包（`src/client/`）。 |
+| `packages/dsh-model-desk/tests/` | 四套件：`unit`、`client-controller`、`remote`（进程内生产组合）、`run`（真 headless Loader 组合，逐场景）。 |
 | `docs/design/` | 当前设计：路由提案、源码地图、能力边界、按会话选链、发布说明策略。 |
 | `.agents/notes/` | 决策笔记（为什么、否掉了什么、代价是什么）。状态就是目录。 |
 | `spike/` | Phase 1 实证产物，原样保留；不属于包。 |
@@ -131,18 +131,18 @@ chains:
 
 ```sh
 npm install                                                  # 根目录：DSH CLI 与 peer
-npm ci --prefix packages/dsh-models-router --legacy-peer-deps # 包内：tsc、tsdown、typert 生成器
-npm run bundle --prefix packages/dsh-models-router           # 构建 lib/（host + client + typert）
+npm ci --prefix packages/dsh-model-desk --legacy-peer-deps # 包内：tsc、tsdown、typert 生成器
+npm run bundle --prefix packages/dsh-model-desk           # 构建 lib/（host + client + typert）
 npm test                                                     # 四套件
 ```
 
 单独跑某一套（组合套可带场景名）：
 
 ```sh
-node packages/dsh-models-router/tests/unit.mjs
-node packages/dsh-models-router/tests/client-controller.mjs
-node packages/dsh-models-router/tests/remote.mjs
-node packages/dsh-models-router/tests/run.mjs [scenario]
+node packages/dsh-model-desk/tests/unit.mjs
+node packages/dsh-model-desk/tests/client-controller.mjs
+node packages/dsh-model-desk/tests/remote.mjs
+node packages/dsh-model-desk/tests/run.mjs [scenario]
 ```
 
 `lib/` 不进 git（在 `files` 里，npm 会发）；改源码后必须先 `npm run bundle`，浏览器与 Loader 才看得到，组合测试故意加载构建产物。
@@ -150,10 +150,10 @@ node packages/dsh-models-router/tests/run.mjs [scenario]
 ## 发布
 
 ```sh
-npm version minor --prefix packages/dsh-models-router   # 0.2.0 → 0.3.0，先不打 tag
+npm version minor --prefix packages/dsh-model-desk   # 0.2.0 → 0.3.0，先不打 tag
 # 把 CHANGELOG 的 Unreleased 内容挪到新版本标题下
 git add -A && git commit -m "chore(release): 0.3.0"
-git tag -a v0.3.0 -m "dsh-models-router 0.3.0" && git push origin master v0.3.0
+git tag -a v0.3.0 -m "dsh-model-desk 0.3.0" && git push origin master v0.3.0
 ```
 
 推 tag 就是发布：
@@ -164,7 +164,7 @@ git tag -a v0.3.0 -m "dsh-models-router 0.3.0" && git push origin master v0.3.0
 
 版本策略按 CHANGELOG：`1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围随之移动。
 
-包名是 `dsh-models-router`：npm 上的 `dsh-model-router` 属于别人，所以安装命令、徽章、bundle patch 都用复数名。
+包名是 `dsh-model-desk`：npm 上的 `dsh-model-desk` 属于别人，所以安装命令、徽章、bundle patch 都用复数名。
 
 ## 限制
 

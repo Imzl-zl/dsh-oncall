@@ -115,7 +115,7 @@ home 实测补上**（下文），这条从待办里划掉；M22/N1–N8/待办 
 
 ## 浏览器实测（2026-10-17，隔离 home `.dshhome-view` 端口 3392 + Chrome MCP）
 
-起服务前查端口无残留监听；客户端走 `/plugins/??…dsh-model-router/client.js…&rev=ca8e97299626`
+起服务前查端口无残留监听；客户端走 `/plugins/??…dsh-model-desk/client.js…&rev=ca8e97299626`
 （`immutable` 一年缓存），查串确认含 `checkAborts` / `checkConnectivity({ routes }, signal)` /
 `disposed` 守卫 / `checkAborts.forEach`——服务端吐的确实是本轮代码，不是旧 `lib/`。
 
@@ -132,14 +132,14 @@ socket 什么时候关来判断。
   **67.3s / 76.6s**（`65.423s OPEN /hang/models` → `132.741s CLOSE`；`139.218s` →
   `215.777s`），socket 关掉的时刻正是 reload 的那一刻——取消到达了宿主的
   `discoverModels`；reload 后的新页面里同一批请求没有继续跑完（下一次是 6.5s 后的新
-  socket）。DevTools Network 里 `POST /api/routerHealth/checkConnectivity` 确实在飞
+  socket）。DevTools Network 里 `POST /api/deskHealth/checkConnectivity` 确实在飞
   （Remote 一元调用走 HTTP POST，`dsh-client-connection` 的 README：浏览器用 HTTP POST
   做 Remote unary calls），但本机 MCP 对"被导航中止"的请求只显示 `pending`、不给
   canceled——这是测量工具的显示限制，不是产品行为；页面活着时的中止（见 B）才拿到
   `net::ERR_ABORTED`。DSH 进程 stdout 全程只有启动 URL 一行，无未处理拒绝。
 - **B 卸载回收（M11）**：插件**可活体停用**（插件管理页 `role="switch"` +
-  `aria-label="启用 dsh-model-router"`；overlay/link 安装也能停），所以没走 reload 弱证据。
-  停用瞬间有发现请求在飞：Network `reqid=1171 POST /api/routerHealth/checkConnectivity
+  `aria-label="启用 dsh-model-desk"`；overlay/link 安装也能停），所以没走 reload 弱证据。
+  停用瞬间有发现请求在飞：Network `reqid=1171 POST /api/deskHealth/checkConnectivity
   [net::ERR_ABORTED]`——页面没有导航、连接还活着，这个中止只能来自插件自己的
   `AbortController`；同时夹具 `222.522s OPEN /hang/models` → `345.694s CLOSE`（挂了
   123.2s，停用即关）。周期请求的停止用**对照组**钉死（排除"定时器还活着只是被

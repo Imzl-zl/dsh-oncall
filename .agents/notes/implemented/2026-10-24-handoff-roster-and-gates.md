@@ -22,7 +22,7 @@ same batch: the third tab must not exist before the host section does (F-09).
 ## Decision
 
 1. **The plugin's own messages carry their own source kind.**
-   `model-router-handoff` (role `user`, form `notice`) marks a briefing or a
+   `model-desk-handoff` (role `user`, form `notice`) marks a briefing or a
    nudge. The fold resets the budget epoch only on `source.kind === 'user'`, so a
    human speaking resets it and the relay's own first message does not. The
    alternative — an in-memory id set — cannot survive replay, and would have reset
@@ -67,7 +67,7 @@ same batch: the third tab must not exist before the host section does (F-09).
    counts), and both live in the dependency-free `handoff-wire.ts` so the gate
    and the fleet tab evaluate one expression. Only the half the projection
    cannot know — what a relay carried — crosses the Remote
-   (`routerHealth.handoffCarried`, one read per session, cached); a read that is
+   (`deskHealth.handoffCarried`, one read per session, cached); a read that is
    refused leaves the cache empty and the block hidden, because "unknown" must
    not paint as `0 / 8`. The limits come from the browser's own
    `normalizeHandoff`, the same values the roster page shows.

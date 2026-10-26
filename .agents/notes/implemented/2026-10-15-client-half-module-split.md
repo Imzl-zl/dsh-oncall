@@ -24,7 +24,7 @@ module.exports、平台模块经 require 外置），`exports['./client']` 指�
    模块基线四项（react、react-dom、@deepseek-ai/dsh-client-store、
    @deepseek-ai/dsh-client-ui-primitives）——多一个说明外置清单漏配，少一个说明
    误内联。
-2. `node packages/dsh-model-router/tests/client-controller.mjs` 对
+2. `node packages/dsh-model-desk/tests/client-controller.mjs` 对
    `lib/client.js` 全绿（默认 CLIENT_PATH 即构建产物），且三个文本守卫读
    `src/client/{page,modals,styles}.ts` 而非 bundle。
 3. 隔离 home + Chrome MCP：配置页、流水线、健康徽标、添加候选弹窗、保存闭环五

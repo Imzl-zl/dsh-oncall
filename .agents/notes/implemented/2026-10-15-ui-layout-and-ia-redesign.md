@@ -47,8 +47,8 @@ Status: implemented
   - 遥测监控专享宽屏展示空间，24 柱时间轴与吞吐量一目了然；
   - 源码结构清晰规范，组件职责单一，无任何冗余状态或生命周期副作用。
 - 验证：
-  - Node.js AST 语法校验（`node --check packages/dsh-model-router/src/client.js`）0 错误；
-  - 单元测试（`node packages/dsh-model-router/tests/unit.mjs`）66/66 全通过；
-  - 组合测试（`node packages/dsh-model-router/tests/run.mjs`）12/12 全场景通过；
+  - Node.js AST 语法校验（`node --check packages/dsh-model-desk/src/client.js`）0 错误；
+  - 单元测试（`node packages/dsh-model-desk/tests/unit.mjs`）66/66 全通过；
+  - 组合测试（`node packages/dsh-model-desk/tests/run.mjs`）12/12 全场景通过；
   - TypeScript 类型严格校验（`tsc --noEmit`）0 错误；
   - DSH 宿主仓库（`D:\sudy\github\deepseek-harness`）保持 0 修改（纯只读）。

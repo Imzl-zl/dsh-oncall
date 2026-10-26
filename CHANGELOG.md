@@ -141,7 +141,7 @@ published by CI through the npm trusted publisher (OIDC) rather than a manual
 - **CI** runs on every push to `master` and every pull request: the build, the
   host type-check, and each of the four suites as its own step.
 - npm metadata (`keywords`, `homepage`, `bugs`, `author`, `engines`) and the
-  README badges; `dsh-models-router` replaces `dsh-model-router` everywhere,
+  README badges; `dsh-model-desk` replaces `dsh-model-desk` everywhere,
   including the repository name.
 
 ### Fixed
@@ -155,7 +155,7 @@ published by CI through the npm trusted publisher (OIDC) rather than a manual
 
 The release that makes routing per-conversation: several named chains, a session
 that can pick one, and retry counts that can be overridden per session. Published
-under the name `dsh-models-router` (`dsh-model-router` on npm belongs to another
+under the name `dsh-model-desk` (`dsh-model-desk` on npm belongs to another
 publisher).
 
 ### Added
@@ -269,7 +269,7 @@ browser session.
   own DSH configuration and are not routed.
 - **Tool capability is not pre-checked.** DSH exposes no machine-readable
   "supports function calling" metadata.
-- **Not on npm.** The name `dsh-model-router` on the public registry belongs to
+- **Not on npm.** The name `dsh-model-desk` on the public registry belongs to
   an unrelated package; this plugin is installed from this repository.
 
-[0.1.0]: https://github.com/Imzl-zl/dsh-models-router/releases/tag/v0.1.0
+[0.1.0]: https://github.com/Imzl-zl/dsh-model-desk/releases/tag/v0.1.0

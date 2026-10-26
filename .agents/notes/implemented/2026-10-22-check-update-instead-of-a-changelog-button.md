@@ -19,7 +19,7 @@ DSH Market 自己有检查更新与更新说明，但那是它插件内部的 UI
 
 准入门槛（可机械判定）：
 
-1. **版本以 registry 为准**：`https://registry.npmjs.org/dsh-models-router/latest` 的
+1. **版本以 registry 为准**：`https://registry.npmjs.org/dsh-model-desk/latest` 的
    `version` 是"最新已发布"的唯一答案（用户装的就是 registry 上的东西，不是 GitHub 最新
    tag）。不是合法 semver 的值不算版本。
 2. **新版本的说明取自它自己的 release body**：CI 用 `scripts/release-notes.mjs` 把

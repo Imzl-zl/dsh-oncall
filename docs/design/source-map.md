@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — DSH 源码地图"
+title: "DSH Model Desk — DSH 源码地图"
 status: "verified-source-facts"
 kind: "architecture-reference"
 last_updated: "2026-10-12"
 ---
 
-# DSH Model Router — DSH 源码地图
+# DSH Model Desk — DSH 源码地图
 
 ## 摘要
 

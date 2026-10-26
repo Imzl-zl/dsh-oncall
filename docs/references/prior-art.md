@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — 主流模型路由设计对照"
+title: "DSH Model Desk — 主流模型路由设计对照"
 status: "researched"
 kind: "prior-art-review"
 last_updated: "2026-10-12"
 ---
 
-# DSH Model Router — 主流模型路由设计对照
+# DSH Model Desk — 主流模型路由设计对照
 
 ## 摘要
 

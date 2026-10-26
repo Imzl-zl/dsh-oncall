@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — 下一轮：运行时对齐与委派名册（P2）"
+title: "DSH Model Desk — 下一轮：运行时对齐与委派名册（P2）"
 status: "implemented"
 kind: "handoff-brief"
 last_updated: "2026-10-24"
@@ -83,12 +83,12 @@ last_updated: "2026-10-24"
 
 - 根 `package.json`：`@deepseek-ai/dsh` 0.2.1-rc.2；`zod` 由 `^4.6.6` 固定为 `4.4.3`（DSH 每个包都精确钉 4.4.3，见下）。
 - 插件 `package.json`：`@deepseek-ai/dsh-typert-generator` 0.2.1-rc.2；peer 的五个 `@deepseek-ai/dsh-*` 改 `^0.2.1-rc.2`，新增 `@deepseek-ai/dsh-tools`；`zod` peer 改 `^4.4.3`。
-- `packages/dsh-models-router/.npmrc`：`legacy-peer-deps=true`，让 peer 由根 workspace 解析。否则 npm 会在这个包下自动装 peer，并选中 **0.2.1-rc.3（next）** 与第二份 zod（4.6.7）。
+- `packages/dsh-model-desk/.npmrc`：`legacy-peer-deps=true`，让 peer 由根 workspace 解析。否则 npm 会在这个包下自动装 peer，并选中 **0.2.1-rc.3（next）** 与第二份 zod（4.6.7）。
 
 四个真实差异（都不是"新版不支持"）：
 
 1. **zod 精确钉版 → 类型同一性**：0.2.0-rc.2 的包依赖 `zod: ^4.4.3`，0.2.1-rc.2 全部改成 `zod: 4.4.3`。out-of-tree 安装于是出现两份 zod（根的 4.6.7 与嵌套的 4.4.3），`domainTable(bindingSchema)` 的推断爆栈（`TS2589`，默认堆直接 OOM）。修法是把 dev 环境的 zod 对齐到 4.4.3 并让 peer 从根解析，不是给调用点加类型断言。
-2. **typert 生成物注入 zod runtime**：0.2.1-rc.2 的生成器把 zod 传进 remote metadata 工厂（`@deepseek-ai/dsh-typert-generator` 提交 `bd91a4a570`），`client/apply.ts` 又 import 了 `dsh-models-router/remote`，于是客户端 bundle 一度内联了整份 zod（562 kB → 874 kB）。DSH 的 shell 模块表本来就 seed 了 `zod`（`packages/client/web/src/platform.ts:12`），所以 `tsdown.config.ts` 的 `clientModules` 补上 `zod`，bundle 回到 445 kB。
+2. **typert 生成物注入 zod runtime**：0.2.1-rc.2 的生成器把 zod 传进 remote metadata 工厂（`@deepseek-ai/dsh-typert-generator` 提交 `bd91a4a570`），`client/apply.ts` 又 import 了 `dsh-model-desk/remote`，于是客户端 bundle 一度内联了整份 zod（562 kB → 874 kB）。DSH 的 shell 模块表本来就 seed 了 `zod`（`packages/client/web/src/platform.ts:12`），所以 `tsdown.config.ts` 的 `clientModules` 补上 `zod`，bundle 回到 445 kB。
 3. **`TypertGateway.invoke` 现在必须带 peer**：`assertPeerLive(peer)` 读 `peer.signal`，不传 peer 就是 TypeError（`api-gateway` 0.2.1-rc.2）。测试按 DSH 自己的 gateway spec 造 owner peer（`new Peer(ctx.root, { principal: { kind: 'owner' } })`）。
 4. **`SessionBindings` 的首读早于域打开**：`persistent` 在 open 落定前是 `false`，remote 首读会把一份持久绑定报成"仅内存"。补 `ready()`，`sessionBinding` 先 await 它。
 
@@ -114,7 +114,7 @@ last_updated: "2026-10-24"
 > [p2-next-session-brief.md](p2-next-session-brief.md) §一 取代。当前基线以那份简报为准，不要照本段重新升级。
 
 ```text
-你在 DSH Model Router 仓库做两件事，按顺序：先做运行时对齐，再做 P2 委派名册（配置中枢第三块）。仓库：D:\sudy\myproject\dsh-model-router；DSH 源码只读：D:\sudy\github\deepseek-harness。当前分支 master，工作树有未提交改动（P1 + 本轮 Fleet 优化 + 文档 + 截图），先 git status / git diff 看清现状，不要 reset、checkout 或覆盖。
+你在 DSH Model Desk 仓库做两件事，按顺序：先做运行时对齐，再做 P2 委派名册（配置中枢第三块）。仓库：D:\sudy\myproject\dsh-model-desk；DSH 源码只读：D:\sudy\github\deepseek-harness。当前分支 master，工作树有未提交改动（P1 + 本轮 Fleet 优化 + 文档 + 截图），先 git status / git diff 看清现状，不要 reset、checkout 或覆盖。
 
 第一步先读：
 - AGENTS.md、docs/AGENTS.md、.agents/notes/AGENTS.md
@@ -123,7 +123,7 @@ last_updated: "2026-10-24"
 - docs/design/handoff-proposal.md §5 / §12（名册字段与默认值的唯一来源）
 - docs/design/agent-fleet-drawer.md §5.3 / §9.3 / §10.1
 - docs/design/agent-fleet-next-session-brief.md §1.1（上一轮实施与浏览器结论）
-- packages/dsh-models-router/src/config.ts、src/index.ts、src/client/page.ts、src/client/locales.ts、tests/
+- packages/dsh-model-desk/src/config.ts、src/index.ts、src/client/page.ts、src/client/locales.ts、tests/
 - 上一轮决策：.agents/notes/implemented/2026-10-23-agent-fleet-capability-review.md
 
 背景事实（已核实，不要重新调研）：
@@ -142,9 +142,9 @@ last_updated: "2026-10-24"
 - 未知不是 0；缺失投影隐藏或写未加载；不新增 durable 事件类型、不改 SESSION_FORMAT_VERSION；不碰 live profile；不改 DSH checkout。
 
 验证：
-- npm run bundle --prefix packages/dsh-models-router（客户端测试跑 lib/client.js）。
-- npm test 四套件；指定 npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-models-router/src/index.ts；node --check packages/dsh-models-router/lib/client.js。
-- 客户端半包有独立 tsc：`npx tsc -p packages/dsh-models-router/tsconfig.client.json` 必须 exit 0（`bundle` 已内含）；不得声称没跑过的检查通过。
+- npm run bundle --prefix packages/dsh-model-desk（客户端测试跑 lib/client.js）。
+- npm test 四套件；指定 npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-model-desk/src/index.ts；node --check packages/dsh-model-desk/lib/client.js。
+- 客户端半包有独立 tsc：`npx tsc -p packages/dsh-model-desk/tsconfig.client.json` 必须 exit 0（`bundle` 已内含）；不得声称没跑过的检查通过。
 - 浏览器：DSH_HOME 指向隔离 home（例如 %TEMP%\dsh-fleet-cap-22），这次用 npm 宿主起（对齐后它应能读同一批日志）；覆盖 1440/1024/800/全屏、12 角色名册、校验拒绝、空态、保存回写、DOM 无 position:fixed/遮罩/自绘标签条/自绘关闭全屏。截图写 docs/assets/ui/，不覆盖已有文件。
 
 文档与收尾：

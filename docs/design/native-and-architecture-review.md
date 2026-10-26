@@ -71,7 +71,7 @@ last_updated: "2026-10-24"
 3. 于是"排序靠前但观测更晚"的会话输给"排序靠后但观测更早"的会话——13800 ms 的新观测被
    4507 ms 的旧观测盖掉。
 
-**证据（我们侧）**：`packages/dsh-models-router/src/client/controller.ts:440-477`（读取）、
+**证据（我们侧）**：`packages/dsh-model-desk/src/client/controller.ts:440-477`（读取）、
 `:386-401`（合并）、`:484-506`（折进 `ui.passive`）；`health-ui.ts:123`（页面读的正是
 `record.latencyMs`，即被覆盖的那个标量）。
 
@@ -206,7 +206,7 @@ revision 围栏**已经**是原生的：`scope.mutate(…, scope.getSnapshot().r
 `parse` 对非有限数返回 `undefined`，按模型语义是**阻塞保存**（form-model.ts:156-169,262-267），
 **它不夹取、不取整、不设上下限**。DSH 自己的原则写在控件注释里：
 "which drafts a field accepts is decided by its spec, so the control never silently rewrites what the
-user typed"（[fields.d.ts:36-39](../../packages/dsh-models-router/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/settings-form/fields.d.ts)）。
+user typed"（[fields.d.ts:36-39](../../packages/dsh-model-desk/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/settings-form/fields.d.ts)）。
 
 **我们现状**：夹取语义与它**不同且是有意的**——非有限数忽略、负数夹 0、四舍五入、
 再按字段上限夹（`roster.ts:85-89`、`controller.ts:810/832/843-850/878`、
@@ -381,7 +381,7 @@ DSH 自己所有列表/标题/对话面板都通过它读同一份 store。
 **原生事实（逐个候选）**
 
 - `Menu.onClose` 的契约只有三种触发——**外部点击 / Escape / 焦点移进 iframe 的 window blur**，
-  且**没有原因参数**（[Menu.d.ts:134-135](../../packages/dsh-models-router/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Menu.d.ts)）。
+  且**没有原因参数**（[Menu.d.ts:134-135](../../packages/dsh-model-desk/node_modules/@deepseek-ai/dsh-client-ui-primitives/lib/types/Menu.d.ts)）。
   普通窗口失焦**不**关闭（`Menu.tsx:405-411` 只在 `document.activeElement` 是 iframe 时 `onClose`）——
   也就是说我们 `chip.ts:389/484` 注释里的"窗口失焦"其实是"焦点进了 iframe"这一种。
 - 时序：Menu 的 Escape 监听在 **document capture**（`Menu.tsx:416`），普通 keydown 在 bubble（:415），
@@ -403,9 +403,9 @@ DSH 自己所有列表/标题/对话面板都通过它读同一份 store。
 （`:402`、`:478`、`:585`、`:649`）**都没传 `shortcutModal`**。缺省时
 `data-shortcut-modal` 为空 ⇒ 快捷键上下文把模态记成 `'other'`
 （`shortcuts/src/client/dom.ts:76`）⇒ `registry.ts:169-171` 挡掉一切 `modals` 不含 `'other'` 的命令。
-我们的保存命令声明的是 `modals: ['model-router']`（`apply.ts:172`），于是
+我们的保存命令声明的是 `modals: ['model-desk']`（`apply.ts:172`），于是
 **Ctrl+S 在我们自己的对话框里按不动**，而 `apply.ts:149-153` 的注释与事实相反。
-修法：四处各补 `shortcutModal: 'model-router'`，并补一条"对话框内保存生效"的用例。
+修法：四处各补 `shortcutModal: 'model-desk'`，并补一条"对话框内保存生效"的用例。
 
 ### C3 焦点与跳转 → **不跟进**
 
@@ -572,7 +572,7 @@ host 侧 `index.ts` 1116、`handoff-tool.ts` 742、`handoff.ts` 686、`config.ts
    `0.2.1-rc.3`）。
 2. npm 上**存在**，但 `dist-tags.latest = 0.0.1-rc.1`（`next = 0.2.1-rc.3`）——裸装会拿到最老的版本，
    必须精确钉。
-3. 本仓库根 `node_modules` 与 `packages/dsh-models-router/node_modules` 都**没有**它；根 node_modules
+3. 本仓库根 `node_modules` 与 `packages/dsh-model-desk/node_modules` 都**没有**它；根 node_modules
    连 react/vitest/jsdom 都没有（现有测试是纯 node 脚本）。
 
 **它是什么**：jsdom + vitest 的 **slot 测试台**（`SlotTestRuntime.declare/mount/renderSlot`，挂生产
@@ -720,7 +720,7 @@ disposer 随**调用方 fiber** 走；插件卸载 ⇒ 键从快照里消失，�
 ## 下一轮（方案轮）提示词（复制到新会话）
 
 ````text
-你在 DSH Model Router 仓库做**方案轮**：一条一条来，不是批量改造。仓库：D:\sudy\myproject\dsh-model-router；
+你在 DSH Model Desk 仓库做**方案轮**：一条一条来，不是批量改造。仓库：D:\sudy\myproject\dsh-model-desk；
 DSH 源码只读：D:\sudy\github\deepseek-harness。分支 master，工作树有大量未提交改动：先 git status 看清，
 不要 reset / checkout / 覆盖任何已有改动。
 
@@ -731,8 +731,8 @@ DSH 源码只读：D:\sudy\github\deepseek-harness。分支 master，工作树�
 - .agents/notes/implemented/2026-10-24-client-half-typecheck.md（类型工程与棘轮判据）
 
 当前基线（2026-10-24 实跑，别重测，直接当起点）：四套件 233 unit / 123 client-controller / 25 remote /
-35 scenarios，0 失败；`npx tsc -p packages/dsh-models-router/tsconfig.client.json` exit 0；指定 host tsc
-exit 0；`npm run bundle --prefix packages/dsh-models-router` exit 0，client ≈465 kB；DSH checkout
+35 scenarios，0 失败；`npx tsc -p packages/dsh-model-desk/tsconfig.client.json` exit 0；指定 host tsc
+exit 0；`npm run bundle --prefix packages/dsh-model-desk` exit 0，client ≈465 kB；DSH checkout
 `git status --porcelain` 0 行。
 
 ## 工作方式（硬要求）
@@ -756,7 +756,7 @@ exit 0；`npm run bundle --prefix packages/dsh-models-router` exit 0，client �
 7. 探针放 .sessions/（已被 gitignore），用完删，结论里引用探针输出。**改产品代码之前先给两份清单**
    （删除清单：删哪几段、共几行；改动清单：新增什么、动哪些调用点），让用户批。批准的改动要么配一条
    **能变红**的用例，要么是纯类型改动。
-8. 两个已知坑：① `remote.routerHealth` 不能写进客户端顶层 inject（只由 applyInner 的 $mount 提供，
+8. 两个已知坑：① `remote.deskHealth` 不能写进客户端顶层 inject（只由 applyInner 的 $mount 提供，
    写了整个 entry 永不激活）；② 改了 src/client 必须重跑 bundle，否则 client-controller 套件读的是
    旧产物。
 9. 每条的结论**写回** docs/design/native-and-architecture-review.md 对应条目（补"方案轮决定"小节），
@@ -778,10 +778,10 @@ exit 0；`npm run bundle --prefix packages/dsh-models-router` exit 0，client �
 
 **第 2 条 我们自己的 Modal 缺 `shortcutModal`（保存快捷键在自己对话框里失效）**
 - 现状：`src/client/modals.ts:402/478/585/649` 四处 `<Modal>` 都没传；`src/client/apply.ts:172` 声明
-  `modals: ['model-router']`；DSH 侧 `ui-primitives/src/Modal.tsx:18/63` →
+  `modals: ['model-desk']`；DSH 侧 `ui-primitives/src/Modal.tsx:18/63` →
   `dsh-client-shortcuts/client/dom.ts:76` → `registry.ts:169-171` 把模态记成 `'other'` 后挡掉。
 - 研究点：DSH 自己的插件对话框传什么值（`ui-settings-*`、`ui-plugin-manager` 的 Modal 用法），
-  是不是也用自己的命令命名空间；确认我们该传 `'model-router'` 还是另有约定。
+  是不是也用自己的命令命名空间；确认我们该传 `'model-desk'` 还是另有约定。
 - 必做：一条"对话框内保存生效"的用例；顺带核对 `apply.ts:149-153` 的注释与事实一致。
 
 **第 3 条 chip 重试输入框的 IME 守卫（含陈旧 `cancelled`）**
@@ -849,11 +849,11 @@ exit 0；`npm run bundle --prefix packages/dsh-models-router` exit 0，client �
 ## 验证配方（每条改完都跑，贴原始输出）
 
 ```powershell
-npm run bundle --prefix packages/dsh-models-router      # 内含 host tsc 与 client tsc
+npm run bundle --prefix packages/dsh-model-desk      # 内含 host tsc 与 client tsc
 npm test                                                # 四套件，当前基线 233/121/25/35，只许涨或持平
-npx tsc -p packages/dsh-models-router/tsconfig.client.json
-npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-models-router/src/index.ts
-node --check packages/dsh-models-router/lib/client.js
+npx tsc -p packages/dsh-model-desk/tsconfig.client.json
+npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-model-desk/src/index.ts
+node --check packages/dsh-model-desk/lib/client.js
 git -C D:\sudy\github\deepseek-harness status --porcelain   # 必须 0 行
 ```
 

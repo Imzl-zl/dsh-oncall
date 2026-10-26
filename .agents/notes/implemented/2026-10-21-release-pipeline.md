@@ -5,8 +5,8 @@ Status: implemented
 ## Context
 
 第一次发版是手工做的：`npm publish` 在终端里输 OTP，仓库里没有任何自动化；
-包名 `dsh-model-router` 在公开 registry 上属于别人（0.7.1），所以真正发布的是
-`dsh-models-router@0.2.0`，GitHub 仓库也一并改名。手工发布暴露了三件事：
+包名 `dsh-model-desk` 在公开 registry 上属于别人（0.7.1），所以真正发布的是
+`dsh-model-desk@0.2.0`，GitHub 仓库也一并改名。手工发布暴露了三件事：
 
 1. **没有 CI。** 四个套件（unit / client-controller / remote / Loader 组合）只在本机跑过；
    一个只在 Windows 上验证过的仓库，别人 clone 下来没有任何绿灯信号。
@@ -19,7 +19,7 @@ Status: implemented
 ## Decision
 
 1. **发布 = 推 tag，没有按钮。** `.github/workflows/release.yml` 在 `v*.*.*` tag 上运行：
-   先断言 tag 与 `packages/dsh-models-router/package.json` 的 `version` 相等（不等就红），
+   先断言 tag 与 `packages/dsh-model-desk/package.json` 的 `version` 相等（不等就红），
    再 `npm ci` + 包内依赖 + `npm run bundle`，然后 `npm publish --provenance --access public`，
    最后用 `scripts/release-notes.mjs` 从 CHANGELOG 抽出该版本的一节，创建 GitHub Release。
 2. **没有 token，也没有 secret：走 npm trusted publishing（OIDC）。** npm 的包设置里
@@ -33,7 +33,7 @@ Status: implemented
    哪个套件）。
 5. **npm 元数据进 package.json**：description / keywords / homepage / bugs / author /
    engines / repository / publishConfig。`prepublishOnly` 保证发的是刚构建的 `lib/`。
-6. **仓库与包名统一为 `dsh-models-router`**（GitHub 仓库已改名，旧 URL 自动重定向；
+6. **仓库与包名统一为 `dsh-model-desk`**（GitHub 仓库已改名，旧 URL 自动重定向；
    README/CHANGELOG/package.json 的链接一并更新）。
 7. 新增 `CONTRIBUTING.md`：把"一个事实一处表达、不许静默兜底、非平凡改动写决策笔记、
    不许削弱测试"这四条写成外面的人能读的版本，指向 `AGENTS.md` 与验证命令。
@@ -70,6 +70,6 @@ Status: implemented
 - 代价：两个 lockfile（根 + 包内）。包内依赖必须保持 `--legacy-peer-deps`，否则 peer
   会被装进包内、遮蔽宿主的模块实例；CI 与 CONTRIBUTING 都写明了这一点。
 - 已知遗留：npm 上还留着 `0.0.0-stage` 占位版本（删除需要 2FA）；下次发版前后可以
-  用 `npm unpublish dsh-models-router@0.0.0-stage` 或网页上的 Versions 页清掉。
+  用 `npm unpublish dsh-model-desk@0.0.0-stage` 或网页上的 Versions 页清掉。
 - 已知遗留：0.2.0 的 tarball 里 README 是"加徽章之前"的版本；npm 页面的元数据要等下
   一个版本才会更新（重新发同一版本是不可能的）。

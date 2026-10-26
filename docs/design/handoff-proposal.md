@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — 遗留任务交接（handoff）"
+title: "DSH Model Desk — 遗留任务交接（handoff）"
 status: "proposal"
 kind: "design"
 last_updated: "2026-10-23"

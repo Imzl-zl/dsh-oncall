@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
-const root = 'packages/dsh-model-router/src'
+const root = 'packages/dsh-model-desk/src'
 const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
   const full = join(dir, e.name)
   return e.isDirectory() ? walk(full) : e.name.endsWith('.ts') ? [full] : []

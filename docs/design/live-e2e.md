@@ -3,7 +3,7 @@
 这个页面的用途：把「按会话选链 + 每路由重试次数覆盖」用**真实网关**在**隔离进程**里跑一遍，
 跑完把会话与临时文件清理干净。它不进 `npm test`（真实请求要花钱/看网络），是一次性人工验证。
 
-凭据在 `packages/dsh-models-router/tests/real-providers.local.json`（`*.local.json`，gitignored，
+凭据在 `packages/dsh-model-desk/tests/real-providers.local.json`（`*.local.json`，gitignored，
 永不提交）。提示词里**不要**贴 key，让新会话自己读那个文件。
 
 ## 提示词正文（整段复制到新会话）
@@ -14,18 +14,18 @@
 不要并发跑两个 run.mjs 类套件（它们共用固定路径）。
 
 0) 先读这几处，别凭记忆：
-   - packages/dsh-models-router/tests/real-providers.local.json —— 凭据（gitignored）。channels[]：
+   - packages/dsh-model-desk/tests/real-providers.local.json —— 凭据（gitignored）。channels[]：
      real-a = myovo（step-5-preview / kimi-k3 / sensenova-6.8-flash-lite / glm-5.2 / deepseek-flash），
      real-b = lightvela（只有 auto），real-c = 备用 key。suggested 里有可用的 backup / deadRoute。
    - docs/design/per-session-chains.md —— 语义：绑定是覆盖不是合并；生效次数 = 会话覆盖 ?? 候选 maxRetries；
      0 = 不重试，空 = 跟随链；首跳恒为用户选中的模型，链只排"它失败之后"。
    - tools.md 的「隔离进程跑 web UI」「真实 provider 测试」两节。
 
-1) 构建：npm run bundle --prefix packages/dsh-models-router
+1) 构建：npm run bundle --prefix packages/dsh-model-desk
    （bundle 里已是 tsdown --concurrency 1：host 先、client 后。干净 lib/ 下必须这样，否则 client 会把
-   自引用 dsh-models-router/remote 退化成外部 require。）
+   自引用 dsh-model-desk/remote 退化成外部 require。）
 
-2) 隔离环境：DSH_HOME = packages/dsh-models-router/tests/.dshhome-e2e（新建，别复用
+2) 隔离环境：DSH_HOME = packages/dsh-model-desk/tests/.dshhome-e2e（新建，别复用
    .dshhome-view / .dshhome-real），端口从 3492 起挑空闲的，命令带 --no-open。
    临时 overlay 写 tests/overlay-e2e.yml（已 gitignore），内容要点：
    - 关掉 llm-deepseek、llm-deepseek-account、session-title-llm；

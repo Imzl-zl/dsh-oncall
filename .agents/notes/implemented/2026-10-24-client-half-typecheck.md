@@ -21,7 +21,7 @@ path.
 
 ## Decision
 
-1. **The client gets its own program** (`packages/dsh-models-router/tsconfig.client.json`),
+1. **The client gets its own program** (`packages/dsh-model-desk/tsconfig.client.json`),
    mirroring DSH's split: DOM libs, `noEmit`, separate from the host-declaration
    project.
 2. **Install the three platform packages the browser imports through the shell's

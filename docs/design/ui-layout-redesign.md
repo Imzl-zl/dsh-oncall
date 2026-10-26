@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — 工作台布局重构"
+title: "DSH Model Desk — 工作台布局重构"
 status: "implemented"
 kind: "ui-design"
 last_updated: "2026-10-20"

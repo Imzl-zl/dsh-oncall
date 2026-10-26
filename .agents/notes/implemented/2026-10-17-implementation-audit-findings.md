@@ -21,8 +21,8 @@
 - **A 档——已有执行级或硬证据，基本只剩"要不要修"**：C1（`llm/src/index.ts:1161-1169` 的 `kind:'aborted'` 分支已逐行读过，`unit.mjs:1056-1061` 的 reject 形状已比对）；C2（推演表已逐 fire 走过，`index.ts:216-264` 确认无 `exhausted` 检查）；C3（`SettingsForm.tsx:55` 已读，确认 `available` 为 false 不渲染 children）；C4（`events.ts:254-260` 与 `llm-retry/src/index.ts:243` 已读，确认 push/unshift 次序）；I2（`retry-policy.ts:18-24` 默认集已读，确认不含 AUTH/QUOTA）；I3（`agent.ts:635-651` 已读，`requestHeaderLogged` 全文仅 4 处引用、置 true 后不重置）；I4（`footer.ts:25` + `page.ts:89` 两处 retain 已定位）；I9（`t('failoverTag')`/`t('failoverNotice')` 在 `src/client/` **零调用点**，`locales.ts:73-74`/`:385-386` 确已成孤立键；`pipeline.ts:259` 的 `t` 在 `Connector` 内未使用）；I5（host 3 处 + browser 18 处 + 解码 9 处已逐处定位）；I7（`Modal.tsx:17,39,73` 的 `contentClassName` 已读；`client-controller.mjs:964` 正则已读）；I8（14 处已逐处定位）；I10（五类抛出点的 DSH 行号已逐个核对）；I11（`llm-deepseek/src/model-info.ts:70-74` 的 text-only 兜底已读）。
 - **B 档——源码推演成立，但缺执行级证据**：I1（需断言孤儿 `llm/retry`）；I6（8 个死分支的不可达性依 schema 保证，建议逐条临时改严 schema 验证）。
 - **C 档——纯待核实，见「待核实」8 条**：`deadline()` 是否必须 `using`、system-prompt node 0 干扰、70px 头高、`[hash]_[local]` 约定、pi-ai text-only 兜底、M1 可达性、lineage settle step 门控、`unit.mjs:1122` 锚点（该条主代理已核实为**无漂移**，`:30` 是 throw 起始行）。
-> 审查范围：`packages/dsh-model-router/` 全量源码（宿主 25 个模块 + 浏览器半包 16 个模块）与 6 个测试文件。DSH 只读 checkout：`D:\sudy\github\deepseek-harness`（全程未写入，`git status --porcelain` 0 行）。
-> 已实跑：`node packages/dsh-model-router/tests/unit.mjs` → 99 passed；`node packages/dsh-model-router/tests/client-controller.mjs` → 37 passed（含工作树未提交的拖拽重排改动）。
+> 审查范围：`packages/dsh-model-desk/` 全量源码（宿主 25 个模块 + 浏览器半包 16 个模块）与 6 个测试文件。DSH 只读 checkout：`D:\sudy\github\deepseek-harness`（全程未写入，`git status --porcelain` 0 行）。
+> 已实跑：`node packages/dsh-model-desk/tests/unit.mjs` → 99 passed；`node packages/dsh-model-desk/tests/client-controller.mjs` → 37 passed（含工作树未提交的拖拽重排改动）。
 
 ## 审查口径
 
@@ -42,7 +42,7 @@
 
 ## C1. 探针超时分支不可达——hung 端点被报成"没能测"
 
-- **位置**：`packages/dsh-model-router/src/probe.ts:135-153`
+- **位置**：`packages/dsh-model-desk/src/probe.ts:135-153`
 - **问题**：finish 分支只认 `chunk.reason.kind === 'error'`，而超时路径产出的是 `kind: 'aborted'`，于是落到 `probe.ts:147` 的 `unavailable(route, now, 'empty stream')`。
 - **证据（DSH 源码）**：`packages/llm/llm/src/index.ts:1161-1169`
   ```js
@@ -63,7 +63,7 @@
 
 ## C2. `planFire` 让末位候选被 cap 之后再多打一次真实调用
 
-- **位置**：`packages/dsh-model-router/src/router.ts:129-154`；调用方 `src/index.ts:216-264`
+- **位置**：`packages/dsh-model-desk/src/router.ts:129-154`；调用方 `src/index.ts:216-264`
 - **问题**：cap 命中且无下一跳时 `exhausted = true`、`index` 不变、`advanced = false`，但 `attemptsOnCandidate` 仍 `+1` 并返回一个可执行 state。`agent/request` 只按 `plan.state.index` 走候选 Walk，**没有任何地方检查 `plan.state.exhausted`**。
 - **证据（推演）**：3 候选、`maxAttempts: 1`、失败码 `AUTH`（`switchOn.auth` 默认 true 故 `mayAdvance` 为真；`AUTH` 不在 llm-retry 默认重试集故 llm-retry 立即委派）：
 
@@ -83,7 +83,7 @@
 
 ## C3. `page.ts` 把"配置未就绪"当成"seam 移动"，抛未捕获异常且不恢复
 
-- **位置**：`packages/dsh-model-router/src/client/page.ts:120-133`
+- **位置**：`packages/dsh-model-desk/src/client/page.ts:120-133`
 - **问题**：
   ```js
   var wrap = formBodyRef.current
@@ -113,7 +113,7 @@
 | `src/index.ts:11-13`（文件头） | 注册在 `agent.ctx` at `agent/created` **WITHOUT** prepend，在 llm-retry 内层 | `index.ts:317-362`：root ctx + `prepend: true` |
 | `src/router.ts:8-17` | 「llm-retry ... registers OUTSIDE this plugin ... The Router cannot preempt it」 | `index.ts:338-343` 在预算尽时**否决** llm-retry 的 retry |
 
-- **证据（DSH 源码）**：`vendor/cordis/src/events.ts:254-260` `const method = options.prepend ? 'unshift' : 'push'`；`packages/llm/llm-retry/src/index.ts:243` llm-retry 用 `ctx.on('agent/request-error', …)` 无 options → push。model-router 用 prepend → unshift，与加载顺序无关地排在 index 0，即 **llm-retry 的外层**。
+- **证据（DSH 源码）**：`vendor/cordis/src/events.ts:254-260` `const method = options.prepend ? 'unshift' : 'push'`；`packages/llm/llm-retry/src/index.ts:243` llm-retry 用 `ctx.on('agent/request-error', …)` 无 options → push。model-desk 用 prepend → unshift，与加载顺序无关地排在 index 0，即 **llm-retry 的外层**。
   `index.ts:317-324` 的行内注释已写了外层设计的实测依据（配 2 打 7 次 → 改外层后打 2 次），说明代码是有意为之，文件头是残留的旧方案。
 - **后果**：`tests/run.mjs:372` 的 `budget-cap-when-the-whole-chain-dies` 钉的正是外层行为。**照任何一处旧注释/文档"修"回去，都会重新引入 7-call bug。**
   违反 `docs/AGENTS.md`「一项设计事实只保留一个权威说明；其他页面用链接引用」与项目 `AGENTS.md`「不互相伪装」——证伪记录只存在于 `tools.md:44-45`（项目规则明说"不覆盖正式设计资料"）。
@@ -221,7 +221,7 @@
 
 - **位置**：`src/client/footer.ts:54,96`、`src/client/styles.ts:75,127,128,191,954,1214,1223,1224,1265,1464`、`src/client/modals.ts:301,557`
 - **问题**：`tools.md:83` 明确记录 `--dsw-alias-brand-primary` 是品牌墨色（亮=近黑、暗=近白），"插件要自己的强调色就声明一个 `:root` 自定义属性，别借这个 token"。`styles.ts:13-15` 确实声明了 `--dsh-router-accent` 并在约 40 处使用，但上述 14 处仍借 `var(--dsw-alias-brand-primary, #4A65E8)`。
-- **后果**：token 已定义 → `#4A65E8` 回退**永不生效**，实际取近黑/近白。插件 Logo（`footer.ts:54,96` 的 `ModelRouterIcon` color）在暗色主题下渲染成近白、亮色下近黑，与 design 意图相反且完全静默。另有约 20 处非派生 `rgba(74,101,232,x)` 手算着色，而 `format.ts:100-107` 的 `healthToneBadge` 已用 `color-mix(... var(--dsh-router-tone-*) ...)`——同一件事两种做法。
+- **后果**：token 已定义 → `#4A65E8` 回退**永不生效**，实际取近黑/近白。插件 Logo（`footer.ts:54,96` 的 `ModelDeskIcon` color）在暗色主题下渲染成近白、亮色下近黑，与 design 意图相反且完全静默。另有约 20 处非派生 `rgba(74,101,232,x)` 手算着色，而 `format.ts:100-107` 的 `healthToneBadge` 已用 `color-mix(... var(--dsh-router-tone-*) ...)`——同一件事两种做法。
 - **最小修法**：14 处全换 `--dsh-router-accent`，删掉永不生效的 `#4A65E8` 回退；`rgba(74,101,232,x)` 改 `color-mix(in srgb, var(--dsh-router-accent) X%, transparent)`。
 - **验证方法**：源级守卫 grep `--dsw-alias-brand-primary` 在 `src/` 出现次数应为 0；浏览器双主题截图对比 Logo 颜色。
 
@@ -295,7 +295,7 @@
 | N5 | `pipeline.ts:55` `rankBadge` 两种模式编号基准不同（profile 从 1、default 从 0），有意但是语义褶皱；CandidateNode 的 `expanded` 态按 key（位置）持有，拖拽重排后开合态"跟着槽位不跟着候选" | `pipeline.ts` |
 | N6 | `controller.ts:133` `MIN_BUSY_MS = 450` 有实测依据（2ms/7ms 被 React 批进同帧，见 `holdBusy` 注释），可接受，但注释里的量测证据必须一直留着 | `controller.ts` |
 | N7 | `unit.mjs:204` 权重抽样用真 `Math.random()` 400 次：统计上稳（0.7^400≈0），但引入非确定性，可注入随机源 | `unit.mjs` |
-| N8 | `config.ts:413` weight 策略校验的错误信息不点名是哪个 profile（`model-router: profile uses the weight strategy but no candidate has a positive weight`） | `config.ts` |
+| N8 | `config.ts:413` weight 策略校验的错误信息不点名是哪个 profile（`model-desk: profile uses the weight strategy but no candidate has a positive weight`） | `config.ts` |
 
 ---
 
@@ -327,7 +327,7 @@
 9. 两个投影单元都遵投影契约：同步纯 `apply`、plain JSON state、`wire.view` 返回 state 内持有的引用（`lineage.ts:159-163`、`health.ts:235-238`），未变状态不发布；`stateVersion` 升级处理旧行（`health.ts:167-169`）。
 10. `probeInFlight` 守卫 + `ctx.effect` 清理 timer 并 abort 飞行中探测（`index.ts:461-470`）：注释里声明的两个不变量都真的实现了，没有未 abort 的定时器或监听。
 11. 全部插件状态住在 WeakMap（`state.ts:106-117`、`index.ts:91`），随 agent/session 消亡；`CircuitBreaker` 用 Map + `sweep`（`breaker.ts:107-114`）而不是无界增长。无 WeakMap 泄漏、无跨 agent 共享可变状态。
-12. `inject` 正确规避了"顶层声明本包才提供的 `remote.routerHealth`"致死锁（只在 `$mount` 后 child inject，同 `packages/experimental/client-ui-cot-translation/src/client/mount.ts:125-127` 范式）。
+12. `inject` 正确规避了"顶层声明本包才提供的 `remote.deskHealth`"致死锁（只在 `$mount` 后 child inject，同 `packages/experimental/client-ui-cot-translation/src/client/mount.ts:125-127` 范式）。
 13. `useModalLayer` Tab 圈禁的 `hidden`+`inert` 双属性（`page.ts:127-128`）匹配 `packages/client/ui-primitives/src/useModalLayer.ts:73-81` 的 `button:not(:disabled)` 减 `[inert],[hidden]` 规则。
 14. footer 几何契约：`styles.ts:48-52` `wide:only-child` 的 `calc(100%+4px);margin:4px -2px` = `ui-settings-general/.../SettingsRoot.module.css:7-8`；`sidebarActionWide` h42/pad0 10 0 8/font14/22 = `.trigger`(:16-36)；rail 36x36+margin 8px 0 10px = `.trigger.rail`+`railRow`(:11-14,44-52)；ownerProps 仅 `wide`（`ui-sidebar/src/client/SidebarRoot.tsx:307`）。
 15. shortcuts `isWebBindingAllowed`：`apply.ts:136-138` Web 用 Comma+primary+shift，命中 `packages/client/shortcuts/src/binding.ts:107-111` 的 Linux 三组白名单，且满足 Win/macOS 的 primary+shift 两键（:104-105）。
@@ -350,7 +350,7 @@
 
 # 执行级复核结论（2026-10-17 后续会话）
 
-处置档位与证据。所有探针留在 `packages/dsh-model-router/tests/_verify-*.mjs`，
+处置档位与证据。所有探针留在 `packages/dsh-model-desk/tests/_verify-*.mjs`，
 清单与预期见同目录 `_verify-README.md`；宿主源码两次临时改动均已还原并重建，
 基线回到 unit 99 / client-controller 37 / run.mjs 18 场景 0 失败，DSH checkout 0 行。
 
@@ -363,7 +363,7 @@
 | I1 | **部分证实** | ① **证伪**：`llm/retry` 与 `llm/retry-started` 实测 2=2 成对（否决发生在两条都提交之后）；真实不一致是反的——有 `llm/retry-started` 无重试。② **证实**：否决场景 boot 5324ms vs 对照组 3358ms，`llm/retry` 带 `delayMs:3000` 已提交。③ 机制真但**后果为零**：否决条件与 `decideRecovery` terminal 逐字相同，且 `llmRetry` 在 `step/start`/`turn/end` 清零 |
 | I2 | **证实** | 同形状对照（3000ms 退避 stub）：AUTH 切换 boot 2576ms / 0 条 `llm/retry`；RATE_LIMIT 切换 5579ms / 1 条。文案承诺处是 **6 处**（原文漏 `locales.ts:46`） |
 | I3 | **证实** | 「两 step 同 turn + 一次 llm/retry」序列：step 2 实得 `latencyMs=4400`（真值 500）、`throughputTps=22.7`（真值 200.0）→ 8.8× 虚高 |
-| I4 | **证实** | 驱动 stub ctx 捕获的 `model-router.save`：未挂面 `resolve()→pass`；执行 `retainSurface()`（`footer.ts:24-27` 挂载做的事）后 `resolve()→handled` |
+| I4 | **证实** | 驱动 stub ctx 捕获的 `model-desk.save`：未挂面 `resolve()→pass`；执行 `retainSurface()`（`footer.ts:24-27` 挂载做的事）后 `resolve()→handled` |
 | I5 | **证实（事实层）；后果层是假设** | grep 实测 24 处编码 + 9 处解码，`routes.ts:10-11` 断言为假。但 24 处格式一致，**今天没有实际漂移**，"silently splits one channel into two records" 是假设不是事实。host 侧是 8 处不是 7（漏 `index.ts:484`） |
 | I6 | **证实** | 对 8 个 guard 各造"只违反该条件"的 config：过 `Config()` **8/8 被 schema 拒**，绕过 schema 直调 `assertStructural` **8/8 会抛**。附加：`timeoutSeconds` guard（`<1`）比 schema（`.min(2)`）还弱 |
 | I7 | **证实**（修法方向要改） | 守卫正则实测 `calc(100vh...)` 匹配 `[]`，而 styles.ts 里有 `88vh`/`84vh`/`calc(84vh`。`contentClassName` 落在 `Modal.tsx:73` 的 `css.content` 而非滚动容器 `css.body`（`:83`），且 `headless:true` 时整块不渲染 |

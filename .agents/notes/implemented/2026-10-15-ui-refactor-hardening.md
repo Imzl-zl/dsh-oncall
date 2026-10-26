@@ -70,7 +70,7 @@ Status: implemented
 - **actions 动作签名对齐**：`actions.onWeight` 漏了第一项 `profileId` 形参，导致编辑默认
   兜底池权重时误把 `null` 当成 index、把 number 当成 isDefault，抛出 `no profile "null"` 异常；
   `onStrategy` 同样显式参数化 `(profileId, value, isDefault)`，抹平隐式依赖。两项新增单测覆盖。
-- **Modal 容器尺寸防夹修固**：`ModelRouterFooterAction` 曾将 `.dsh-router-modal-dialog`
+- **Modal 容器尺寸防夹修固**：`ModelDeskFooterAction` 曾将 `.dsh-router-modal-dialog`
   套在 children 内层 div，导致外层 DSH `Modal.module.css` 的 `.dialog` 将宽度钳死在 380px 并裁切；
   改为直接将 `className: 'dsh-router-modal-dialog'` 传给 `Modal` 并剔除冗余内层 div，还原千像素控制中心卡片。
 - **抽屉与图标微体验**：抽屉蒙层补全点击空白处关闭（backdrop click-to-dismiss）；HeaderTools

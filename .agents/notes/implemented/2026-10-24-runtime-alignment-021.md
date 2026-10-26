@@ -16,7 +16,7 @@ the plugin's own behaviour:
    the checker's instantiation budget (`TS2589`, and an OOM at the default heap).
 2. The typert generator now injects the zod runtime into the generated remote
    metadata factories (`@deepseek-ai/dsh-typert-generator`, commit
-   `bd91a4a570`). `client/apply.ts` imports `dsh-models-router/remote`, so the
+   `bd91a4a570`). `client/apply.ts` imports `dsh-model-desk/remote`, so the
    browser bundle inlined a whole zod (562 kB → 874 kB).
 3. `TypertGateway.invoke` now requires `request.peer` (`assertPeerLive` reads
    `peer.signal`); the remote suite's calls had none and threw.
@@ -26,7 +26,7 @@ the plugin's own behaviour:
 ## Decision
 
 1. **One zod, pinned where the host pins it.** Root devDependency `zod: 4.4.3`
-   (exact), plugin peer `^4.4.3`, and `packages/dsh-models-router/.npmrc` with
+   (exact), plugin peer `^4.4.3`, and `packages/dsh-model-desk/.npmrc` with
    `legacy-peer-deps=true` so this package's peers resolve from the root
    workspace. Without the `.npmrc`, npm auto-installs peers here and picks the
    highest matching prerelease — `0.2.1-rc.3`, the `next` tag — plus a second zod

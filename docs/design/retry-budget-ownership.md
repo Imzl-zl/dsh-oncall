@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — 重试次数只有插件一个执行者"
+title: "DSH Model Desk — 重试次数只有插件一个执行者"
 status: "implemented"
 kind: "design"
 last_updated: "2026-10-21"

@@ -251,7 +251,7 @@ waterfall 里 `await next()` 的解析值就是内层结果；llm-retry 放弃�
    `routes[key]`。客户端控制器测试没覆盖 `checkAll`（discover stub 全返回 `ok:false`，map
    体不执行），所以测试全绿而浏览器一跑就崩。修为按 `provider/model` 拆键，并补
    `checkAll walks every configured route` 回归。
-2. **`Unsupported Web shortcut: model-router.save`**：快捷键默认绑定写了 Web 下的裸
+2. **`Unsupported Web shortcut: model-desk.save`**：快捷键默认绑定写了 Web 下的裸
    `primary+S`，而 DSH 的 `isWebBindingAllowed`（client/shortcuts/src/binding.ts:96-111）
    **不放行**——Windows/macOS 的 Web 只放行两键含 primary+alt/shift，Linux 的 Web 只认
    Slash / Comma+shift / Period+shift 三组（浏览器自己占用 Ctrl+S）。修为桌面裸

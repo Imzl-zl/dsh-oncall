@@ -5,8 +5,8 @@ Status: implemented
 ## Problem
 
 The dev workspace installs the plugin package on its own (`npm install --prefix
-packages/dsh-models-router`); the root is not an npm workspace, so npm has no
-tree to hoist into. `packages/dsh-models-router/.npmrc` therefore sets
+packages/dsh-model-desk`); the root is not an npm workspace, so npm has no
+tree to hoist into. `packages/dsh-model-desk/.npmrc` therefore sets
 `legacy-peer-deps=true`: the plugin declares its DSH peers but installs none of
 them, and every `@deepseek-ai/dsh-*` import resolves upward to the root's single
 copy — the same instances the Host runs.
@@ -67,7 +67,7 @@ done here (see the third alternative).
    - Strongest reason: it is the only measured variant with a single copy
      (hoisted to the root), and it would remove the `.npmrc` entirely.
    - Why not now: the root becomes the install root, the lockfile moves, and
-     `npm install --prefix packages/dsh-models-router` starts resolving the
+     `npm install --prefix packages/dsh-model-desk` starts resolving the
      workspace root instead of the package — a dev-workspace restructure that
      needs its own verification round. The constraint costs nothing today.
 4. Move the DSH packages into `dependencies` of the published package.

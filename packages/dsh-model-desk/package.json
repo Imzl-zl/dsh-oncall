@@ -1,0 +1,113 @@
+{
+  "name": "dsh-model-desk",
+  "version": "0.5.0",
+  "description": "Transparent cross-provider failover for DSH Agent main requests: named fallback chains, per-session chain choice, per-route retry overrides.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "llm",
+    "failover",
+    "fallback",
+    "router",
+    "retry",
+    "model-routing"
+  ],
+  "homepage": "https://github.com/Imzl-zl/dsh-model-desk#readme",
+  "bugs": {
+    "url": "https://github.com/Imzl-zl/dsh-model-desk/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Imzl-zl/dsh-model-desk.git",
+    "directory": "packages/dsh-model-desk"
+  },
+  "author": "Imzl-zl",
+  "license": "MIT",
+  "icon": "./icon.svg",
+  "type": "module",
+  "engines": {
+    "node": ">=22.6.0"
+  },
+  "scripts": {
+    "bundle": "node ../../scripts/embed-changelog.mjs && node ../../scripts/sync-package-readmes.mjs && tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown --concurrency 1",
+    "watch": "tsdown --watch",
+    "prepublishOnly": "npm run bundle"
+  },
+  "main": "lib/index.js",
+  "files": [
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "README.en.md",
+    "src/",
+    "lib/index.js",
+    "lib/client.js",
+    "lib/types/**/*.d.ts",
+    "lib/typert.host.js",
+    "lib/typert.host.d.ts",
+    "lib/typert.remote-client.js",
+    "lib/typert.remote-client.d.ts"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-shortcuts"
+      ]
+    }
+  },
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": "./lib/client.js",
+    "./typert": {
+      "types": "./lib/typert.host.d.ts",
+      "default": "./lib/typert.host.js"
+    },
+    "./remote": {
+      "types": "./lib/typert.remote-client.d.ts",
+      "default": "./lib/typert.remote-client.js"
+    },
+    "./types": {
+      "types": "./lib/types/types.d.ts"
+    },
+    "./package.json": "./package.json"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-agent": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-llm": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-session": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-storage-domain": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-tools": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-protocol": "^0.2.1-rc.3",
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-client-store": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.1-rc.3",
+    "@deepseek-ai/dsh-typert-generator": "0.2.1-rc.3",
+    "@types/react": "^19.3.0",
+    "tsdown": "^0.22.14",
+    "typescript": "^6.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

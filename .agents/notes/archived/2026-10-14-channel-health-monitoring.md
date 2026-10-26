@@ -51,7 +51,7 @@ Status: implemented
    - **健康设置弹窗（`HealthSettingsModal`）**：提供启用开关、自定义探测 Prompt、自动探测周期（分钟）及探测超时（秒）的快捷微调。
 
 6. **Typert 远程服务与运行时兼容**：
-   - 实现 `RouterHealthService` 继承 `TypertRemoteService`（namespace: `'routerHealth'`），暴露 `getSnapshot` 与 `probeAll`；
+   - 实现 `RouterHealthService` 继承 `TypertRemoteService`（namespace: `'deskHealth'`），暴露 `getSnapshot` 与 `probeAll`；
    - 规避 Node 24 `--experimental-strip-types` 无法解析 Stage 3 装饰器语法的限制，通过原型属性安全挂载 Remote 描述符；
    - Client 端通过 `ctx.remote.$mount` 与 fail-open 双重保护接入，无缝兼容 Headless 及各类宿主环境。
 

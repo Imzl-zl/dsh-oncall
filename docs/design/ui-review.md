@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — UI 现状审查与问题清单"
+title: "DSH Model Desk — UI 现状审查与问题清单"
 status: "open"
 kind: "ui-review"
 last_updated: "2026-10-18"
 ---
 
-# DSH Model Router — UI 现状审查与问题清单
+# DSH Model Desk — UI 现状审查与问题清单
 
 ## 摘要
 
@@ -25,7 +25,7 @@ last_updated: "2026-10-18"
 
 ```
 侧栏 footer 按钮（sidebar.footer.action，order 120）
-  └─ DSH Modal（headless，shortcutModal: 'model-router'）
+  └─ DSH Modal（headless，shortcutModal: 'model-desk'）
        ├─ 顶栏：Logo + 「模型路由控制中心」+ 启用/暂停 + 未保存 + 保存失败
        │        + [放弃]（仅在 dirty 时出现）+ [保存 + Ctrl+S kbd] + [关闭]
        └─ RouterPage（工作台）

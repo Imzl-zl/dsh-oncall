@@ -1,10 +1,10 @@
 {
-  "name": "dsh-models-router-dev",
+  "name": "dsh-model-desk-dev",
   "private": true,
   "type": "module",
-  "description": "Dev workspace for the dsh-models-router plugin: installs the DSH CLI so the plugin's @deepseek-ai/dsh-* imports resolve to the same module instances the running host uses.",
+  "description": "Dev workspace for the dsh-model-desk plugin: installs the DSH CLI so the plugin's @deepseek-ai/dsh-* imports resolve to the same module instances the running host uses.",
   "scripts": {
-    "test": "node packages/dsh-models-router/tests/unit.mjs && node packages/dsh-models-router/tests/client-controller.mjs && node packages/dsh-models-router/tests/remote.mjs && node packages/dsh-models-router/tests/run.mjs"
+    "test": "node packages/dsh-model-desk/tests/unit.mjs && node packages/dsh-model-desk/tests/client-controller.mjs && node packages/dsh-model-desk/tests/remote.mjs && node packages/dsh-model-desk/tests/run.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.3",
@@ -14,7 +14,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Imzl-zl/dsh-models-router.git"
+    "url": "git+https://github.com/Imzl-zl/dsh-model-desk.git"
   },
   "engines": {
     "node": ">=22.6.0"

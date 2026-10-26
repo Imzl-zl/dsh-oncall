@@ -16,7 +16,7 @@ would have been an empty shell.
 The client module system also handed the local `ROUTER_CSS` array back as one
 joined string at runtime, while the imported `FLEET_CSS` stayed an array. A
 plain `.join` therefore threw `TypeError: ROUTER_CSS.join is not a function`
-during plugin apply, which the boot page reduced to `dsh-models-router: failed`.
+during plugin apply, which the boot page reduced to `dsh-model-desk: failed`.
 
 ## Decision
 

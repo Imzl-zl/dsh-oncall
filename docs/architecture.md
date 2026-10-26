@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — 架构"
+title: "DSH Model Desk — 架构"
 status: "implemented"
 kind: "architecture-overview"
 last_updated: "2026-10-24"
 ---
 
-# DSH Model Router — 架构
+# DSH Model Desk — 架构
 
 ## 摘要
 
@@ -28,6 +28,7 @@ last_updated: "2026-10-24"
 - [遗留任务交接](design/handoff-proposal.md)：名册 + 一个 `handoff` 工具（派人 / 收工 / 重启 / 状态）+ 插件备料；判断权在模型，插件只守协议与闸门。
 - [每个渠道到底能重试几次](design/retry-budget-ownership.md)：`1 + min(插件配置, 渠道策略)` 的来历与三种修法。
 - [建议实施阶段](design/implementation-plan.md)：从技术验证到可选核心扩展的次序。
+- [功能完成度与逻辑语义审查](design/feature-review-2026-10-26.md)：2026-10-26 的全量审查记录——九项交付状态、三条 Critical 的现象与证据、Minor 分类；修复排期见[决策登记簿](design/open-questions.md)十三节。
 - [主流产品先例](references/prior-art.md)：LiteLLM、Portkey 和 OpenRouter 官方文档对照。
 
 ## 当前形态

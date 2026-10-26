@@ -12,7 +12,7 @@ Status: implemented
 
 ## Decision
 
-1. **插件自有 Typert Remote**：宿主类形态 `ModelRouter extends
+1. **插件自有 Typert Remote**：宿主类形态 `ModelDesk extends
    TypertRemoteService`，`@Remote probeAll(request, signal)` 与 `@Remote
    probeReport()`；`probeReport` 读宿主内存里最近一次运行的报告。生成物
    `lib/typert.remote-client.js` 由客户端半包 `$mount` 后经 `ctx.inject` 使用，

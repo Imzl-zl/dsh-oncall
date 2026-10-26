@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — 决策登记簿"
+title: "DSH Model Desk — 决策登记簿"
 status: "open"
 kind: "decision-register"
 last_updated: "2026-10-23"
 ---
 
-# DSH Model Router — 决策登记簿
+# DSH Model Desk — 决策登记簿
 
 ## 摘要
 
@@ -199,4 +199,17 @@ last_updated: "2026-10-23"
 | 1 | 现在迁移，还是等上游发布含守卫的版本再迁 | **等发布再迁**（rc.3 没有 `select`，现在迁直接不可用） | 升级窗口被动：上游一发布，插件必须先完成迁移 |
 | 2 | 迁移时失败切换降到 step 边界后，逐候选预算与「最多 N 次真实调用」怎么重新定义 | 待设计（attempt 级 → step 级，语义变更） | 影响预算公式、中文通知、`max-tokens` 续跑与四套件判据 |
 | 3 | 是否保留 listener 顺序依赖（`prepend: true`）作为过渡 | 保留到迁移完成 | 顺序契约被上游点名要废止，过渡期不能新增依赖 |
+
+## 十三、审查后续与项目改名（2026-10-26，待决）
+
+审查结论见[功能完成度与逻辑语义审查](feature-review-2026-10-26.md)：九项交付均存在，三条 Critical（图片粘滞窗口、健康设置保存死锁、交接 `newSession` 运行时崩溃）已复核。本节只登记需要用户拍板、且会改变实现形态的问题。
+
+| # | 问题 | 设计默认 | 影响 |
+|---|---|---|---|
+| 1 | `dsh-model-desk` 改名的**发布与仓库侧动作** | 仓库内改名已落地（[笔记](../../.agents/notes/implemented/2026-10-26-rename-away-from-model-router.md)）；剩余：GitHub 仓库改名、npm 包名发布、发版说明写明「配置 ns 改为 `model-desk`，存量配置需重存」 | 未发版前旧安装仍以 `dsh-models-router` 运行；配置 ns 改名后旧 bundle 行不再被认领 |
+| 2 | 持久化标识（`model_router_sessions`、`router/failover-history`、`router/channel-health`、`router/handoff`）是否随改名迁移 | **不动**，或迁移另开一轮 | 动了会丢既有会话绑定与历史投影；不动则长期存在「新旧两套词根」的已知债 |
+| 3 | 是否先为 10-23 立即切换白名单与 10-24 交接/名册/Fleet 补 `CHANGELOG` 条目 | **先开 `Unreleased`** | 当前 `release.generated.ts` 内嵌的仍是 0.5.0（10-22）说明，升级弹窗读不到这三项能力 |
+| 4 | 实现与设计页的偏离如何记账 | 待定：约 10 项（页签缺计数、健康页缺四格 KPI、白名单移到重试分区、§3 删除确认弹窗不存在、`styles.ts` 行数不符等）逐条标注「改文档」或「改实现」 | 不记账会让下一次审查重复发现同一批偏差 |
+| 5 | `AGENTS.md` 两处措辞是否修正 | 待用户确认后改 | §0 把 handoff 与「35 个真实 Loader 组合场景 0 失败」写在同一句，而 `tests/run.mjs` 中 `handoff` 出现 0 次；§6 硬规则要求真实组合验证，交接目前只有手造 faces 单测 |
+| 6 | 三条 Critical 的修复顺序 | 建议 `newSession` → 健康保存 → 粘滞窗口（前两条是「一用就撞墙」） | 影响发版窗口：第 2、3 条都可单独发补丁版 |
 

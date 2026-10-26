@@ -83,7 +83,7 @@ min-content 是 172px（"工具箱"+图标），我们只剩 88px——不是我
 - **载体变更**：弹窗没了，快捷打开没了。用户要开路由配置必须切到面板（点侧栏那一行）。
 - `main` 槽位是 keyed，面板页要在自己的页头里提供"返回会话"——原来 Modal 的 Escape/遮罩/焦点
   圈禁都由 DSH 提供，现在这些都没有了（保存/放弃在工作台自己的脏条里也有）。
-- Ctrl+S 的 `modals: ['model-router']` 约束事实上失效（没有 modal 了）；`registry.ts:142` 在
+- Ctrl+S 的 `modals: ['model-desk']` 约束事实上失效（没有 modal 了）；`registry.ts:142` 在
   `context.modal === null` 时本来就不拦，所以行为不变，但那条约束已经名存实亡。
 
 ## 验证

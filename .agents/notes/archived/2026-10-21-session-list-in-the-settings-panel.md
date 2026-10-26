@@ -16,7 +16,7 @@ Status: implemented
 
 1. 链路页多一个页签「会话路由」：列出会话 × 各自的绑定，按 `updatedAt` 倒序，最多 20 条
    （与健康页读投影的上限同量级）。
-2. 数据来自两个已有读口：`routerHealth.sessionBindings()`（新增：全部绑定一次读回）与
+2. 数据来自两个已有读口：`deskHealth.sessionBindings()`（新增：全部绑定一次读回）与
    `remote.session.list({})`；标题走 title 投影（与健康页同一条读法），读不到就显示 id 末 8 位。
    两侧都有的行可以改；只在绑定里的行是被删掉的会话，只提供「清除绑定」。
 3. 行内直接配：链用原生 `<select>`（选项 = 跟随默认链 + 每条链），下面是该链候选的重试行，

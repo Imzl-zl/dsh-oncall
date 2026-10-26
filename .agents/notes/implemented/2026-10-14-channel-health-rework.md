@@ -7,7 +7,7 @@ Status: implemented
 `2026-10-14-channel-health-monitoring`（已归档）实现的双引擎健康体系有三个致命缺陷，全部在生产路径上：
 
 1. **健康配置保存不了**：`client.js` 的 `scope.mutate` 只写 `enabled/profiles/default`，漏掉 `health`。用户在健康设置里改任何东西、点保存，界面显示"配置已是最新"，磁盘上什么都没有——静默数据丢失。
-2. **主动探测整个是空转**：`RouterHealthService` 走手写的 Typert descriptor + 客户端 `ctx.remote.$mount`。DSH 的远程贡献只能由构建管线从 `@Remote` 装饰器生成，`dsh-typert-loader` 明确"没有生成导出的包被静默跳过，且仅发现主机面"。这个插件是手写单文件、无构建步骤，所以那条通道从未成立——浏览器里点"探测全部渠道"零网络请求、零反馈。
+2. **主动探测整个是空转**：`DeskHealthService` 走手写的 Typert descriptor + 客户端 `ctx.remote.$mount`。DSH 的远程贡献只能由构建管线从 `@Remote` 装饰器生成，`dsh-typert-loader` 明确"没有生成导出的包被静默跳过，且仅发现主机面"。这个插件是手写单文件、无构建步骤，所以那条通道从未成立——浏览器里点"探测全部渠道"零网络请求、零反馈。
 3. **吞吐永远显示横线**：投影读 `event.data.message.usage`，而 DSH 的 `assistant/message` 把 `usage` 放在 `message` **旁边**（`core/session/src/types.ts:341-349`）。所以 `throughputTps` 永远是 undefined。更糟的是当时那条单测喂的就是手搓的错误形状还全绿——测试复述了实现的错误假设。
 
 同时，用户提出三个产品需求当时没被满足：
@@ -18,7 +18,7 @@ Status: implemented
 
 ## Decision
 
-1. **一个健康事实一个 Store**：删掉 `HealthMonitor`（内存 Map）和 `RouterHealthService`（自造 remote + 手写 descriptor + `$mount`）。健康只来自 `router/channel-health` 会话投影。内存副本活不过配置保存（fiber 整体重启），而且没有构建管线就到不了浏览器——两个理由任何一个都足够判它出局。
+1. **一个健康事实一个 Store**：删掉 `HealthMonitor`（内存 Map）和 `DeskHealthService`（自造 remote + 手写 descriptor + `$mount`）。健康只来自 `router/channel-health` 会话投影。内存副本活不过配置保存（fiber 整体重启），而且没有构建管线就到不了浏览器——两个理由任何一个都足够判它出局。
 2. **连通性检查改用 DSH 原生接口**：`ctx.remote.llm.discoverModels` + `ctx.remote.settings.describe` + `ctx.remote.llm.listConfigurableProviders`，与 `ui-settings-models/src/client/operations.ts:96-107` 同一套。客户端 `inject` 补 `remote.llm` / `remote.settings`。provider 端点映射可缓存（是配置事实），但 Host 推送新配置必须作废，否则后加的 provider 一直查不到。
 3. **四档健康配置，全部用户可选**：`passive`（运行时记录）/ `discover`（连通性检查）/ `probe`（发送测试消息）/ `breaker`（自动禁用）。周期一律用**秒**、默认 0，用户按自己渠道的限流承受能力设——限流是每渠道各自的，插件不替用户判断多密算太频。
 4. **选路策略只管起点**：`order` / `weight` / `round-robin` 三种策略只决定从哪条候选开始，失败之后的前进逻辑完全不变（`planFire` 因此感知不到策略存在）。链旋转后 `StepChain.order` 携带原始下标，通知里说的"第几条"仍是用户自己排的编号。轮询游标按会话计（`WeakMap<Session, number>`），重启归零。

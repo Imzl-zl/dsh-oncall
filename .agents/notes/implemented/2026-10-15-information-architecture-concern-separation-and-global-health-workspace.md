@@ -44,10 +44,10 @@ Status: implemented
   - 规则视图不再直接展示被动观测细节，看详情需一次跳转；
   - 测速档在构建管线就绪前只能看不能用（模态与工作区均为禁用 + 说明）。
 - 验证：
-  - `node --check packages/dsh-model-router/src/client.js`：通过；
-  - `node packages/dsh-model-router/tests/client-controller.mjs`：20/20 通过（含 `routeStatus` 映射、单渠道检查与工作台结构回归测试）；
-  - `node packages/dsh-model-router/tests/unit.mjs`：35/35 通过；
-  - `node packages/dsh-model-router/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
+  - `node --check packages/dsh-model-desk/src/client.js`：通过；
+  - `node packages/dsh-model-desk/tests/client-controller.mjs`：20/20 通过（含 `routeStatus` 映射、单渠道检查与工作台结构回归测试）；
+  - `node packages/dsh-model-desk/tests/unit.mjs`：35/35 通过；
+  - `node packages/dsh-model-desk/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
   - `tsc --noEmit`：0 错误；
   - 隔离 `.dshhome-view` 浏览器实测：双栏布局、信号灯跳转聚焦、导航进入清除焦点、单渠道连通性（unavailable 显示"未调用"）、测速禁用、搜索图标定位、dirty→保存闭环；
   - DSH 源码树（`D:\sudy\github\deepseek-harness`）：严格 0 修改。

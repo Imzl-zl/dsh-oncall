@@ -27,7 +27,7 @@ Status: implemented
    从根 `CHANGELOG.md` 取 `## [版本]` 小节，生成
    `src/client/release.generated.ts`；`bundle` 先跑它。这样弹窗描述的是**实际安装的
    产物**，不是仓库 HEAD，也不依赖运行时网络（离线首启不会说谎）。
-3. **每个浏览器只弹一次，按版本记账**：`localStorage['dsh-models-router:seen-version']`
+3. **每个浏览器只弹一次，按版本记账**：`localStorage['dsh-model-desk:seen-version']`
    与当前 `RELEASE_VERSION` 不同（或还没记过）时，工作台自动弹一次；关闭即写入当前版本。
    页头永远保留「更新日志」按钮，用户可随时重看。
 4. **读取时机放在 `applyInner` 的第一个 await 之前**：`localStorage` 必须在这一拍读，

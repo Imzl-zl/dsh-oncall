@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-1. **入口深隐**：Router 原先仅注册 `plugins.bundle.config`，用户需经由 `设置 -> 插件管理 -> 已安装插件 -> dsh-model-router -> 配置` 4 级跳转才能访问，且无法在聊天会话中直达。
+1. **入口深隐**：Router 原先仅注册 `plugins.bundle.config`，用户需经由 `设置 -> 插件管理 -> 已安装插件 -> dsh-model-desk -> 配置` 4 级跳转才能访问，且无法在聊天会话中直达。
 2. **保存体验割裂**：配置页面较长时，仅在最底部的 `SettingsForm` 内提供保存按钮，页面未修改时按钮置灰无提示，修改后无法在视线内感知保存位置，用户需反复滚轮翻页寻觅。
 3. **插件入口冲突疑虑**：用户存在其他常驻侧边栏插件（如 `dsh-toolbox-ui` 注册于侧栏设置上方），担心新增入口会产生绝对定位抢占或互相覆盖。
 4. **视觉质感不统一**：旧版候选节点操作按钮单薄、缺少 Stepper 微调、主模型与故障转移链路视觉区分度弱，未充分利用 DSH 原生 CSS 变量与现代科技感层级。
@@ -13,8 +13,8 @@ Status: implemented
 
 1. **双槽位自适应并存与 CSS 弹性纵向重排**：
    - 保持 `plugins.bundle.config` 原生设置页能力；
-   - 新增 `sidebar.footer.action` 注册（id: `'model-router'`, order: 120），放置于 DSH 侧栏设置按钮正上方；
-   - **自适应避让与防挤压机制**：DSH 原生 `.footerActions` 默认为水平 row 布局，当 `dsh-toolbox-ui`（order: 100）与 `dsh-model-router`（order: 120）同时启用时，默认会被压缩至半宽并导致按钮文字断行。插件在 `apply(ctx)` 动态注入 `ROUTER_CSS`，将 `div[class*="footerActions"]` 规范化为纵向列排布（`flex-direction: column !important; gap: 4px;`），展开时各自 100% 满宽，收起时（rail）纵向居中对齐（`gap: 6px;`），多插件自适应顺次堆叠，绝不争抢挤占位置；
+   - 新增 `sidebar.footer.action` 注册（id: `'model-desk'`, order: 120），放置于 DSH 侧栏设置按钮正上方；
+   - **自适应避让与防挤压机制**：DSH 原生 `.footerActions` 默认为水平 row 布局，当 `dsh-toolbox-ui`（order: 100）与 `dsh-model-desk`（order: 120）同时启用时，默认会被压缩至半宽并导致按钮文字断行。插件在 `apply(ctx)` 动态注入 `ROUTER_CSS`，将 `div[class*="footerActions"]` 规范化为纵向列排布（`flex-direction: column !important; gap: 4px;`），展开时各自 100% 满宽，收起时（rail）纵向居中对齐（`gap: 6px;`），多插件自适应顺次堆叠，绝不争抢挤占位置；
    - 侧边栏按钮点击后，通过 `ReactDOM.createPortal` 唤起沉浸式【模型路由控制中心】模态视窗（支持 Esc 键与遮罩点击关闭），在不打断会话的前提下瞬时完成配置。
 2. **唯一吸顶主保存交互（根治“保存找半天”与“保存上下都有”）**：
    - **吸顶顶栏为唯一保存落点**：页面端常驻 Sticky Header，模态端常驻 Modal Top Bar，保存按钮固定在右上视线焦点；

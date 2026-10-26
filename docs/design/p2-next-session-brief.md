@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — P2 委派名册：后续会话交接"
+title: "DSH Model Desk — P2 委派名册：后续会话交接"
 status: "handoff-brief"
 kind: "handoff-brief"
 last_updated: "2026-10-24"
@@ -16,12 +16,12 @@ last_updated: "2026-10-24"
 
 | 项 | 事实 |
 |---|---|
-| 依赖 | 根 `@deepseek-ai/dsh` **0.2.1-rc.3**（跟只读 checkout；桌面仍装 rc.2）；`zod` 根 **4.4.3 精确**；插件 peer 六个 `@deepseek-ai/dsh-*` = `^0.2.1-rc.3`（含 `dsh-tools`）+ cordis / schemastery / zod；`packages/dsh-models-router/.npmrc` 有 `legacy-peer-deps=true`（替代方案已实测否决，见 §四.5） |
-| 构建 | `npm run bundle --prefix packages/dsh-models-router`：host 208.13 kB / client ≈464.8 kB（client 里 `zod` 是外部 require；tsdown 报十进制 kB。数字随注释与代码改动漂移，以当次 bundle 输出为准） |
+| 依赖 | 根 `@deepseek-ai/dsh` **0.2.1-rc.3**（跟只读 checkout；桌面仍装 rc.2）；`zod` 根 **4.4.3 精确**；插件 peer 六个 `@deepseek-ai/dsh-*` = `^0.2.1-rc.3`（含 `dsh-tools`）+ cordis / schemastery / zod；`packages/dsh-model-desk/.npmrc` 有 `legacy-peer-deps=true`（替代方案已实测否决，见 §四.5） |
+| 构建 | `npm run bundle --prefix packages/dsh-model-desk`：host 208.13 kB / client ≈464.8 kB（client 里 `zod` 是外部 require；tsdown 报十进制 kB。数字随注释与代码改动漂移，以当次 bundle 输出为准） |
 | 四套件 | **233 unit / 123 client-controller / 25 remote / 35 scenarios, 0 failure**（rc.3 上实跑，2026-10-24） |
-| 类型 | 指定 `npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-models-router/src/index.ts` → exit 0 |
-| 语法 | `node --check packages/dsh-models-router/lib/client.js` → exit 0 |
-| 客户端 tsc | `tsconfig.client.json`（照 DSH 的 `tsconfig.base.client.json` 形状：DOM lib、`noEmit`、与 host 声明工程分开；`noImplicitAny:false` 是棘轮而非政策）。`npx tsc -p packages/dsh-models-router/tsconfig.client.json` → **exit 0**，且已接进 `bundle`（`tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown`）。棘轮是否收紧见 `.agents/notes/implemented/2026-10-24-client-half-typecheck.md` 的 Consequences。 |
+| 类型 | 指定 `npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-model-desk/src/index.ts` → exit 0 |
+| 语法 | `node --check packages/dsh-model-desk/lib/client.js` → exit 0 |
+| 客户端 tsc | `tsconfig.client.json`（照 DSH 的 `tsconfig.base.client.json` 形状：DOM lib、`noEmit`、与 host 声明工程分开；`noImplicitAny:false` 是棘轮而非政策）。`npx tsc -p packages/dsh-model-desk/tsconfig.client.json` → **exit 0**，且已接进 `bundle`（`tsc -p tsconfig.json && tsc -p tsconfig.client.json && tsdown`）。棘轮是否收紧见 `.agents/notes/implemented/2026-10-24-client-half-typecheck.md` 的 Consequences。 |
 | 浏览器 | npm 宿主 + 隔离 home（`%TEMP%\dsh-fleet-cap-22`）起 web profile；1440 / 1025 / 801 / 大屏（CDP `emulate` 实测 1920×1080，配置页列 960）；12 角色列表 224px / 420px 独立滚动；空态、校验拒绝、保存回写（磁盘核对）均通过；DOM 无本插件自绘 `position: fixed` / 遮罩 / 标签条 / 关闭全屏。收口轮冒烟（1468×880，端口 3499，另跑 801 与 CDP `emulate` 1920×1080）：名册页 12 角色 + 编辑器在 801/1468/1920 三档布局不变；方向键走位真机实测 `ArrowDown ×2 → End → ArrowDown → ArrowUp → Home → ArrowUp` 落在 侦察/测试/清理/清理/复核二/复核/复核（编辑器 id 同步，`defaultPrevented` 全 true）；重试 stepper 输入 5→3、`+` →4，按权重策略下权重框 0→40（两处 `ChangeEvent` 收窄的实证）；chip 弹层 `role="menu"` + portal 正常，`items` 渲染出「链 默认 ›」、`extras` 渲染出按目录命名的重试行（placeholder「跟随」）；右栏「本会话」三本预算 0/8、0/1、0/2 与"已接入但为空"的活动流；渠道健康页 6 条路由标签与"历史留痕"徽标照旧 |
 | 截图 | `docs/assets/ui/roster-p2-{1440-12roles,1025,801,1920-12roles,fullscreen-editor,1440-empty,validation-blocked}.png`、`fleet-p2-activity-1920.png`（活动流“已接入但为空”）、`fleet-p2-budgets-1920.png`（三本预算 0/8、0/1、0/2）；收口轮（2026-10-24）`roster-p3-typecheck-{1468,801,1920}.png`、`fleet-p3-typecheck-{session,global}-1468.png`、`health-p3-typecheck-1468.png`、`chip-p3-typecheck-popover-1468.png` |
 | DSH checkout | `git status --porcelain` 0 行（未改）；live profile 未碰 |
@@ -39,7 +39,7 @@ last_updated: "2026-10-24"
    `tool/call`+`tool/result` 的回执、`step/start` 的回合、`turn/end`、`compaction/start`、`lastUserText`）；
    复核结论与携带预算在**账本**（`storageDomain` 的 `model_router_handoff`，`reviews` + `budgets` 两张表）。
    闸门读"投影计数 + 携带计数"。
-3. **预算的 epoch 只由人说话推进**：插件自己的消息用 `source.kind = 'model-router-handoff'`，
+3. **预算的 epoch 只由人说话推进**：插件自己的消息用 `source.kind = 'model-desk-handoff'`，
    接力简报不清零（F-14）。
 4. **复核按派发时 epoch 记账**：复核期间人说话 → 这次复核作废（F-18）。
 5. **拒绝 = 抛 `HarnessError`**：`tool/result.isError` 是折叠判"没花预算"的唯一依据（F-15）。
@@ -52,7 +52,7 @@ last_updated: "2026-10-24"
 10. **活动流读的是投影，不是账本**：`router/handoff` 的 `records` 只有模型自己写下的回执（派发 / 收工 / 开新会话 / 读事实）；
    复核结论与预算在账本里，浏览器还读不到——所以活动流不显示复核结论，也不显示预算数字。
 11. **三本预算的"已用"只有一个表达式**：投影计数 + 接力携带（`handoff-wire.ts` 的 `addCarried`），闸门与界面共用；
-   账本只通过 `routerHealth.handoffCarried` 补"带了什么"这一半（浏览器读一次、缓存）。任何一半未知就整块隐藏。
+   账本只通过 `deskHealth.handoffCarried` 补"带了什么"这一半（浏览器读一次、缓存）。任何一半未知就整块隐藏。
 
 ## 三、原生能力核对（已核实，别再绕弯）
 
@@ -104,7 +104,7 @@ last_updated: "2026-10-24"
    （`workspaces: ["packages/*"]`）才能让 exact devDeps 提升到根、只剩一份——那是开发工作区改造，不是 package.json 改动。
    结论与数据见 `.agents/notes/implemented/2026-10-24-peer-resolution-is-a-dev-workspace-fact.md`。
 6. **三本预算（D7）已上会话视图**：投影计数 + 接力携带（同一条 `addCarried`），上限来自浏览器自己那份配置；
-   新增只读 Remote `routerHealth.handoffCarried` 只回答"带了多少"。浏览器实测 0/8、0/1、0/2。
+   新增只读 Remote `deskHealth.handoffCarried` 只回答"带了多少"。浏览器实测 0/8、0/1、0/2。
    实现时被真机抓到一处真 bug（`reviewRosterIds` 传了数组而不是配置对象），已补控制器级单测。
 7. **客户端半包有了类型检查工程**（照 DSH 官方形状）：`tsconfig.client.json` + 三个平台包的声明作为 devDependency；
    `noImplicitAny:false` 当棘轮用。它第一次跑就抓到 `probeAll` 里裸调 `loadProbeReport()`——运行时 `ReferenceError`
@@ -158,11 +158,11 @@ last_updated: "2026-10-24"
 
 ```powershell
 # 构建 + 四套件 + 类型 + 语法
-npm run bundle --prefix packages/dsh-models-router      # 内含 host tsc 与 client tsc
+npm run bundle --prefix packages/dsh-model-desk      # 内含 host tsc 与 client tsc
 npm test
-npx tsc -p packages/dsh-models-router/tsconfig.client.json   # 单独跑一遍客户端半包，应为 exit 0
-npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-models-router/src/index.ts
-node --check packages/dsh-models-router/lib/client.js
+npx tsc -p packages/dsh-model-desk/tsconfig.client.json   # 单独跑一遍客户端半包，应为 exit 0
+npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-model-desk/src/index.ts
+node --check packages/dsh-model-desk/lib/client.js
 git -C D:\sudy\github\deepseek-harness status --porcelain   # 必须 0 行
 ```
 
@@ -182,13 +182,13 @@ node node_modules\@deepseek-ai\dsh\lib\bin.js --profile web --no-open --port 349
 - **窗口尺寸**：`resize_page` 上限是物理屏幕（1920 请求得到 1471）。要真 1920 用 `emulate`
   （`viewport: '1920x1080x1'`；`emulate` 每次调用会替换全部仿真设置，要同时改配色就在同一次调用里给全）。
 - **首屏更新日志弹窗**：版本变化时 `notesOpen` 初始为真，会盖住页面。点"关闭"，或在加载前写
-  `localStorage['dsh-models-router:seen-version'] = '<RELEASE_VERSION>'`。
+  `localStorage['dsh-model-desk:seen-version'] = '<RELEASE_VERSION>'`。
 - **右栏标签会被会话顶掉**：点行尾的"打开"是打开会话，右栏换成该会话的「对话 / 轨迹」，fleet 标签消失；
   要在 fleet 里下钻必须点**行体**（`.dsh-fleet-session-main`）。fleet 标签本身从右栏引导页的"智能体协同"打开
   （右栏收起时先点"打开右侧边栏"）；"开始"引导页只在没有打开会话时出现，所以先点"新会话"再进引导页最稳。
 
 保存回写核对：保存后读隔离 home 的 `profiles/web/cordis.patch.yml`——DSH 会**追加**一条同名行
-（`- id: model-router`），核对值时看**最后一条**；不要因为看到两行就以为保存了两次。
+（`- id: model-desk`），核对值时看**最后一条**；不要因为看到两行就以为保存了两次。
 
 
 ## 六、下一轮提示词（复制到新会话）
@@ -197,13 +197,13 @@ node node_modules\@deepseek-ai\dsh\lib\bin.js --profile web --no-open --port 349
 `剩余` 为空。下一轮如果继续这个仓库，从下面两条可选增强里挑，或者按用户的新目标开工：
 
 ```text
-你在 DSH Model Router 仓库继续做 P2 之后的收尾。仓库：D:\sudy\myproject\dsh-model-router；
+你在 DSH Model Desk 仓库继续做 P2 之后的收尾。仓库：D:\sudy\myproject\dsh-model-desk；
 DSH 源码只读：D:\sudy\github\deepseek-harness。分支 master，工作树有大量未提交改动，先 git status
 看清现状，不要 reset / checkout / 覆盖任何已有改动。
 
 先读：docs/design/p2-next-session-brief.md（基线、已收口项、验证配方与四个浏览器坑）、
 .agents/notes/implemented/2026-10-24-client-half-typecheck.md（类型工程的取舍与棘轮收紧标准）、
-packages/dsh-models-router/tsconfig.client.json。
+packages/dsh-model-desk/tsconfig.client.json。
 
 可选的下一步（都不是缺口，做之前先跟用户确认范围）：
 1. 按文件收紧 noImplicitAny：把已注解干净的纯模块（validate / format / naming / fleet/model）放进
@@ -215,9 +215,9 @@ packages/dsh-models-router/tsconfig.client.json。
 原生能力先查源码再动手；发现源码与计划冲突先停下说明冲突与证据（file:line）。
 只改本仓库；改动要么是类型、要么配一条能变红的用例；交付时给原始输出，不声称跑过没跑的测试。
 
-验证：npm run bundle --prefix packages/dsh-models-router（内含两份 tsc，exit 0）→ npm test 四套件
+验证：npm run bundle --prefix packages/dsh-model-desk（内含两份 tsc，exit 0）→ npm test 四套件
 （当前基线 233 unit / 123 client-controller / 25 remote / 35 scenarios, 0 failure，只许涨或持平）→
-npx tsc -p packages/dsh-models-router/tsconfig.client.json（0）→ 指定 host tsc（exit 0）→
-node --check packages/dsh-models-router/lib/client.js（exit 0）→
+npx tsc -p packages/dsh-model-desk/tsconfig.client.json（0）→ 指定 host tsc（exit 0）→
+node --check packages/dsh-model-desk/lib/client.js（exit 0）→
 git -C D:\sudy\github\deepseek-harness status --porcelain（0 行）。
 ```

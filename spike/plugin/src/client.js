@@ -14,7 +14,7 @@
  */
 
 window.__ModuleLoader__.load({
-  id: 'dsh-model-router-spike/client',
+  id: 'dsh-model-desk-spike/client',
   factory: (require) => {
     var module = { exports: {} }
     var exports = module.exports
@@ -30,7 +30,7 @@ window.__ModuleLoader__.load({
     var settingsNumberField = prim.settingsNumberField
     var settingsBooleanField = prim.settingsBooleanField
 
-    var NS = 'dsh-model-router-spike'
+    var NS = 'dsh-model-desk-spike'
     /**
      * Settings namespace: the loader entry id the bundle patch declares
      * (`spike-probe`), NOT the package name. The Host derives every namespace
@@ -184,7 +184,7 @@ window.__ModuleLoader__.load({
       )
     }
 
-    exports.name = 'dsh-model-router-spike/client'
+    exports.name = 'dsh-model-desk-spike/client'
     exports.inject = ['slots', 'locale', 'configForms']
     exports.NS = NS
 
@@ -219,7 +219,7 @@ window.__ModuleLoader__.load({
 
       ctx.effect(() => ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
         name: 'plugins.bundle.config',
-        key: 'dsh-model-router-spike',
+        key: 'dsh-model-desk-spike',
         locale: NS,
         inject: () => ({
           hooks: { routerCard: store },

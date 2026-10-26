@@ -5,7 +5,7 @@ Status: proposed
 ## Problem
 
 插件把跨渠道切换放在 `agent/request` 的返回值上：listener `await next()` 之后用自己的候选覆盖
-provider/model（[`src/index.ts`](../../../packages/dsh-models-router/src/index.ts) 的 `agent/request` listener），
+provider/model（[`src/index.ts`](../../../packages/dsh-model-desk/src/index.ts) 的 `agent/request` listener），
 靠 waterfall 顺序压过 `installModelSelection` 的写回。这个做法在**已发布的 rc.3** 上成立，但上游
 `main` 已经改了契约：
 

@@ -44,9 +44,9 @@ Status: implemented
   - 界面呈现出云原生大模型网关（如 Portkey / LiteLLM）的专业质感；
   - 现代矢量 Logo 大幅提升产品形象。
 - 验证：
-  - `node --check packages/dsh-model-router/src/client.js`：AST 语法 0 错误；
-  - `node packages/dsh-model-router/tests/client-controller.mjs`：14/14 单元测试通过；
-  - `node packages/dsh-model-router/tests/unit.mjs`：66/66 单元测试通过；
-  - `node packages/dsh-model-router/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
+  - `node --check packages/dsh-model-desk/src/client.js`：AST 语法 0 错误；
+  - `node packages/dsh-model-desk/tests/client-controller.mjs`：14/14 单元测试通过；
+  - `node packages/dsh-model-desk/tests/unit.mjs`：66/66 单元测试通过；
+  - `node packages/dsh-model-desk/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
   - `tsc --noEmit`：类型校验 0 错误；
   - DSH 参考仓库（`D:\sudy\github\deepseek-harness`）：严格 0 修改（只读）。

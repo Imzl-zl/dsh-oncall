@@ -33,12 +33,12 @@ runtime we target.
    `dsh-client-store`, `dsh-client-ui-primitives`, `dsh-client-ui-slots` at
    `^0.2.1-rc.3`, and `dsh-typert-generator` exact at `0.2.1-rc.3` (it generates
    the remote metadata factories, so it is a runtime-version fact like zod).
-4. **`legacy-peer-deps=true` in `packages/dsh-models-router/.npmrc` is unchanged**;
+4. **`legacy-peer-deps=true` in `packages/dsh-model-desk/.npmrc` is unchanged**;
    only the version numbers moved. The mechanism it protects is the reason this
    alignment is one edit instead of a second copy of every DSH package.
 5. **Mechanical gate, checked after install**: `require.resolve` of the six peers,
    `dsh`, `cordis`, `schemastery` and `zod` from the repo root **and** from
-   `packages/dsh-models-router` must return the identical path, and the tree must
+   `packages/dsh-model-desk` must return the identical path, and the tree must
    contain exactly one `zod`. A second instance stops the round instead of being
    worked around.
 

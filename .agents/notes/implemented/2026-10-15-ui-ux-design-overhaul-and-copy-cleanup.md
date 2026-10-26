@@ -73,10 +73,10 @@ Status: implemented
 - 代价：
   - 侧边栏底部占用了约 70px 的固定高度，中间 Profiles 列表的可视高度略微减少（通过滚动条支持无限长列表）。
 - 验证：
-  - `node --check packages/dsh-model-router/src/client.js`：语法与深层括号配平全绿；
-  - `node packages/dsh-model-router/tests/client-controller.mjs`：21/21 通过（含工作台结构回归 + 弹窗视口约束守卫）；
-  - `node packages/dsh-model-router/tests/unit.mjs`：35/35 通过；
-  - `node packages/dsh-model-router/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
+  - `node --check packages/dsh-model-desk/src/client.js`：语法与深层括号配平全绿；
+  - `node packages/dsh-model-desk/tests/client-controller.mjs`：21/21 通过（含工作台结构回归 + 弹窗视口约束守卫）；
+  - `node packages/dsh-model-desk/tests/unit.mjs`：35/35 通过；
+  - `node packages/dsh-model-desk/tests/run.mjs`：12/12 真实 Loader 组合测试通过；
   - `npx tsc --noEmit`：0 错误；
   - DSH 源码树（`D:\sudy\github\deepseek-harness`）：严格 0 修改。
 
@@ -90,7 +90,7 @@ Status: implemented
 4. **一条 CSS 选择器从未生效**：`.dsh-router-need-control [class*="SegmentedTabs"]` 猜了组件名，而 DSH 的 CSS modules 模式是 `[hash]_[local]`（`packages/client/tsdown.client.ts:562`），生成的类名是 `<hash>_tabs`——选择器永远匹配不上。改用 `role="tablist"` / `role="tab"` 这类不依赖哈希的稳定钩子，并去掉会与内联 `gridTemplateColumns` 打架的 `display: flex` 覆盖（防折行只靠 `white-space: nowrap`）。
 5. **弹窗视口约束没有回归守卫**：本次修复完全建立在「`className` 钩子 + `ROUTER_CSS` 规则」这一对前提上，任何一侧被后人删掉都会静默恢复「标题被顶出屏幕」的故障。新增 `client-controller.mjs` 守卫 `every plugin dialog is capped to the viewport and scrolls inside itself`，并对「把 `max-height: 84vh` 改成 `none`」的形态实测报红后复原。
 
-遗留未决：本次修复未经浏览器实测——隔离 `.dshhome-view`（端口 3395）可正常起服务并从 `/plugins/??dsh-model-router/client.js&rev=...` 取到最新代码（已逐字符串核对），但 Chrome MCP 端到端超不可用，无法量测真实盒模型。弹窗约束的机制侧证据（`!important` 对无 `!important` 的 `.dialog` 必胜、`Modal.tsx` 确实把 `className` 合并到 dialog 元素、`ROUTER_CSS` 已随 bundle 下发）已齐，真实渲染待浏览器恢复后补测。
+遗留未决：本次修复未经浏览器实测——隔离 `.dshhome-view`（端口 3395）可正常起服务并从 `/plugins/??dsh-model-desk/client.js&rev=...` 取到最新代码（已逐字符串核对），但 Chrome MCP 端到端超不可用，无法量测真实盒模型。弹窗约束的机制侧证据（`!important` 对无 `!important` 的 `.dialog` 必胜、`Modal.tsx` 确实把 `className` 合并到 dialog 元素、`ROUTER_CSS` 已随 bundle 下发）已齐，真实渲染待浏览器恢复后补测。
 
 ## 第二轮审查（2026-10-15，用户实测截图后）
 

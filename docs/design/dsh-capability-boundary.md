@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — DSH 能力边界与插件方案"
+title: "DSH Model Desk — DSH 能力边界与插件方案"
 status: "verified-source-facts"
 kind: "architecture-reference"
 last_updated: "2026-10-12"
 ---
 
-# DSH Model Router — DSH 能力边界与插件方案
+# DSH Model Desk — DSH 能力边界与插件方案
 
 ## 摘要
 
@@ -157,7 +157,7 @@ Agent hook 插件不覆盖 `ctx.llm.stream()` 直发调用；全局健康度是�
 | `prepend: true` 仅用于必须跑到普通注册之前的 listener（`cordis-primer.md:33`） | 两个 waterfall 都用，理由见 G2 |
 | 需要一致快照时一次捕获 Config 值（`adding-a-settings-card.md:30`） | 每个请求固定一份 profile 快照 |
 | 诊断文本：类型化失败、机器身份与展示文本分离、不解析错误消息、敏感细节不进用户可见文本（`.agents/skills/dsh-error-handling/SKILL.md:10-26`） | 失败分类用 `LlmFailure.code`，不用 message 匹配 |
-| 日志：插件名前缀 + 格式串 + `%o` 传 error 对象；`warn` 可恢复、`error` 终止性（先例 `llm-retry/src/index.ts:207-210`） | 统一 `dsh-models-router: ...` 前缀 |
+| 日志：插件名前缀 + 格式串 + `%o` 传 error 对象；`warn` 可恢复、`error` 终止性（先例 `llm-retry/src/index.ts:207-210`） | 统一 `dsh-model-desk: ...` 前缀 |
 | 凭证绝不入日志（`llm-deepseek` README:118 "never any part of the key"） | 只记 provider/model 与 failure code |
 | prompt 不入 logger，走 session 事件（`AGENTS.md:134`） | 不记录请求内容 |
 | 客户端 UI 文案走 locale 字典（`AGENTS.md:153`） | 仅当增加 UI 时适用 |
@@ -274,14 +274,14 @@ request     turn=1 step=1 resolved=deepseek-official/deepseek-flash
 落地的 durable 事件：
 
 ```
-seq 17  kind=model-router  form=notice  summary=主模型 deepseek-official 失败（AUTH），已切换
+seq 17  kind=model-desk  form=notice  summary=主模型 deepseek-official 失败（AUTH），已切换
         text=[路由切换] 主模型 deepseek-official 失败（AUTH），已切换
 ```
 
 | 已实证 | 结论 |
 |---|---|
 | `pre-step` 在 `request` **之前**触发，`decision.messages` 可读 | 条件路由的取数时机成立：本步用户消息（含 `ImageBlock`）在 route 决策前即可得 |
-| 自定义 `kind: 'model-router'` + `form: 'notice'` 的 `user/message` 完整落库 | 外置插件可发自带中文通知；`createUserMessage` 不校验 source kind，`MessageSourceMap` 可 merge-extensible 且有客户端 fallback |
+| 自定义 `kind: 'model-desk'` + `form: 'notice'` 的 `user/message` 完整落库 | 外置插件可发自带中文通知；`createUserMessage` 不校验 source kind，`MessageSourceMap` 可 merge-extensible 且有客户端 fallback |
 | append 发生在 recovery 途中，运行 exit 0、循环未被破坏 | 该放置点可用 |
 
 客户端渲染路径已由源码确认（非实测浏览器）：`contextForm()` **只读 `form`** 且 `KNOWN_FORMS` 含 `'notice'`（[`event-projection.ts:38-53`](file:///D:/sudy/github/deepseek-harness/packages/client/ui-chat/src/client/conversation-nodes/event-projection.ts#L38)）；未知 kind 走 `contextProducer()` 的 `default: { role: 'inject', label: kind }`，注释明写 "MessageSourceMap is merge-extensible; keep an unknown producer visible by its durable kind"（[`:60-76`](file:///D:/sudy/github/deepseek-harness/packages/client/ui-chat/src/client/conversation-nodes/event-projection.ts#L60)）。notice 摘要应经 `boundContextSummary()` 限到 120 字符（[`message.ts:118-133`](file:///D:/sudy/github/deepseek-harness/packages/llm/llm/src/message.ts#L118)）。
@@ -310,7 +310,7 @@ seq 17  kind=model-router  form=notice  summary=主模型 deepseek-official 失�
 
 ### 7.9.1 配置表单已实测渲染
 
-同一实例、独立浏览器页面复现，Plugins 页 → 已安装 → `dsh-model-router-spike` 渲染出：
+同一实例、独立浏览器页面复现，Plugins 页 → 已安装 → `dsh-model-desk-spike` 渲染出：
 
 ```text
 接管未配置的模型      关闭时，只有下面显式配置了备份链的模型会走路由。

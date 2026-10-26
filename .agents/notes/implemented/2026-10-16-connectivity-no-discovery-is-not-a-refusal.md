@@ -19,7 +19,7 @@ tooltip 写「连通性检查：端点没应答」，汇总行「连通性检查
 ## Decision
 
 连通性检查整体搬到宿主侧执行，在 `LlmError.code` 还活着的那一层分类，再把结构化判定发给
-客户端。插件已有的 `routerHealth` host face 就是这条路径（探测当初正是为此搬过去的），
+客户端。插件已有的 `deskHealth` host face 就是这条路径（探测当初正是为此搬过去的），
 新增 `@Remote checkConnectivity(request)`；浏览器半包不再自己调
 `ctx.remote.llm.discoverModels`，也不再读 `listConfigurableProviders` / `settings.describe`。
 

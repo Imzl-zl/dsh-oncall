@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Router — Gemini 模板审查"
+title: "DSH Model Desk — Gemini 模板审查"
 status: "open"
 kind: "ui-review"
 last_updated: "2026-10-23"

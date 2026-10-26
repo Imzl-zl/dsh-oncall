@@ -55,8 +55,8 @@
 
 ### 1.〔必做〕否决分支没有组合覆盖，且 `run.mjs` 的注释已经与事实相反
 
-- **位置**：`packages/dsh-model-router/src/index.ts:401-411`（被架空的分支）；
-  `packages/dsh-model-router/tests/run.mjs:422-427`（已假的注释）。
+- **位置**：`packages/dsh-model-desk/src/index.ts:401-411`（被架空的分支）；
+  `packages/dsh-model-desk/tests/run.mjs:422-427`（已假的注释）。
 - **证据（变异实验）**：把 `401-411` 整个删掉 → `npm run bundle` → `node tests/run.mjs`
   = **`20 scenario(s), 0 failure(s)`**，一次都没红。
 - **它不是死代码**（用探针实测过，探针文件已删）：配置 `switchOn.rateLimit=false`（用户没勾限流）
@@ -206,7 +206,7 @@ M19（`validate.ts:20-25` 六个中文 `desc`）、M21（`modals.ts` 的 `Segmen
 
 ## 下一会话操作须知（复审踩过的坑）
 
-1. 改宿主或客户端源码后**必须** `npm run bundle --prefix packages/dsh-model-router`
+1. 改宿主或客户端源码后**必须** `npm run bundle --prefix packages/dsh-model-desk`
    （`run.mjs` 与 `remote.mjs` 跑构建产物）；只跑单测（直导 `.ts`）看不出 bundle 旧。
 2. 四套件在**未改动**的树上基线为 **unit 107 / client-controller 41 / run 20 场景 0 失败 /
    remote 14**，`tsc --noEmit` 0 错误。做完待办 1 之后 run 应为 **21 场景 0 失败**，

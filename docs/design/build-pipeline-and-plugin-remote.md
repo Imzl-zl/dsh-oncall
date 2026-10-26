@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Router — 构建管线与插件自有 Remote（含主动探测档位恢复）"
+title: "DSH Model Desk — 构建管线与插件自有 Remote（含主动探测档位恢复）"
 status: "proposed"
 kind: "design-proposal"
 last_updated: "2026-10-15"
 ---
 
-# DSH Model Router — 构建管线与插件自有 Remote
+# DSH Model Desk — 构建管线与插件自有 Remote
 
 ## 摘要
 
@@ -59,7 +59,7 @@ last_updated: "2026-10-15"
 
 ### 1. 构建配置
 
-`packages/dsh-models-router/tsdown.config.ts` 自复刻 `clientBundle` 的构建契约，不引 DSH 未发布的预设：该预设位于 [`packages/client/tsdown.client.ts`](file:///D:/sudy/github/deepseek-harness/packages/client/tsdown.client.ts)，不在任何已发布包里，DSH cookbook 明确仓库外的包要自己复刻这一步构建（[`docs/cookbook/adding-a-settings-card.md:60`](file:///D:/sudy/github/deepseek-harness/docs/cookbook/adding-a-settings-card.md#L60)）。Typert 生成插件在本包配置内显式加入（[`clientLibraryConfig`](file:///D:/sudy/github/deepseek-harness/packages/client/tsdown.client.ts#L220) 本身不含它），取值 `typertPlugin({ mode: 'package', faces: ['host'] })`。
+`packages/dsh-model-desk/tsdown.config.ts` 自复刻 `clientBundle` 的构建契约，不引 DSH 未发布的预设：该预设位于 [`packages/client/tsdown.client.ts`](file:///D:/sudy/github/deepseek-harness/packages/client/tsdown.client.ts)，不在任何已发布包里，DSH cookbook 明确仓库外的包要自己复刻这一步构建（[`docs/cookbook/adding-a-settings-card.md:60`](file:///D:/sudy/github/deepseek-harness/docs/cookbook/adding-a-settings-card.md#L60)）。Typert 生成插件在本包配置内显式加入（[`clientLibraryConfig`](file:///D:/sudy/github/deepseek-harness/packages/client/tsdown.client.ts#L220) 本身不含它），取值 `typertPlugin({ mode: 'package', faces: ['host'] })`。
 
 Phase 1 实跑后定案的取舍：
 
@@ -67,7 +67,7 @@ Phase 1 实跑后定案的取舍：
 - **`mode: 'package'`**：树外包没有 workspace 可扫，package 模式只发当前被打的包（[`tsdown-plugin.ts:72-93`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/tsdown-plugin.ts#L72)）。
 - **`faces: ['host']`**：Phase 1~2 只需 host face；浏览器侧要用的 `./remote` 投影是 host face 的产物（[`emitter.ts:125-127`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/emitter.ts#L125)），随 Phase 3 的 Remote 方法一起出现，不需要 client face。
 - **`hostPhase` 不适用**：它是 `clientBundle` 的 workspace 构建相位选项，本包不用该预设。
-- **workspace 根标记**：生成器的 package 模式从包 outDir 向上找 `tsconfig.host.json` 定 workspace 根（[`tsdown-plugin.ts:154-161`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/tsdown-plugin.ts#L154)），且要求被引包位于 `<root>/packages` 下（[`analyzer.ts:488`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/analyzer.ts#L488)）。项目根因此持有一份只做 registration 聚合的 `tsconfig.host.json`，引用 `packages/dsh-models-router/tsconfig.json`。
+- **workspace 根标记**：生成器的 package 模式从包 outDir 向上找 `tsconfig.host.json` 定 workspace 根（[`tsdown-plugin.ts:154-161`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/tsdown-plugin.ts#L154)），且要求被引包位于 `<root>/packages` 下（[`analyzer.ts:488`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/analyzer.ts#L488)）。项目根因此持有一份只做 registration 聚合的 `tsconfig.host.json`，引用 `packages/dsh-model-desk/tsconfig.json`。
 - **surface**：生成器只为带标记声明的包产出（[`analyzer.ts:2775-2808`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/analyzer.ts#L2775)）。`Profile` 接口带 `@typert` 标签并经 `src/index.ts` 再导出，成为 host face 的唯一 surface；`Strategy` 因此改为显式联合（Zod 发射器不支持 indexed-access，见[`emitter.ts:777-788`](file:///D:/sudy/github/deepseek-harness/packages/typert/generator/src/emitter.ts#L777)）。
 
 取舍理由与被否方案见 `.agents/notes/implemented/2026-10-15-out-of-tree-build-pipeline.md`。
@@ -89,7 +89,7 @@ Phase 1 实跑后定案的取舍：
 async probeAll(request: ProbeRequest, signal: AbortSignal): Promise<ProbeReport>
 ```
 
-`ProbeRequest` / `ProbeReport` 的具体字段在 Phase 3 定义；探测内容、按渠道覆盖、超时与周期沿用现有 [`src/config.ts:125`](../../packages/dsh-models-router/src/config.ts#L125) 的 schema，不新建第二份配置源。
+`ProbeRequest` / `ProbeReport` 的具体字段在 Phase 3 定义；探测内容、按渠道覆盖、超时与周期沿用现有 [`src/config.ts:125`](../../packages/dsh-model-desk/src/config.ts#L125) 的 schema，不新建第二份配置源。
 
 ### 4. 客户端挂载
 
@@ -112,7 +112,7 @@ async probeAll(request: ProbeRequest, signal: AbortSignal): Promise<ProbeReport>
 |---|---|---|
 | 1 | 构建管线落地；`exports` 指 `lib/`；确认 `./typert` 被 loader 认到 | **单独验证**：`dsh --profile <p> --dump-config` 能看到插件行；启动无 typert 校验报错。不过闸门不进 Phase 2 |
 | 2 | 客户端半包拆模块；`./client` 指 `lib/client.js`；浏览器实测页面与既有功能不回退 | 隔离 home + Chrome MCP 实测：配置页、流水线、健康徽标、保存闭环 |
-| 3 | `RouterHealthService` + `@Remote` 方法；客户端 `$mount`；UI 那一档的开关与表单全恢复 | 单测 + 组合测试 + 浏览器实测：手动探测出数、定时探测按周期跑、TTFT 中断生效 |
+| 3 | `DeskHealthService` + `@Remote` 方法；客户端 `$mount`；UI 那一档的开关与表单全恢复 | 单测 + 组合测试 + 浏览器实测：手动探测出数、定时探测按周期跑、TTFT 中断生效 |
 | 4 | 交付路径改 tarball/npm（预构建 `lib/`） | `dsh plugin add <tarball>` 干净安装可用 |
 
 ## 代价
