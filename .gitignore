@@ -43,6 +43,9 @@ packages/dsh-model-desk/tests/.dshhome-remote/
 packages/dsh-model-desk/tests/.dshhome-relay/
 packages/dsh-model-desk/tests/.dshhome-save/
 packages/dsh-model-desk/tests/.dshhome-office/
+packages/dsh-model-desk/tests/.dshhome-real-handoff/
+packages/dsh-model-desk/tests/.workspace-real-handoff/
+packages/dsh-model-desk/tests/real-handoff.overlay.yml
 packages/dsh-model-desk/tests/*.log
 packages/dsh-model-desk/tests/.sessions/
 packages/dsh-model-desk/tests/.sessions-relay/
