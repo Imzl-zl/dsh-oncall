@@ -148,6 +148,20 @@ function handoffViolations(config: StructuralInput): Violation[] {
   const handoff = config.handoff
   if (handoff === undefined) return violations
   const chainIds = new Set(config.chains.map(chain => chain.id))
+  // 全局委派默认：半条路由不是路由，与角色里那条同规；全空合法（= 跟随父会话）。
+  const defaults = handoff.delegateDefaults
+  if (defaults !== undefined) {
+    const hasProvider = defaults.provider.trim() !== ''
+    const hasModel = defaults.model.trim() !== ''
+    if (hasProvider !== hasModel) {
+      violations.push({
+        key: 'problemHandoffHalfDefaultRoute',
+        vars: {},
+        message: 'model-desk: handoff delegateDefaults names only one half of a route '
+        + '— fill provider and model together, or leave both empty to follow the parent agent',
+      })
+    }
+  }
   const rosterIds = new Set<string>()
   for (const [index, entry] of (handoff.roster ?? []).entries()) {
     const label = entry.name || entry.id || `#${index + 1}`

@@ -199,6 +199,7 @@ export function normalizeHandoff(value) {
       ? handoff.subagentBackend
       : DEFAULT_HANDOFF_SUBAGENT_BACKEND,
     roster: Array.isArray(handoff.roster) ? handoff.roster.map(normalizeRosterEntry) : [],
+    delegateDefaults: normalizeDelegateDefaults(handoff.delegateDefaults),
     protocol: {
       delegate: protocol.delegate !== false,
       finish: protocol.finish !== false,
@@ -245,6 +246,23 @@ export function clampInt(value, min, max) {
 }
 
 /** One roster row: every field the schema declares, with the same defaults. */
+/**
+ * The section's global delegation default, as the editor needs it.
+ *
+ * Blank is a value here, not a missing one: an empty pair means "follow the
+ * parent agent's route", which is the shipped behaviour and stays reachable
+ * through the same four fields.
+ */
+function normalizeDelegateDefaults(value) {
+  var defaults = value && typeof value === 'object' ? value : {}
+  return {
+    provider: typeof defaults.provider === 'string' ? defaults.provider : '',
+    model: typeof defaults.model === 'string' ? defaults.model : '',
+    reasoningEffort: typeof defaults.reasoningEffort === 'string' ? defaults.reasoningEffort : '',
+    maxTokens: numberOr(defaults.maxTokens, 0),
+  }
+}
+
 function normalizeRosterEntry(value) {
   var entry = value && typeof value === 'object' ? value : {}
   return {

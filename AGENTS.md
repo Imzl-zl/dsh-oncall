@@ -44,7 +44,7 @@
 - 外部先例：[主流方案对照](docs/references/prior-art.md)。
 - 用户待决问题：[未决事项](docs/design/open-questions.md)。
 - DSH 参考 checkout：`D:\sudy\github\deepseek-harness`。
-- 组合测试已实跑（37/37 场景 0 失败，`packages/dsh-model-desk/tests/run.mjs`；合计 unit 249 / client-controller 127 / remote 25 / handoff-relay 19 项检查）；不得声称运行过尚未编写的测试。
+- 组合测试已实跑（37/37 场景 0 失败，`packages/dsh-model-desk/tests/run.mjs`；合计 unit 255 / client-controller 128 / remote 25 / handoff-relay 20 项检查）；不得声称运行过尚未编写的测试。真实渠道的两个手动套件（`tests/real-run.mjs` 失败切换、`tests/real-handoff.mjs` 派子代理与会话切换）不进 `npm test`，跑法与坑见 `tools.md`。
 
 ## 6. 项目特定规则
 

@@ -326,11 +326,12 @@ export class HandoffRuntime {
     const gate = this.gateFor(agent, config)
     checkDelegateGate(gate, entry)
     const facts = this.attachFacts(agent, entry, args.focusPaths ?? [])
+    const route = this.agentOptionsOf(entry)
     const request: Record<string, unknown> = {
       parent: agent,
       prompt: buildPrompt(entry, task, facts),
       ...entry.preset.trim() === '' ? {} : { agentPreset: entry.preset.trim() },
-      ...this.agentOptionsOf(entry) === undefined ? {} : { agentOptions: this.agentOptionsOf(entry) },
+      ...route === undefined ? {} : { agentOptions: route },
       // A reviewer must answer in a shape the gate can read; a worker returns prose.
       ...entry.role === 'review' ? { outputSchema: REVIEW_VERDICT_SCHEMA } : {},
     }
@@ -739,15 +740,30 @@ export class HandoffRuntime {
     return Array.isArray(todos) ? todos as TodoLike[] : null
   }
 
-  /** The route a roster entry pins, or nothing when it follows the parent. */
+  /**
+   * The route one delegation runs on: the role's own pin → the section's global
+   * default → nothing, which lets DSH inherit the parent's latest request route.
+   *
+   * The route is chosen whole, never merged field by field: a half-configured
+   * pair is refused by the structural rules, so "provider from the role, model
+   * from the defaults" is a state the operator cannot reach and this function
+   * does not have to model.
+   */
   private agentOptionsOf(entry: RosterEntry): AgentOptions | undefined {
-    if (entry.provider.trim() === '' || entry.model.trim() === '') return undefined
+    const defaults = this.config().delegateDefaults
+    const pinned: RosterEntry | typeof defaults | undefined =
+      entry.provider.trim() !== '' && entry.model.trim() !== ''
+        ? entry
+        : defaults.provider.trim() !== '' && defaults.model.trim() !== ''
+          ? defaults
+          : undefined
+    if (pinned === undefined) return undefined
     const options: AgentOptions = {
-      provider: entry.provider.trim(),
-      model: entry.model.trim(),
+      provider: pinned.provider.trim(),
+      model: pinned.model.trim(),
     }
-    if (entry.reasoningEffort.trim() !== '') options.reasoningEffort = entry.reasoningEffort.trim() as never
-    if (entry.maxTokens > 0) options.maxTokens = entry.maxTokens
+    if (pinned.reasoningEffort.trim() !== '') options.reasoningEffort = pinned.reasoningEffort.trim() as never
+    if (pinned.maxTokens > 0) options.maxTokens = pinned.maxTokens
     return options
   }
 

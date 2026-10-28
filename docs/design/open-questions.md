@@ -213,6 +213,8 @@ last_updated: "2026-10-23"
 
 条目的逐条断言位置见审查页第七节。全量验证：`npm test` 五套件 **249 / 127 / 25 / handoff-relay 19 项 / 37 场景** 全绿，host 与 client `tsc` 均 0。
 
+**2026-10-28 用户裁定（已落地）**：子智能体的模型要**三档都能选**——① 角色上写死（现状）；② **全局委派模型**（新加 `handoff.delegateDefaults`，给"只想配一个、不想逐角色配"的人）；③ 都留空就跟随父会话（现状）。三档都可留空，"只建角色、模型完全跟随"是合法配置；半条路由（只填渠道或只填模型）保存期拒绝。路由按整条取，不做逐字段拼接。取舍见 [笔记](../../.agents/notes/implemented/2026-10-28-global-delegation-model.md)。
+
 同日第二轮补了三件收尾：① **4.12 的自动网**——跳过通知的裁决抽进 `src/skip-plan.ts`（纯函数，返回通知计划与消耗的键），`index.ts` 只按计划 append；组合 harness 到不了"跳过集合变大"这个触发面（一次 boot 一个 step），改由两次纯函数调用覆盖，键改回整组拼串时该用例变红（已抽样）。② **5.6 行号漂移**——probe/connectivity 注释与 [源码地图](source-map.md) 里的 DSH 引用逐条回 rc.3 核对，对不上的改成函数名锚点。③ **GUI 保存链路实证**——隔离 home 用 `dsh plugin add` 真安装（插件行进 bundle include），改字段 → 保存 → 页面不再出现 `No configurable plugin entry`、`profiles/web/cordis.patch.yml` 里出现新值、刷新后 UI 与磁盘一致；可复跑步骤与坑见 `tools.md`。
 
 三条 Minor 同批收尾：`chain.ts` 的 `continues` 上界改读 `MAX_TOKEN_CONTINUES`（字面量 `9` 是同一约束的第二份）；三个读 `lib/` 的套件 + 接力套件开头调 `tests/freshness.mjs` 的 `assertFreshBuild()`（mtime 断言，源码比产物新就直接失败并点名 `npm run bundle`，已用一次 `touch` 抽样证明会红）；补 `noMatchingProfiles` 字典键，并加一条**从调用点扫字面量 `t('…')`** 的守卫——键集互等只证明两份一致，证明不了调用点有词。

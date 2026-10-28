@@ -180,6 +180,13 @@ export function RosterView(props: RosterViewProps) {
     })
   }
 
+  /** Whether the section's global route is half-filled (blocks the save). */
+  var halfDefault = function () {
+    return props.problems.some(function (problem) {
+      return problem.key === 'problemHandoffHalfDefaultRoute'
+    })
+  }
+
   var problemsFor = function (index) {
     return props.problems.filter(function (problem) {
       return problem.key.indexOf('problemRoster') === 0 && problem.vars && problem.vars.index === index + 1
@@ -277,6 +284,53 @@ export function RosterView(props: RosterViewProps) {
           disabled: props.disabled,
           hint: t('handoffBudgetPerTurnHint'),
           onChange: function (next) { props.onField(['limits', 'maxDelegationsPerTurn'], next) },
+        })),
+
+      // ---- the section's global delegation model ----
+      //
+      // Two supported shapes, one control group: fill this once and every role
+      // without its own route uses it; leave it empty and those roles follow the
+      // parent agent. The route is chosen whole — a half-filled pair blocks the
+      // save through the shared structural rule (./validate.ts).
+      h('h3', { className: 'dsh-router-subtitle' }, t('handoffDefaultsTitle')),
+      h('p', { className: 'dsh-router-hint' }, t('handoffDefaultsHint')),
+      h('div', { className: 'dsh-router-field-grid' },
+        h(TextField, {
+          id: 'handoff-default-provider',
+          label: t('handoffProviderLabel'),
+          value: handoff.delegateDefaults.provider,
+          mono: true,
+          disabled: props.disabled,
+          invalid: halfDefault(),
+          hint: t('handoffProviderHint'),
+          onChange: function (next) { props.onField(['delegateDefaults', 'provider'], next) },
+        }),
+        h(TextField, {
+          id: 'handoff-default-model',
+          label: t('handoffModelLabel'),
+          value: handoff.delegateDefaults.model,
+          mono: true,
+          disabled: props.disabled,
+          invalid: halfDefault(),
+          hint: t('handoffModelHint'),
+          onChange: function (next) { props.onField(['delegateDefaults', 'model'], next) },
+        }),
+        h(TextField, {
+          id: 'handoff-default-effort',
+          label: t('handoffEffortLabel'),
+          value: handoff.delegateDefaults.reasoningEffort,
+          mono: true,
+          disabled: props.disabled,
+          hint: t('handoffEffortHint'),
+          onChange: function (next) { props.onField(['delegateDefaults', 'reasoningEffort'], next) },
+        }),
+        h(NumberField, {
+          id: 'handoff-default-max-tokens',
+          label: t('handoffMaxTokensLabel'),
+          value: handoff.delegateDefaults.maxTokens,
+          disabled: props.disabled,
+          hint: t('handoffMaxTokensHint'),
+          onChange: function (next) { props.onField(['delegateDefaults', 'maxTokens'], next) },
         }))),
 
     // ---- master-detail ----

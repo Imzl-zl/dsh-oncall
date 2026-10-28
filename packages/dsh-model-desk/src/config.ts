@@ -289,6 +289,22 @@ export const rosterEntrySchema = z.object({
     .description('本角色自最近一条用户消息以来的派发上限（0 = 不许派）'),
 })
 
+/**
+ * 全局委派默认：所有角色共用的一条兜底路由。
+ *
+ * 两种用法都要成立（2026-10-28 用户要求）：只想全局配一个模型、不想逐角色
+ * 配；或者只建角色、模型完全跟随父会话。优先级见 `handoff-tool.ts` 的
+ * `agentOptionsOf`：角色自己的路由 → 这里 → 父会话当前实际用的路由。
+ * 路由按**整条**选，不做逐字段合并——半条路由不是路由，结构校验会拒；
+ * 全空是合法配置（= 跟随父会话）。
+ */
+export const handoffDelegateDefaultsSchema = z.object({
+  provider: z.string().default('').description('物理渠道；留空 = 跟随父会话'),
+  model: z.string().default('').description('模型 ID；留空 = 跟随父会话'),
+  reasoningEffort: z.string().default('').description('推理档位（可选，由该渠道的适配器解释）'),
+  maxTokens: z.number().step(1).min(0).default(0).description('输出 token 上限（0 = 不指定）'),
+})
+
 /** 协议：哪几个动作对模型可见（前三项可关；`newSession` 随接力配置）。 */
 export const handoffProtocolSchema = z.object({
   delegate: z.boolean().default(true).description('允许 delegate（派人）'),
@@ -343,6 +359,7 @@ export const handoffSchema = z.object({
   subagentBackend: z.string().default(DEFAULT_HANDOFF_SUBAGENT_BACKEND)
     .description('派发后端（DSH subagent provider 名，不是模型渠道）'),
   roster: z.array(rosterEntrySchema).default([]),
+  delegateDefaults: handoffDelegateDefaultsSchema.default({}),
   protocol: handoffProtocolSchema.default({}),
   limits: handoffLimitsSchema.default({}),
   onUnreceiptedStop: handoffUnreceiptedSchema.default({}),
@@ -590,11 +607,20 @@ export interface HandoffNewSessionConfig {
   carryChainBinding: boolean
 }
 
+/** 全局委派默认：角色没写模型时用的那一条路由；全空 = 跟随父会话。 */
+export interface HandoffDelegateDefaults {
+  provider: string
+  model: string
+  reasoningEffort: string
+  maxTokens: number
+}
+
 /** 委派名册整段。 */
 export interface HandoffConfig {
   enabled: boolean
   subagentBackend: string
   roster: RosterEntry[]
+  delegateDefaults: HandoffDelegateDefaults
   protocol: HandoffProtocolConfig
   limits: HandoffLimitsConfig
   onUnreceiptedStop: HandoffUnreceiptedConfig

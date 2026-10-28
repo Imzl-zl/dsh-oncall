@@ -3745,6 +3745,7 @@ const handoffConfig = (over = {}) => ({
   enabled: true,
   subagentBackend: 'spawn',
   roster: [rosterEntry()],
+  delegateDefaults: { provider: '', model: '', reasoningEffort: '', maxTokens: 0 },
   protocol: {
     delegate: true,
     finish: true,
@@ -4343,6 +4344,69 @@ test('delegate assembles the child request from the roster and keeps one reader 
   assert.equal(Object.hasOwn(work.request, 'outputSchema'), false)
   assert.ok(work.request.prompt[0].text.startsWith('写测试'), 'no instructions means the task comes first')
   assert.deepEqual(workReceipt.attached, [], 'a role with no attach and no focus paths attaches nothing')
+})
+
+// ---- 全局委派模型：角色 → 全局 → 父会话，三档（2026-10-28 用户要求）----
+test('the delegation route falls back from the role to the section default, then to the parent', async () => {
+  const starts = []
+  const agent = handoffAgent('s1')
+  const toolFor = (config) => handoffTool(config, {
+    subagents: {
+      async startActivation(spec) {
+        starts.push(spec)
+        return { childId: `child-${starts.length}`, result: new Promise(() => {}), dispose: async () => {} }
+      },
+    },
+    goals: { get: () => undefined, create() {}, clear() {} },
+    projections: handoffProjections(handoffState({ lastUserText: '派活' }), []),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const roster = [
+    rosterEntry({ id: 'pinned', role: 'work', provider: 'acme', model: 'pinned-1', instructions: '干活' }),
+    rosterEntry({ id: 'blank', role: 'work', purpose: '跟随', instructions: '干活' }),
+  ]
+  const defaults = { provider: 'acme', model: 'default-1', reasoningEffort: 'low', maxTokens: 4096 }
+
+  // 1) 角色自己写了路由：用角色的，全局不覆盖。
+  const withBoth = toolFor(handoffConfig({ roster, delegateDefaults: defaults }))
+  await withBoth.call({ action: 'delegate', rosterId: 'pinned', task: 't1' }, agent)
+  assert.deepEqual(starts[0].request.agentOptions, { provider: 'acme', model: 'pinned-1' },
+    'a pinned role wins over the section default')
+
+  // 2) 角色留空：落到全局那份（含它的 effort / maxTokens）。
+  await withBoth.call({ action: 'delegate', rosterId: 'blank', task: 't2' }, agent)
+  assert.deepEqual(starts[1].request.agentOptions, defaults,
+    'a blank role uses the section default as a whole route')
+
+  // 3) 全局也留空：请求里不带 agentOptions，交给 DSH 继承父会话当前路由。
+  const withNothing = toolFor(handoffConfig({ roster }))
+  await withNothing.call({ action: 'delegate', rosterId: 'blank', task: 't3' }, agent)
+  assert.equal(Object.hasOwn(starts[2].request, 'agentOptions'), false,
+    'no route anywhere means the child inherits the parent agent')
+})
+
+test('a half-filled default delegation route is refused, and the browser shows the same key', () => {
+  const violations = (delegateDefaults) => structuralViolations({
+    chains: [named(chainValue())],
+    defaultChainId: 'default',
+    handoff: handoffConfig({ delegateDefaults }),
+  }).map((violation) => violation.key)
+  assert.deepEqual(violations({ provider: 'acme', model: '', reasoningEffort: '', maxTokens: 0 }),
+    ['problemHandoffHalfDefaultRoute'])
+  assert.deepEqual(violations({ provider: '', model: 'only-a-model', reasoningEffort: '', maxTokens: 0 }),
+    ['problemHandoffHalfDefaultRoute'])
+  // 整条填、或两栏都空（= 跟随父会话）都合法。
+  assert.deepEqual(violations({ provider: 'acme', model: 'm1', reasoningEffort: '', maxTokens: 0 }), [])
+  assert.deepEqual(violations({ provider: '', model: '', reasoningEffort: '', maxTokens: 0 }), [])
+  // 浏览器侧拿到同一个 key，而不是 host 的英文句子。
+  const draft = {
+    chains: [named(chainValue())],
+    defaultChainId: 'default',
+    health: normalizeHealth(undefined),
+    handoff: normalizeHandoff(handoffConfig({ delegateDefaults: { provider: 'acme', model: '', reasoningEffort: '', maxTokens: 0 } })),
+  }
+  assert.deepEqual(validate(draft).map((problem) => problem.key), ['problemHandoffHalfDefaultRoute'])
 })
 
 test('a settled review is written to the ledger, and the finish gate reads that verdict', async () => {

@@ -1880,6 +1880,29 @@ test('the roster fields take the typed value, not the change event', async () =>
   assert.equal(h.state().draft.handoff.roster[0].maxTokens, 0, 'a negative budget clamps to 0')
 })
 
+test('the section default delegation model is editable and travels with the save', async () => {
+  const { h, tree, RouterPage } = await mountRoster(handoffOf({ roster: [roleOf()] }))
+  const current = () => render(createEl(RouterPage, propsFor(h)))
+  const field = (rendered, id) => find(rendered, node => node.props?.id === id)
+  assert.ok(field(tree, 'handoff-default-provider') !== undefined, 'the provider field is on the page')
+  assert.ok(field(tree, 'handoff-default-model') !== undefined, 'the model field is on the page')
+  // 默认全空 = 跟随父会话（与 host 默认同形），不是缺字段。
+  assert.equal(field(tree, 'handoff-default-provider').props.value, '')
+  assert.equal(field(tree, 'handoff-default-model').props.value, '')
+  field(tree, 'handoff-default-provider').props.onChange({ currentTarget: { value: 'acme' } })
+  assert.equal(h.state().draft.handoff.delegateDefaults.provider, 'acme',
+    'the edit lands on the section default')
+  // 半条路由挡住保存，并把两栏都标红——错在"这一对没填完"，不是某一栏。
+  assert.deepEqual(h.state().problems.map((problem) => problem.key), ['problemHandoffHalfDefaultRoute'])
+  assert.equal(h.state().invalid, true)
+  const half = current()
+  assert.equal(field(half, 'handoff-default-provider').props['aria-invalid'], 'true')
+  assert.equal(field(half, 'handoff-default-model').props['aria-invalid'], 'true')
+  field(half, 'handoff-default-model').props.onChange({ currentTarget: { value: 'm1' } })
+  assert.deepEqual(h.state().problems.map((problem) => problem.key), [], 'both halves clears the rule')
+  assert.equal(h.state().invalid, false)
+})
+
 test('a bad role blocks the save and marks the field, not just the list', async () => {
   const { h, tree } = await mountRoster(handoffOf({ roster: [roleOf({ purpose: '   ' })] }))
   assert.equal(h.state().invalid, true, 'the save is blocked')
