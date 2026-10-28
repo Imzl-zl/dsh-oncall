@@ -3803,6 +3803,31 @@ test('the tool description carries every purpose and never the instructions', ()
   assert.equal(description.includes('INSTRUCTIONS-CODE'), false)
 })
 
+test('the description tells the model when to hand over and what the note must contain', () => {
+  // 模型只有这一个地方能读到交接契约：没有"何时交"，它只会闷头做完；
+  // 没有"note 写什么"，交出去的就是一句"继续"。
+  const description = compileDescription(handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work', purpose: '写代码', instructions: '只改指定文件' })],
+  }))
+  assert.match(description, /Hand over with newSession when:/)
+  assert.match(description, /the user asks for a fresh session or a new-session prompt/)
+  assert.match(description, /context has been compacted repeatedly/)
+  assert.match(description, /next step is a review or an independent task/)
+  assert.match(description, /The handoffNote is the next session's task/)
+  for (const clause of [
+    'the verifiable boundary of what is finished',
+    'the exact next step and the files it touches',
+    'what must not be redone',
+    'what to read first',
+    'the acceptance requirement the user stated',
+  ]) {
+    assert.ok(description.includes(clause), `the note checklist names ${clause}`)
+  }
+  assert.match(description, /A note that only says "continue" is not a handover/)
+  // 仍然不把角色的岗位规范编进来（那是子会话的读者）。
+  assert.equal(description.includes('只改指定文件'), false)
+})
+
 test('an empty roster still registers a tool that refuses delegation', () => {
   const description = compileDescription(handoffConfig({ roster: [] }))
   assert.match(description, /No roles are configured/)

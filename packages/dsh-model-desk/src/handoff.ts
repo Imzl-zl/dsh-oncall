@@ -508,6 +508,19 @@ export function compileDescription(config: HandoffConfig): string {
   if (config.newSession.onFinish.length > 0) {
     lines.push(`A finish with outcome ${config.newSession.onFinish.join('/')} must carry handoffNote — the new session gets it as the next step.`)
   }
+  // 交接的两半，缺任何一半模型都不会主动交：**何时**交（它没被告知就不会想到），
+  // 以及 **note 里必须写什么**（只说"继续"等于把问题原样搬过去）。这两句是模型
+  // 唯一能读到交接契约的地方，所以写在这里而不是文档里。
+  lines.push(
+    'Hand over with newSession when: the user asks for a fresh session or a new-session prompt; '
+    + 'this turn finished its part and the next step is a review or an independent task; '
+    + 'or the context has been compacted repeatedly while the task still has a long way to go '
+    + '(a clean session with a written note is cheaper than continuing to compact).',
+    'The handoffNote is the next session\'s task, written by you from what this session actually did — '
+    + 'never a summary of the conversation. It must name: the verifiable boundary of what is finished, '
+    + 'the exact next step and the files it touches, what must not be redone, what to read first, '
+    + 'and the acceptance requirement the user stated. A note that only says "continue" is not a handover.',
+  )
   lines.push('facts{} reports compaction count, turns, failed tool calls, goal, todos and how many times each role was delegated.')
   return lines.join('\n')
 }
