@@ -27,6 +27,9 @@ import {
   DEFAULT_FIRST_HOP_MAX_RETRIES,
   DEFAULT_HANDOFF_LIMITS,
   DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
+DEFAULT_HANDOFF_PROMPT_TEMPLATE,
+HANDOFF_PROMPT_EXTRA_MAX,
+HANDOFF_PROMPT_TEMPLATE_MAX,
   DEFAULT_HANDOFF_SUBAGENT_BACKEND,
   DEFAULT_IMMEDIATE_SWITCH,
   DEFAULT_INTERVAL_SECONDS,
@@ -350,6 +353,13 @@ export const handoffNewSessionSchema = z.object({
   keepGoal: z.boolean().default(true).description('新会话里按原 objective 重建 goal'),
   carrySelection: z.boolean().default(true).description('主模型不变：把本会话选中的模型带过去'),
   carryChainBinding: z.boolean().default(true).description('链绑定与预算计数跟过去（不因开新会话重置）'),
+  // 新会话收到的第一条消息：模板可改，默认就是发布时的措辞。
+  // 占位符替换规则在 ../handoff.ts 的 renderHandoffPrompt：一行里的占位符换成空，
+  // 整行删掉——所以 `{report}` 没写时不会剩一个空标题。
+  promptTemplate: z.string().max(HANDOFF_PROMPT_TEMPLATE_MAX).default(DEFAULT_HANDOFF_PROMPT_TEMPLATE)
+    .description('新会话收到的第一条消息模板。占位符：{reason} {nextAction} {extra} {note} {report} {artifacts}；必须含 {note}'),
+  promptExtra: z.string().max(HANDOFF_PROMPT_EXTRA_MAX).default('')
+    .description('每次接力都带过去的一段固定要求（如审查口径）；空 = 不出现这一行。它是配置，不依赖模型记'),
 })
 
 /** 委派名册整段：总闸 + 名册 + 协议 + 闸门 + 兜底 + 接力。 */
@@ -605,6 +615,10 @@ export interface HandoffNewSessionConfig {
   keepGoal: boolean
   carrySelection: boolean
   carryChainBinding: boolean
+  /** 新会话第一条消息的模板；占位符见 `HANDOFF_PROMPT_PLACEHOLDERS`。 */
+  promptTemplate: string
+  /** 每次接力都带的一段固定要求；空 = 不出现这一行。 */
+  promptExtra: string
 }
 
 /** 全局委派默认：角色没写模型时用的那一条路由；全空 = 跟随父会话。 */

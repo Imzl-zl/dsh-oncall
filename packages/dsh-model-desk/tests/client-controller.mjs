@@ -1903,6 +1903,26 @@ test('the section default delegation model is editable and travels with the save
   assert.equal(h.state().invalid, false)
 })
 
+test('the next-session prompt template and standing requirement are editable', async () => {
+  const { h, tree } = await mountRoster(handoffOf({ roster: [roleOf()] }))
+  const field = (rendered, id) => find(rendered, node => node.props?.id === id)
+  const template = field(tree, 'handoff-prompt-template')
+  const extra = field(tree, 'handoff-prompt-extra')
+  assert.ok(template !== undefined && extra !== undefined, 'both prompt fields render')
+  // 默认值 = 发布时的措辞，其中 {note} 必须还在（那是模型写的任务）。
+  assert.ok(template.props.value.includes('{note}'), 'the default template keeps the handoff note')
+  assert.equal(extra.props.value, '', 'the standing requirement is empty by default')
+  extra.props.onChange({ currentTarget: { value: '审查只出结论，不改代码' } })
+  assert.equal(h.state().draft.handoff.newSession.promptExtra, '审查只出结论，不改代码',
+    'the requirement is a draft edit')
+  // 抹掉 {note} 就挡住保存：新会话会拿不到任务。
+  template.props.onChange({ currentTarget: { value: '任务：{reason}' } })
+  assert.deepEqual(h.state().problems.map(problem => problem.key), ['problemHandoffPromptNoNote'])
+  assert.equal(h.state().invalid, true)
+  template.props.onChange({ currentTarget: { value: '任务：{note}' } })
+  assert.deepEqual(h.state().problems.map(problem => problem.key), [], 'putting {note} back clears it')
+})
+
 test('a bad role blocks the save and marks the field, not just the list', async () => {
   const { h, tree } = await mountRoster(handoffOf({ roster: [roleOf({ purpose: '   ' })] }))
   assert.equal(h.state().invalid, true, 'the save is blocked')

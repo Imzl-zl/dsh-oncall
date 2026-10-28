@@ -19,7 +19,7 @@
 
 import type { HandoffConfig, HealthConfig, NamedChain } from './config.ts'
 import { chainLabel } from './chain.ts'
-import { HANDOFF_FAILOVER_INHERIT, HANDOFF_FAILOVER_NONE, HANDOFF_INSTRUCTIONS_MAX, isSwitchOnKey } from './defaults.ts'
+import { HANDOFF_FAILOVER_INHERIT, HANDOFF_FAILOVER_NONE, HANDOFF_INSTRUCTIONS_MAX, HANDOFF_PROMPT_PLACEHOLDERS, isSwitchOnKey } from './defaults.ts'
 import { routeKeyOf } from './routes.ts'
 
 /**
@@ -160,6 +160,29 @@ function handoffViolations(config: StructuralInput): Violation[] {
         message: 'model-desk: handoff delegateDefaults names only one half of a route '
         + '— fill provider and model together, or leave both empty to follow the parent agent',
       })
+    }
+  }
+  // 新会话提示词模板：必须留住 `{note}`（那是模型写的任务），且不许出现不认识
+  // 的占位符——写错的占位符会原样印进新会话，也没有任何提示。
+  const template = handoff.newSession?.promptTemplate
+  if (typeof template === 'string' && template !== '') {
+    if (!template.includes('{note}')) {
+      violations.push({
+        key: 'problemHandoffPromptNoNote',
+        vars: {},
+        message: 'model-desk: handoff newSession.promptTemplate has no {note} — the next session would receive '
+        + 'no task, because {note} is the handoff note the model writes',
+      })
+    }
+    for (const [, name] of template.matchAll(/\{([^{}]+)\}/g)) {
+      if ((HANDOFF_PROMPT_PLACEHOLDERS as readonly string[]).includes(name)) continue
+      violations.push({
+        key: 'problemHandoffUnknownPlaceholder',
+        vars: { name },
+        message: `model-desk: handoff newSession.promptTemplate names {${name}}, which is not a placeholder — `
+        + `the allowed ones are ${HANDOFF_PROMPT_PLACEHOLDERS.map(placeholder => `{${placeholder}}`).join(' ')}`,
+      })
+      break
     }
   }
   const rosterIds = new Set<string>()

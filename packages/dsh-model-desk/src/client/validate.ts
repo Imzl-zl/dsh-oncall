@@ -25,10 +25,13 @@ import {
   DEFAULT_STRATEGY,
   DEFAULT_SWITCH_ON,
   DEFAULT_TIMELINE_BUCKET_SECONDS,
+  DEFAULT_HANDOFF_PROMPT_TEMPLATE,
   HANDOFF_ATTACH_ITEMS,
   HANDOFF_BRIEFING_ITEMS,
   HANDOFF_FAILOVER_INHERIT,
   HANDOFF_NEXT_ACTIONS,
+  HANDOFF_PROMPT_EXTRA_MAX,
+  HANDOFF_PROMPT_TEMPLATE_MAX,
   HANDOFF_ROLES,
   MAX_RETRIES,
   MAX_SESSION_RETRIES,
@@ -166,6 +169,15 @@ export function validate(draft) {
   // 名册的数值边界与 host schema 同源（../defaults.ts 的 HANDOFF 常量）：结构规则
   // 管"跨字段/语义"，这里只管单字段范围，和候选重试次数同一条分工。
   if (draft.handoff) {
+    // 模板与附加要求都是单字段长度：schema 拥有同一条上限，这里先挡（否则用户
+    // 吃到的是 host 的英文拒绝）。
+    var newSession = draft.handoff.newSession
+    if (newSession && newSession.promptTemplate.length > HANDOFF_PROMPT_TEMPLATE_MAX) {
+      problems.push({ key: 'problemHandoffPromptTooLong', vars: { max: HANDOFF_PROMPT_TEMPLATE_MAX } })
+    }
+    if (newSession && newSession.promptExtra.length > HANDOFF_PROMPT_EXTRA_MAX) {
+      problems.push({ key: 'problemHandoffExtraTooLong', vars: { max: HANDOFF_PROMPT_EXTRA_MAX } })
+    }
     draft.handoff.roster.forEach(function (entry, index) {
       if (!(entry.maxRunsPerUserMessage >= 0)) {
         problems.push({ key: 'problemRosterBadRuns', vars: { index: index + 1 } })
@@ -226,6 +238,10 @@ export function normalizeHandoff(value) {
       keepGoal: newSession.keepGoal !== false,
       carrySelection: newSession.carrySelection !== false,
       carryChainBinding: newSession.carryChainBinding !== false,
+      promptTemplate: typeof newSession.promptTemplate === 'string' && newSession.promptTemplate !== ''
+        ? newSession.promptTemplate
+        : DEFAULT_HANDOFF_PROMPT_TEMPLATE,
+      promptExtra: typeof newSession.promptExtra === 'string' ? newSession.promptExtra : '',
     },
   }
 }

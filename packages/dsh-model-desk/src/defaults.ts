@@ -348,3 +348,37 @@ export const DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE = 6
 
 /** 派发后端：DSH 的 subagent provider 名，不是模型渠道。 */
 export const DEFAULT_HANDOFF_SUBAGENT_BACKEND = 'spawn'
+
+/**
+ * 新会话收到的第一条消息：模板可改，默认就是这一段。
+ *
+ * 占位符的替换规则由 `renderHandoffPrompt`（./handoff.ts）实现，**一行里只要有
+ * 占位符被替换成空，整行就删掉**——所以 `{report}` 没写时那一行不会留下一个空标题。
+ * `{note}` 是模型写的交接说明，也就是"上一个会话替你写下一条任务"的那段；模板里
+ * 少了它，新会话就拿不到任务，结构规则会拒。
+ */
+export const DEFAULT_HANDOFF_PROMPT_TEMPLATE = [
+  '由插件按接力配置生成；这是一条任务，不是背景。',
+  '【接力】上一会话收工：{reason}',
+  '【下一步】{nextAction}',
+  '【附加要求】{extra}',
+  '【交接说明】{note}',
+  '【收工说明】{report}',
+  '{artifacts}',
+].join('\n')
+
+/** 模板里唯一允许出现的占位符；别的写错就是静默丢内容，所以保存期点名拒绝。 */
+export const HANDOFF_PROMPT_PLACEHOLDERS = ['reason', 'nextAction', 'extra', 'note', 'report', 'artifacts'] as const
+
+/** 模板长度上限（字符）：它是每条新会话都带的 durable 消息。 */
+export const HANDOFF_PROMPT_TEMPLATE_MAX = 4000
+
+/** 附加要求的长度上限：它同样每次进模型上下文。 */
+export const HANDOFF_PROMPT_EXTRA_MAX = 2000
+
+/** `nextAction` 在提示里怎么念（三种取值的地道说法）。 */
+export const HANDOFF_NEXT_ACTION_TEXT: Readonly<Record<string, string>> = {
+  continue: '接着干',
+  review: '先复核，再决定要不要继续',
+  'review-then-continue': '复核完再接着干',
+}

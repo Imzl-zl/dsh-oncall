@@ -31,6 +31,8 @@ import {
   HANDOFF_INSTRUCTIONS_MAX,
   HANDOFF_NEXT_ACTIONS,
   HANDOFF_OUTCOMES,
+  HANDOFF_PROMPT_EXTRA_MAX,
+  HANDOFF_PROMPT_TEMPLATE_MAX,
   HANDOFF_ROLES,
 } from '../defaults.ts'
 import { fill } from './format.ts'
@@ -177,6 +179,15 @@ export function RosterView(props: RosterViewProps) {
       problems: problemsFor(index),
       onEntry: props.onEntry,
       onRemove: props.onRemove,
+    })
+  }
+
+  /** The prompt problem that makes the template field invalid, if any. */
+  var promptProblem = function () {
+    return props.problems.find(function (problem) {
+      return problem.key === 'problemHandoffPromptNoNote'
+        || problem.key === 'problemHandoffUnknownPlaceholder'
+        || problem.key === 'problemHandoffPromptTooLong'
     })
   }
 
@@ -481,7 +492,43 @@ export function RosterView(props: RosterViewProps) {
           disabled: props.disabled,
           label: t('handoffRelayCarryChain'),
           onChange: function (next) { props.onField(['newSession', 'carryChainBinding'], next) },
-        }))),
+        })),
+
+      // ---- the prompt the next session receives ----
+      //
+      // Both halves are configuration: the template is the wording of the one
+      // message the relayed session gets (default = shipped text), and the extra
+      // requirement is the operator's standing instruction that must survive
+      // every handover without the model remembering it. `{note}` is the model's
+      // own handoff note — that is the part only it can write.
+      h('h3', { className: 'dsh-router-subtitle' }, t('handoffPromptTitle')),
+      h(AreaField, {
+        id: 'handoff-prompt-template',
+        label: t('handoffPromptTemplateLabel'),
+        value: handoff.newSession.promptTemplate,
+        rows: 8,
+        disabled: props.disabled,
+        invalid: promptProblem() !== undefined,
+        counter: fill(t('handoffPromptCounter'), {
+          length: handoff.newSession.promptTemplate.length,
+          max: HANDOFF_PROMPT_TEMPLATE_MAX,
+        }),
+        hint: t('handoffPromptTemplateHint'),
+        onChange: function (next) { props.onField(['newSession', 'promptTemplate'], next) },
+      }),
+      h(AreaField, {
+        id: 'handoff-prompt-extra',
+        label: t('handoffPromptExtraLabel'),
+        value: handoff.newSession.promptExtra,
+        rows: 3,
+        disabled: props.disabled,
+        counter: fill(t('handoffPromptCounter'), {
+          length: handoff.newSession.promptExtra.length,
+          max: HANDOFF_PROMPT_EXTRA_MAX,
+        }),
+        hint: t('handoffPromptExtraHint'),
+        onChange: function (next) { props.onField(['newSession', 'promptExtra'], next) },
+      })),
 
     // ---- the unreceipted stop: nudge and fallback ----
     h('section', { className: 'dsh-router-section' },

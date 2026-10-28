@@ -30,6 +30,7 @@ import {
   effectiveBudget,
   gateRefusal,
   handoffMessage,
+  renderHandoffPrompt,
   REVIEW_VERDICT_SCHEMA,
   selectionOf,
   type CarriedBudget,
@@ -45,6 +46,7 @@ import {
   reviewRosterIds,
   type HandoffCounters,
 } from './handoff-wire.ts'
+import { HANDOFF_NEXT_ACTION_TEXT } from './defaults.ts'
 import type { SessionBindings } from './bindings.ts'
 import type { HandoffLedger } from './handoff.ts'
 import { handoffReceiptNotice, handoffRelayNotice } from './notice.ts'
@@ -528,7 +530,15 @@ export class HandoffRuntime {
     return newId
   }
 
-  /** The briefing: config's next action + the model's note + the artefacts the config lists. */
+  /**
+   * The briefing: the configured template, the model's note, and the artefacts
+   * the configuration lists.
+   *
+   * The template is user configuration with the shipped wording as its default
+   * (`newSession.promptTemplate`); `renderHandoffPrompt` owns the substitution
+   * and the "empty placeholder drops its line" rule, so a customised template
+   * cannot degrade into bare headings.
+   */
   private briefing(
     agent: Agent,
     config: HandoffConfig,
@@ -537,17 +547,6 @@ export class HandoffRuntime {
     report: string,
     fallbackGoal?: GoalLike,
   ): string {
-    const parts: string[] = [
-      '由插件按接力配置生成；这是一条任务，不是背景。',
-      `【接力】上一会话收工：${reason}`,
-      `【下一步】${config.newSession.nextAction}：`
-        + (config.newSession.nextAction === 'continue' ? '接着干'
-          : config.newSession.nextAction === 'review' ? '先复核，再决定要不要继续'
-            : '复核完再接着干'),
-      `【交接说明】${handoffNote.trim() === '' ? '(未填写)' : handoffNote.trim()}`,
-    ]
-    // 模型的收工说明原样带过去：新会话要接的是它还没做完的那件事。
-    if (report.trim() !== '') parts.push(`【收工说明】${report.trim()}`)
     const artifacts = this.briefingArtifacts(agent, config)
     // A goal that could not be rebuilt must survive in the briefing the model
     // reads as its task; otherwise `keepGoal` failing silently drops the
@@ -558,11 +557,17 @@ export class HandoffRuntime {
         body: `${fallbackGoal.objective}（${fallbackGoal.phase}，已用 ${fallbackGoal.roundsStarted} 轮）`,
       })
     }
-    if (artifacts.length > 0) {
-      parts.push('【工件】')
-      for (const artifact of artifacts) parts.push(`${artifact.title}：\n${artifact.body}`)
-    }
-    return parts.join('\n')
+    const artifactsBlock = artifacts.length === 0
+      ? ''
+      : ['【工件】', ...artifacts.map(artifact => `${artifact.title}：\n${artifact.body}`)].join('\n')
+    return renderHandoffPrompt(config.newSession.promptTemplate, {
+      reason,
+      nextAction: `${config.newSession.nextAction}：${HANDOFF_NEXT_ACTION_TEXT[config.newSession.nextAction] ?? config.newSession.nextAction}`,
+      extra: config.newSession.promptExtra.trim(),
+      note: handoffNote.trim() === '' ? '(未填写)' : handoffNote.trim(),
+      report: report.trim(),
+      artifacts: artifactsBlock,
+    })
   }
 
   private briefingArtifacts(agent: Agent, config: HandoffConfig): { title: string; body: string }[] {

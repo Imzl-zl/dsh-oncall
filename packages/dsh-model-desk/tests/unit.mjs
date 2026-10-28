@@ -55,6 +55,8 @@ import { checkConnectivity } from '../src/connectivity.ts'
 import { routeParts } from '../src/routes.ts'
 import { healthChannels } from '../src/client/health-channels.ts'
 import { precheckTierOf } from '../src/precheck.ts'
+import { DEFAULT_HANDOFF_PROMPT_TEMPLATE, HANDOFF_PROMPT_PLACEHOLDERS } from '../src/defaults.ts'
+import { renderHandoffPrompt } from '../src/handoff.ts'
 import { planSkipNotices } from '../src/skip-plan.ts'
 import {
   DESK_SLOTS,
@@ -3769,6 +3771,10 @@ const handoffConfig = (over = {}) => ({
     keepGoal: true,
     carrySelection: true,
     carryChainBinding: true,
+    // 默认模板就是发布时的措辞：现有断言（【接力】/【交接说明】）因此同时是
+    // "默认渲染没变"的回归网。
+    promptTemplate: DEFAULT_HANDOFF_PROMPT_TEMPLATE,
+    promptExtra: '',
   },
   ...over,
 })
@@ -4023,6 +4029,36 @@ function handoffTool(config, faces, ledger, bindings) {
 }
 
 const flushReview = () => new Promise(resolve => setImmediate(resolve))
+
+test('a custom prompt template replaces the shipped wording and still carries the note', async () => {
+  const oldAgent = handoffAgent('old', { selection: { provider: 'acme', model: 'main-1' } })
+  const newAgent = handoffAgent('new')
+  const controller = { async create() { return { sessionId: 'new' } }, async selectModel() {} }
+  const registry = { get: id => (id === 'new' ? newAgent : undefined) }
+  const base = handoffConfig()
+  const config = handoffConfig({
+    roster: [rosterEntry({ id: 'coder', role: 'work', purpose: '写代码', instructions: '只改指定文件' })],
+    newSession: {
+      ...base.newSession,
+      promptTemplate: '任务：{note}\n要求：{extra}\n来源：{reason}',
+      promptExtra: '只出结论，不改代码',
+    },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    goals: { get: () => undefined, create() {}, clear() {} },
+    sessionController: () => controller,
+    agents: () => registry,
+    projections: handoffProjections(handoffState({ lastUserText: '收尾' }), []),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  await tool.call({ action: 'newSession', reason: 'finish:done', handoffNote: '接着做第 3 项' }, oldAgent)
+  const text = newAgent.followed[0].content.map(block => block.text).join('\n')
+  // 模板逐字生效：用户改的措辞就是新会话看到的那段，`{note}` 换成模型写的任务，
+  // `{extra}` 是配置的常驻要求（不依赖模型记）。
+  assert.equal(text, '任务：接着做第 3 项\n要求：只出结论，不改代码\n来源：finish:done')
+})
 
 test('newSession runs the six relay steps in order and carries selection, binding and budget', async () => {
   const log = []
@@ -4384,6 +4420,46 @@ test('the delegation route falls back from the role to the section default, then
   await withNothing.call({ action: 'delegate', rosterId: 'blank', task: 't3' }, agent)
   assert.equal(Object.hasOwn(starts[2].request, 'agentOptions'), false,
     'no route anywhere means the child inherits the parent agent')
+})
+
+// ---- 新会话提示词：模板可改、附加要求常驻（2026-10-28 用户要求）----
+test('the next-session prompt is a template whose empty placeholders drop their line', () => {
+  const values = {
+    reason: 'finish:done',
+    nextAction: 'continue：接着干',
+    extra: '只读，不改代码',
+    note: '继续做第 3 项',
+    report: '',
+    artifacts: '',
+  }
+  // 默认模板 = 发布时的措辞：report / artifacts 为空时不留空标题。
+  const byDefault = renderHandoffPrompt(DEFAULT_HANDOFF_PROMPT_TEMPLATE, values)
+  assert.match(byDefault, /【接力】上一会话收工：finish:done/)
+  assert.match(byDefault, /【附加要求】只读，不改代码/)
+  assert.match(byDefault, /【交接说明】继续做第 3 项/)
+  assert.ok(byDefault.includes('【下一步】continue：接着干'), byDefault)
+  assert.equal(byDefault.includes('【收工说明】'), false, 'an empty report leaves no bare heading')
+  assert.equal(byDefault.includes('【工件】'), false, 'no artefacts, no section')
+  // 附加要求留空：那一行整行消失（默认配置与旧措辞逐字一致）。
+  const noExtra = renderHandoffPrompt(DEFAULT_HANDOFF_PROMPT_TEMPLATE, { ...values, extra: '' })
+  assert.equal(noExtra.includes('【附加要求】'), false)
+  // 用户自定义：改字、换顺序都行；不认识的占位符原样保留（保存期由结构规则拒）。
+  const custom = renderHandoffPrompt('任务：{note}\n\n要求：{extra}\n{unknown}', { ...values, extra: '' })
+  assert.equal(custom, '任务：继续做第 3 项\n\n{unknown}')
+})
+
+test('the prompt template must keep the handoff note and only name known placeholders', () => {
+  const keys = promptTemplate => structuralViolations({
+    chains: [named(chainValue())],
+    defaultChainId: 'default',
+    handoff: handoffConfig({ newSession: { ...handoffConfig().newSession, promptTemplate } }),
+  }).map(violation => violation.key)
+  assert.deepEqual(keys(DEFAULT_HANDOFF_PROMPT_TEMPLATE), [])
+  assert.deepEqual(keys(HANDOFF_PROMPT_PLACEHOLDERS.map(name => `{${name}}`).join(' ')), [],
+    'every allowed placeholder passes')
+  assert.deepEqual(keys('任务：{reason}'), ['problemHandoffPromptNoNote'],
+    'a template without {note} would hand the next session no task')
+  assert.deepEqual(keys('{note} {nope}'), ['problemHandoffUnknownPlaceholder'])
 })
 
 test('a half-filled default delegation route is refused, and the browser shows the same key', () => {

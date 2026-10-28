@@ -660,6 +660,50 @@ export function checkDelegateGate(gate: GateInput, entry: RosterEntry): void {
   }
 }
 
+/** What a prompt template may name, and what each name resolves to. */
+export interface HandoffPromptValues {
+  /** Why the previous session handed over (`finish:done`, the model's reason, …). */
+  reason: string
+  /** The configured next action, already turned into a sentence. */
+  nextAction: string
+  /** The operator's standing requirement (`promptExtra`), or '' when unset. */
+  extra: string
+  /** The model-written handoff note — the next session's task. Never empty. */
+  note: string
+  /** The model-written finish report, or '' when it wrote none. */
+  report: string
+  /** The whole `【工件】` block, or '' when the configuration carries none. */
+  artifacts: string
+}
+
+/**
+ * Render the first message a relayed session receives.
+ *
+ * The template is user configuration (`newSession.promptTemplate`), the default
+ * is the shipped wording, and the only rule is: **a line whose placeholder
+ * resolved to nothing is dropped whole**. That is what keeps the rendering
+ * identical to the pre-template output — `{report}` empty leaves no bare
+ * heading, `{artifacts}` empty leaves no empty section.
+ *
+ * Unknown placeholders are left as written: refusing them is the structural
+ * rule's job (../rules.ts), because a typo here silently drops content.
+ */
+export function renderHandoffPrompt(template: string, values: HandoffPromptValues): string {
+  const rendered: string[] = []
+  for (const line of template.split('\n')) {
+    let resolved = line
+    let empty = false
+    for (const [name, value] of Object.entries(values)) {
+      const token = `{${name}}`
+      if (!resolved.includes(token)) continue
+      if (value.trim() === '') empty = true
+      resolved = resolved.split(token).join(value)
+    }
+    if (!empty) rendered.push(resolved)
+  }
+  return rendered.join('\n').trim()
+}
+
 /** The `newSession` gate: the budget that must not reset by changing sessions. */
 export function checkNewSessionGate(gate: GateInput, handoffNote: string): void {
   const budget = effectiveBudget(gate)
