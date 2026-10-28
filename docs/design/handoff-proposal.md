@@ -80,10 +80,10 @@ last_updated: "2026-10-23"
 | 能力门槛 | 请求 `agentOptions` / `agentPreset` / `outputSchema` 时，provider 必须声明对应 capability，否则 start 直接拒 | [`index.ts:630-646`](file:///D:/sudy/github/deepseek-harness/packages/subagent/subagent/src/index.ts) |
 | 目标 | `ctx.goals.get(agent)` / `clear` / `create` / `complete`；resume/fork 后 active goal 是 **disarmed** | [`goal/src/index.ts:276-277`、`:390-391`、`:432-433`、`:646`](file:///D:/sudy/github/deepseek-harness/packages/goal/goal/src/index.ts)、[`tool-goal/src/index.ts:117-119`](file:///D:/sudy/github/deepseek-harness/packages/goal/tool-goal/src/index.ts) |
 | todo 投影 | `todos` 投影键，值为 `TodoItem[] \| null`（`pending/in_progress/completed`） | [`tool-todo/src/types.ts:35-45`](file:///D:/sudy/github/deepseek-harness/packages/todo/tool-todo/src/types.ts)、[`index.ts:123-132`](file:///D:/sudy/github/deepseek-harness/packages/todo/tool-todo/src/index.ts) |
-| 建新会话 | `ctx.agents.createSession({sessionId?, cwd, agentPreset?})`，**不接受模型选择** | [`agent.ts:278-282`](file:///D:/sudy/github/deepseek-harness/packages/api/session-controller/src/agent.ts) |
-| 会话级选模型 | `selectionFor(agent).current` 读、`selectForNextRequest(agent, sel)` 写（追加 durable `model/selection`） | [同上 `:289-332`、`:339-342`](file:///D:/sudy/github/deepseek-harness/packages/api/session-controller/src/agent.ts) |
+| 建新会话 | `ctx.sessionController.create({cwd, reusable})` → `{sessionId}`（**不接受模型选择**）；拿 Agent 走 `ctx.agents.get(sessionId)` | 服务公开面 `lib/types/index.d.ts:101`；`AgentRegistry.get` 见 `dsh-agent/lib/types/index.d.ts:343`（rc.3 基线） |
+| 会话级选模型 | `ctx.sessionController.selectModel({sessionId, provider, model, reasoningEffort?})`；旧会话的选择读它自己的 `session.requestHeader()?.config` | 同上 `:107`；`requestHeader` 见 `dsh-session/lib/types/index.d.ts:301`（rc.3 基线） |
 | 可数事实 | `tool/call{name,arguments}`、`turn/end`、`compaction/start`·`compaction/summary`·`compaction/end`、`request/header` | [`session/types.ts:289,298,362`](file:///D:/sudy/github/deepseek-harness/packages/core/session/src/types.ts)、[`compaction-basic/src/region.ts:210-245`](file:///D:/sudy/github/deepseek-harness/packages/compaction/compaction-basic/src/region.ts) |
-| 子智能体 provider 名 | `ctx.subagents.listProviders()`（常见 `spawn` / `fork`） | [`subagent/src/index.ts:578-582`](file:///D:/sudy/github/deepseek-harness/packages/subagent/subagent/src/index.ts) |
+| 子智能体 provider 名 | `ctx.subagents.list()`（`string[]`；常见 `spawn` / `fork`），单查用 `getProvider(name)` | `dsh-subagent/lib/types/index.d.ts:299`、`:294`（rc.3 基线） |
 
 > 派发与唤醒的准确口径：公开方法是 `startActivation(spec)` 且必须给 `provider`；`delivery:'caller'` 只把结果还给
 > 调用方，父会话不会被叫醒（`manager.ts:1188`）——要原生唤醒就用 `'parent'`。
@@ -238,7 +238,7 @@ handler 里**：非顶层会话调用直接返回错误。不做"同一工具名
 
 ### 4.6 开新会话：接力，不是重启插件
 
-**模型开不了会话**——它能做的只有说话和调工具；`ctx.agents.createSession` 是宿主服务，只有插件代码能调。
+**模型开不了会话**——它能做的只有说话和调工具；`ctx.sessionController.create` 是宿主服务，只有插件代码能调。
 所以形态是**模型给指令、插件代劳**，入口两条，执行的是同一个函数：
 
 | 入口 | 什么时候 | 谁决定 |
@@ -262,9 +262,9 @@ notice 形式会让模型只当背景。代价是 UI 上它看起来像用户打
 
 执行步骤：
 
-1. 读旧会话的选择（`selectionFor(agent).current`，回退最后一条 `request/header`）。
-2. `createSession({cwd})` 建**顶层**会话（不是子智能体），拿到 agent。
-3. `carrySelection` 为真时 `selectForNextRequest(newAgent, selection)` → 首跳就是主模型，durable 落 `model/selection`。
+1. 读旧会话的选择（`session.requestHeader()?.config`；没跑过请求就没有，于是新会话跟随用户当前选择）。
+2. `sessionController.create({cwd, reusable: () => false})` 建**顶层**会话（不是子智能体），再用 `ctx.agents.get(created.sessionId)` 拿到活着的 agent。
+3. `carrySelection` 为真且有选择时 `sessionController.selectModel({sessionId, provider, model, reasoningEffort?})` → 首跳就是主模型。
 4. `carryChainBinding` 为真时，把旧会话的链绑定**与预算计数**写到新会话 id 下（会话侧车）；熔断状态本来就是全局的，自动照旧。
 5. 按上面的模板拼首条消息，`followup` 进新会话。
 6. `keepGoal` 为真时，用原 objective 在新会话 `create` 一个 goal（失败则把目标写进简报，由模型用 goal 工具重建）。
@@ -318,7 +318,6 @@ handoff:
     maxDelegationsPerUserMessage: 8   # 自最近一条用户消息以来；复核也计入
     maxReviewsPerUserMessage: 1   # 复核上限：第一次就通过就收工
     maxNewSessionsPerUserMessage: 2  # 开新会话上限
-    maxDelegationsPerDay: 24      # 进程内计数，重启归零
     nudgeWhenUnreceipted: false   # 没交回执就停时追问一次（默认关：会触发真实调用）
     maxNudgesPerTurn: 1           # 每回合最多追问几次
 
@@ -390,7 +389,7 @@ agent/turn-stopping(turn N)
 ```
 turn 内
   ├─ 主模型调用 handoff{action:'newSession', reason:'…', handoffNote:'…'}
-  ├─ 插件：读旧选择 → createSession(cwd) → selectForNextRequest(新agent, 旧选择)
+  ├─ 插件：读旧 requestHeader → create(cwd) → agents.get(id) → selectModel(新会话, 旧选择)
   ├─ 复制链绑定 → 拼首条消息（配置的 nextAction + 模型写的 handoffNote + 工件）
   ├─ 新会话 followup(首条消息)
   ├─ 旧会话：goal clear（若 active）+ notice「已接力到 <id>」
@@ -427,9 +426,10 @@ turn 内
   `requireReviewFor: []`（不强制复核）。打开交接后，**只有模型自己调工具才会发生事**；没签字就停只写一条 notice，
   不叫醒模型、不派子会话。
 - **名册的 `failover` 默认 `inherit`**：子会话失败后跟父会话绑定的链走。想钉死就让填 `none`，想换一条就填链 id。
-- **闸门按三个时间尺度计**：每回合（`maxDelegationsPerTurn`）、自最近一条用户消息以来（三个 `max…PerUserMessage`）、
-  每天（`maxDelegationsPerDay`），外加每角色的 `maxRunsPerUserMessage`。**人一说话，三本 `…PerUserMessage` 清零**——这是循环收敛的唯一开关；
-  `maxDelegationsPerDay` 不随人清零，进程内累计、重启归零（与熔断、候选索引同口径，见 `open-questions.md` 一.2）。
+- **闸门按两个时间尺度计**：每回合（`maxDelegationsPerTurn`）、自最近一条用户消息以来（三个 `max…PerUserMessage`），
+  外加每角色的 `maxRunsPerUserMessage`。**人一说话，三本 `…PerUserMessage` 清零**——这是循环收敛的唯一开关。
+  没有"每天"这一档：它曾以 `maxDelegationsPerDay` 出现在 schema 与界面上，而 `handoff.ts` 一次都没读过它，已于 2026-10-26 删除
+  （见[审查页](feature-review-2026-10-26.md) 4.8）。
 - **上限不是配额**：三个 `max…PerUserMessage` 都是"最多"，不是"必须"。复核第一次就通过就收工，不必跑满；
   只有超过上限才拒。填 3 的意思是"最多看三次"，不是"非要看三次"。
 - **"用户消息"的准确口径**：`source.kind === 'user'` 且**不是插件自己注入的**（接力简报等；插件持有这些消息的 id）。
@@ -479,7 +479,7 @@ turn 内
 6. **用 `agentDefaultModel.saveSelection` 让新会话继承主模型**
    - 最强的理由：一行调用，DSH 原生，影响面"恰好只有新会话"（`agent.ts:299-304`）。
    - 为何被否：它写的是**全局**配置，用户每次手动换模型都会覆盖它；且 2026-10-19 已裁定不再写 DSH 全局配置。
-     `selectForNextRequest` 只作用于该会话且 durable。
+     `selectModel` 只作用于该会话。
 7. **插件自建"任务状态机"（open / done / handed-off）**
    - 最强的理由：能画进度条、能做准入门、能统计。
    - 为何被否：任务完成在 DSH 没有真值，第二个真相源必然与 goal / todo 打架；回执只记"谁在什么时候说了什么"，
@@ -501,7 +501,7 @@ turn 内
 | 1 | 插件注册的 `handoff` 工具对顶层会话的模型可见 | 真实 Loader 组合里让模型调用一次，看 `tool/call` 事件 | roster 保存期要求 preset 的 `toolFilter` 显式放行；仍不行就拒绝该组合 |
 | 2 | `turn-stopping` 里能读 `todos` 投影 | 本项目已对 `contextPressure` 用同一读法；补一个 boot 场景断言 | 退成"只在有 active goal 时提醒"；再不行放弃自动追问，只留 `finish` 与 `facts` |
 | 3 | `ctx.goals.create/clear` 允许插件调用 | `tool-goal` 的 authority 只在工具层，服务层需实跑确认 | 不自动建 / 清 goal：简报要求模型用 goal 工具重建，旧 goal 由模型标 blocked |
-| 4 | 新会话首条消息前 `selectForNextRequest` 生效 | 断言新会话首条 `request/header` 的 provider/model | 插件在该会话的 `agent/request` 里钉第一跳（只作用该会话，不写全局配置） |
+| 4 | 新会话首条消息前 `selectModel` 生效 | 断言新会话首条 `request/header` 的 provider/model | 插件在该会话的 `agent/request` 里钉第一跳（只作用该会话，不写全局配置） |
 | 5 | `delivery:'parent'` 在父会话 idle 时确实 `followup` | 组合场景：父回合结束后子会话收尾，观察父会话被唤醒 | 退回 `'caller'` + 插件 `followup`：失去原生结算文案，方向不变 |
 | 6 | `tool/call.arguments` 是 JSON 字符串、可回折叠回执 | 单测直接解析日志，不看内存状态 | 回执改用插件自有 session projection 折叠（项目已有同类先例） |
 | 7 | roster 指定 preset/route 时 provider capability 满足 | 加载期校验 + 组合场景断言 start 被拒的文案 | 保存期拒绝该组合，要求换 preset 或 provider |
@@ -573,5 +573,5 @@ turn 内
 - [ ] **预算**：三本 `max…PerUserMessage` 只由"人真的说话"清零；接力复制，不因开新会话重置；上限不是配额。
 - [ ] **路由合流**：子会话第一跳 = 声明 route；失败后按 自身 → `parentSession` → 默认链；重试与熔断照旧。
 - [ ] **不新增 durable 事件类型**：复核账本落 storageDomain；无 storage 时内存 + 可见 notice。
-- [ ] **`newSession` 的六步**：`createSession` → `selectForNextRequest` → 复制绑定与计数 → 拼简报 `followup`
+- [ ] **`newSession` 的六步**：`create` → `agents.get` → `selectModel` → 复制绑定与计数 → 拼简报 `followup`
       → 旧 goal `clear` → notice。

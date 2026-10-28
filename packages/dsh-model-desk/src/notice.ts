@@ -44,13 +44,19 @@ const CODE_LABELS: Readonly<Record<SwitchOnCode, string>> = {
 }
 
 /**
- * 不是 `LlmFailure.code`、但通知里要说得像人话的原因。
+ * 不在 `switchOn` 那 8 个具名码里的失败码、以及不是失败码的原因，在通知里怎么说。
  *
  * `MAX_TOKENS` 是 `FinishReason`，不是失败码：输出被截断不会经过
  * `agent/request-error`。它出现在截断续跑/换候选的通知里。
+ *
+ * `ACCOUNT_QUOTA` 是真码（`llm/src/error.ts` 的 `ACCOUNT_QUOTA_EXCEEDED_CODE`），
+ * 由 deepseek-account 渠道把 `QUOTA` 改写而来。它归 `quota` 键（见
+ * `defaults.ts` 的别名表），但键表只有 8 行、一码一键，所以中文标签放这里——
+ * 否则用户在通知里读到的是英文码。
  */
 const SYNTHETIC_LABELS: Readonly<Record<string, string>> = {
   MAX_TOKENS: '输出被截断',
+  ACCOUNT_QUOTA: '账户额度用尽',
 }
 
 export function codeLabel(code: string): string {
@@ -198,22 +204,34 @@ export function bindingMissingNotice(missingChainId: string, fallbackLabel: stri
 }
 
 /**
- * A candidate is sitting out a cooldown. The remaining time is stated because
+ * A candidate is sitting out a cooldown. The deadline is stated because
  * "skipped" alone reads like the channel is broken, and the whole point of a
  * cooldown is that it comes back on its own. A channel-scope block says so,
  * because the user configured it to take the whole provider out and would
  * otherwise wonder why the sibling models vanished too.
+ *
+ * Two wording rules, both learned from what this line used to say:
+ *
+ * - The cooldown does NOT retry anything. `CircuitBreaker` only answers "when
+ *   does it lift" (`breaker.ts`); the next attempt happens when the next
+ *   request arrives. "约 N 秒后自动重试" was simply false.
+ * - The message is durable, so a relative delay freezes into the history and
+ *   reads wrong tomorrow. A clock time stays true.
  */
 export function breakerNotice(
   candidate: { provider: string; model: string },
   block: { until: number; scope: BreakerScope },
-  now: number = Date.now(),
 ): UserMessage {
-  const seconds = Math.max(1, Math.ceil((block.until - now) / 1000))
   const subject = block.scope === 'channel'
     ? `渠道 ${candidate.provider} 已整体自动禁用（该渠道下所有模型）`
     : `候选 ${routeKeyOf(candidate.provider, candidate.model)} 已被自动禁用`
-  return notice(`${subject}，约 ${seconds} 秒后自动重试，本次跳过`)
+  return notice(`${subject}，冷却至 ${clockOf(block.until)}，本次跳过；冷却到期不会自己重试，下一条请求才会再试它`)
+}
+
+/** `HH:MM` in the host's local time, for a message that outlives this second. */
+function clockOf(time: number): string {
+  const at = new Date(time)
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
 
 // ---- handoff (delegation) ----
@@ -233,6 +251,18 @@ export function handoffLedgerMemoryNotice(): UserMessage {
     '[委派] 复核账本只存在进程内存里（这个组合没有 storageDomain）：重启后已通过的复核会丢失，'
     + '届时 finish{done} 会被要求重新复核。',
   )
+}
+
+/**
+ * The model's own finish report, said once so the user does not have to open the
+ * collapsed tool-result row to find out what was done.
+ *
+ * Only written when the model actually passed `report`; the outcome word is
+ * translated here so the notice does not print the raw action value.
+ */
+export function handoffReceiptNotice(outcome: string, report: string): UserMessage {
+  const label = outcome === 'done' ? '已完成' : outcome === 'needs_user' ? '需要你决定' : outcome === 'abandoned' ? '已放弃' : outcome
+  return notice(`[委派] 收工回执（${label}）：${report}`)
 }
 
 /** A new session was opened and the task was carried over. */

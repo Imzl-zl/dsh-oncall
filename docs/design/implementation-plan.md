@@ -95,6 +95,6 @@ last_updated: "2026-10-12"
 
 ## Phase 4：策略增强（需求触发）
 
-已实现：起点策略（`order`/`weight`/`round-robin`）、按错误码/信息的自动禁用（熔断）、四档健康配置。见 [决策笔记](../../.agents/notes/implemented/2026-10-14-channel-health-rework.md)。
+已实现：起点策略（`order`/`weight`/`round-robin`）、按错误码/信息的自动禁用（熔断）、三档健康配置（连通性检查 / 真探测 / 自动禁用；被动观测始终在，没有开关）。见 [决策笔记](../../.agents/notes/implemented/2026-10-14-channel-health-rework.md)。
 
 仍未做：跨进程共享的 provider cooldown 与恢复、latency/price 路由。每项都需给出故障窗口、状态 owner、请求延迟预算、隔离行为与覆盖测试。

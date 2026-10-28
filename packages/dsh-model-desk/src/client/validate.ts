@@ -2,9 +2,14 @@
 
 import { clone } from './format.ts'
 import {
+  BREAKER_COOLDOWN_MAX_SECONDS,
+  BREAKER_COOLDOWN_MIN_SECONDS,
   DEFAULT_BREAKER_COOLDOWN_SECONDS,
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
+  HEALTH_INTERVAL_MAX_SECONDS,
+  PROBE_TIMEOUT_MAX_SECONDS,
+  PROBE_TIMEOUT_MIN_SECONDS,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
   DEFAULT_HANDOFF_LIMITS,
   DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
@@ -206,7 +211,6 @@ export function normalizeHandoff(value) {
       maxDelegationsPerUserMessage: numberOr(limits.maxDelegationsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxDelegationsPerUserMessage),
       maxReviewsPerUserMessage: numberOr(limits.maxReviewsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxReviewsPerUserMessage),
       maxNewSessionsPerUserMessage: numberOr(limits.maxNewSessionsPerUserMessage, DEFAULT_HANDOFF_LIMITS.maxNewSessionsPerUserMessage),
-      maxDelegationsPerDay: numberOr(limits.maxDelegationsPerDay, DEFAULT_HANDOFF_LIMITS.maxDelegationsPerDay),
       nudgeWhenUnreceipted: limits.nudgeWhenUnreceipted === true,
       maxNudgesPerTurn: numberOr(limits.maxNudgesPerTurn, DEFAULT_HANDOFF_LIMITS.maxNudgesPerTurn),
     },
@@ -227,6 +231,17 @@ export function normalizeHandoff(value) {
 
 function numberOr(value, fallback) {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.round(value)) : fallback
+}
+
+/**
+ * Whole number inside a bound the host schema also enforces.
+ *
+ * The bounds are the constants in `../defaults.ts`, so the form and the schema
+ * cannot drift: a drift is exactly what made a save fail forever with "保存失败"
+ * and no field named.
+ */
+export function clampInt(value, min, max) {
+  return Math.min(max, Math.max(min, Math.round(value)))
 }
 
 /** One roster row: every field the schema declares, with the same defaults. */
@@ -257,18 +272,25 @@ export function normalizeHealth(value) {
   var breaker = health.breaker || {}
   // 旧字段是分钟，新字段是秒；只在没有新字段时采用，避免覆盖已迁移的值。
   var legacyMinutes = typeof health.intervalMinutes === 'number' ? health.intervalMinutes : undefined
-  var discoverSeconds = typeof discover.intervalSeconds === 'number'
-    ? discover.intervalSeconds
-    : legacyMinutes !== undefined ? legacyMinutes * 60 : DEFAULT_INTERVAL_SECONDS
-  var probeSeconds = typeof probe.intervalSeconds === 'number'
-    ? probe.intervalSeconds
-    : legacyMinutes !== undefined ? legacyMinutes * 60 : DEFAULT_INTERVAL_SECONDS
+  // 读入即夹到 schema 的边界内：越界值只可能来自旧配置或手写配置，留着它会让
+  // 这个表单把一个宿主要拒绝的值原样再存一次。
+  var discoverSeconds = clampInt(
+    typeof discover.intervalSeconds === 'number'
+      ? discover.intervalSeconds
+      : legacyMinutes !== undefined ? legacyMinutes * 60 : DEFAULT_INTERVAL_SECONDS,
+    0, HEALTH_INTERVAL_MAX_SECONDS,
+  )
+  var probeSeconds = clampInt(
+    typeof probe.intervalSeconds === 'number'
+      ? probe.intervalSeconds
+      : legacyMinutes !== undefined ? legacyMinutes * 60 : DEFAULT_INTERVAL_SECONDS,
+    0, HEALTH_INTERVAL_MAX_SECONDS,
+  )
   // 时间轴桶长：旧配置没有这个字段，取默认值（../defaults.ts 与 host schema 同源）。
   var bucketSeconds = typeof health.timelineBucketSeconds === 'number'
     ? health.timelineBucketSeconds
     : DEFAULT_TIMELINE_BUCKET_SECONDS
   return {
-    passive: health.passive !== false,
     discover: {
       enabled: discover.enabled === true,
       intervalSeconds: discoverSeconds,
@@ -278,7 +300,10 @@ export function normalizeHealth(value) {
       intervalSeconds: probeSeconds,
       prompt: typeof probe.prompt === 'string' && probe.prompt ? probe.prompt : DEFAULT_PROBE_PROMPT,
       prompts: Array.isArray(probe.prompts) ? probe.prompts.slice() : [],
-      timeoutSeconds: typeof probe.timeoutSeconds === 'number' ? probe.timeoutSeconds : DEFAULT_PROBE_TIMEOUT_SECONDS,
+      timeoutSeconds: clampInt(
+        typeof probe.timeoutSeconds === 'number' ? probe.timeoutSeconds : DEFAULT_PROBE_TIMEOUT_SECONDS,
+        PROBE_TIMEOUT_MIN_SECONDS, PROBE_TIMEOUT_MAX_SECONDS,
+      ),
     },
     breaker: {
       enabled: breaker.enabled === true,
@@ -286,7 +311,10 @@ export function normalizeHealth(value) {
         return {
           code: typeof rule.code === 'string' ? rule.code : '',
           message: typeof rule.message === 'string' ? rule.message : '',
-          cooldownSeconds: typeof rule.cooldownSeconds === 'number' ? rule.cooldownSeconds : DEFAULT_BREAKER_COOLDOWN_SECONDS,
+          cooldownSeconds: clampInt(
+            typeof rule.cooldownSeconds === 'number' ? rule.cooldownSeconds : DEFAULT_BREAKER_COOLDOWN_SECONDS,
+            BREAKER_COOLDOWN_MIN_SECONDS, BREAKER_COOLDOWN_MAX_SECONDS,
+          ),
           // 旧配置没有这一字段；host schema 的默认值是 route，这里必须填成同一个，
           // 否则 UI 显示与 host 执行会是两个意思。
           scope: rule.scope === 'channel' ? 'channel' : DEFAULT_BREAKER_SCOPE,

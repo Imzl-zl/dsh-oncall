@@ -20,13 +20,18 @@ import { fill, formatWindowHours } from './format.ts'
 import { routeNames } from './naming.ts'
 import { Icon, ICON_TRASH } from './icons.ts'
 import { routeKeyOf, routeParts } from '../routes.ts'
-import { BREAKER_CODE_PRESETS } from './validate.ts'
+import { BREAKER_CODE_PRESETS, clampInt } from './validate.ts'
 import {
+  BREAKER_COOLDOWN_MAX_SECONDS,
+  BREAKER_COOLDOWN_MIN_SECONDS,
   DEFAULT_BREAKER_COOLDOWN_SECONDS,
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_INTERVAL_SECONDS,
   DEFAULT_PROBE_PROMPT,
   DEFAULT_PROBE_TIMEOUT_SECONDS,
+  HEALTH_INTERVAL_MAX_SECONDS,
+  PROBE_TIMEOUT_MAX_SECONDS,
+  PROBE_TIMEOUT_MIN_SECONDS,
 } from '../defaults.ts'
 import { DEFAULT_TIMELINE_BUCKET_SECONDS, TIMELINE_BUCKET_SECONDS } from '../timeline.ts'
 
@@ -82,7 +87,6 @@ export function HealthSettingsModal(props) {
   var probe = health.probe || {}
   var breaker = health.breaker || {}
 
-  var [passiveOn, setPassiveOn] = useState(health.passive !== false)
   var [timelineBucketSeconds, setTimelineBucketSeconds] = useState(
     typeof health.timelineBucketSeconds === 'number' ? health.timelineBucketSeconds : DEFAULT_TIMELINE_BUCKET_SECONDS,
   )
@@ -146,32 +150,27 @@ export function HealthSettingsModal(props) {
     })
   }
 
-  var passiveSection = h(Section, {
-    key: 'passive',
-    title: t('healthPassiveLabel'),
-    hint: t('healthPassiveHint'),
-    switch: h(Switch, {
-      checked: passiveOn,
-      label: t('healthPassiveLabel'),
-      disabled: props.disabled,
-      onChange: function (next) { setPassiveOn(next) },
-    }),
+  // 时间轴桶长单独一段：被动观测没有开关（它只是把真实对话的结果折进投影，零成本、
+  // 也没有"要不要记录"这个选择），所以这一段只放桶长。
+  var timelineSection = h(Section, {
+    key: 'timeline',
+    title: t('timelineBucketLabel'),
+    hint: t('timelineBucketHint'),
   },
-    h(StackedField, { label: t('timelineBucketLabel'), hint: t('timelineBucketHint') },
-      h(SegmentedControl, {
-        id: 'router-timeline-bucket',
-        label: t('timelineBucketLabel'),
-        value: String(timelineBucketSeconds),
-        disabled: props.disabled,
-        options: TIMELINE_BUCKET_SECONDS.map(function (seconds) {
-          return {
-            value: String(seconds),
-            label: seconds >= 60 ? (seconds / 60) + t('timelineBucketMinutes') : seconds + 's',
-            title: fill(t('timelineBucketWindow'), { window: formatWindowHours(seconds) }),
-          }
-        }),
-        onChange: function (next) { setTimelineBucketSeconds(Number(next)) },
-      })))
+    h(SegmentedControl, {
+      id: 'router-timeline-bucket',
+      label: t('timelineBucketLabel'),
+      value: String(timelineBucketSeconds),
+      disabled: props.disabled,
+      options: TIMELINE_BUCKET_SECONDS.map(function (seconds) {
+        return {
+          value: String(seconds),
+          label: seconds >= 60 ? (seconds / 60) + t('timelineBucketMinutes') : seconds + 's',
+          title: fill(t('timelineBucketWindow'), { window: formatWindowHours(seconds) }),
+        }
+      }),
+      onChange: function (next) { setTimelineBucketSeconds(Number(next)) },
+    }))
 
   var discoverSection = h(Section, {
     key: 'discover',
@@ -190,7 +189,7 @@ export function HealthSettingsModal(props) {
             label: t('healthDiscoverIntervalLabel'),
             value: discoverInterval,
             disabled: props.disabled,
-            onChange: function (next) { setDiscoverInterval(String(Math.max(0, Math.round(next)))) },
+            onChange: function (next) { setDiscoverInterval(String(clampInt(next, 0, HEALTH_INTERVAL_MAX_SECONDS))) },
           }))
       : null)
 
@@ -254,14 +253,16 @@ export function HealthSettingsModal(props) {
               label: t('healthProbeIntervalLabel'),
               value: probeInterval,
               disabled: props.disabled,
-              onChange: function (next) { setProbeInterval(String(Math.max(0, Math.round(next)))) },
+              onChange: function (next) { setProbeInterval(String(clampInt(next, 0, HEALTH_INTERVAL_MAX_SECONDS))) },
             })),
           h(StackedField, { label: t('healthProbeTimeoutLabel'), hint: t('healthProbeTimeoutHint') },
             h(NumberInput, {
               label: t('healthProbeTimeoutLabel'),
               value: probeTimeout,
               disabled: props.disabled,
-              onChange: function (next) { setProbeTimeout(String(Math.max(1, Math.round(next)))) },
+              // 下限是 host schema 的 min（2 秒），不是 1：从前这里钳到 1，
+              // 于是"1"能被填进去、被保存、被宿主拒绝，页脚只说保存失败。
+              onChange: function (next) { setProbeTimeout(String(clampInt(next, PROBE_TIMEOUT_MIN_SECONDS, PROBE_TIMEOUT_MAX_SECONDS))) },
             })))
       : null,
     probeOn
@@ -336,7 +337,7 @@ export function HealthSettingsModal(props) {
         label: t('breakerCooldownLabel'),
         value: String(rule.cooldownSeconds),
         disabled: props.disabled,
-        onChange: function (next) { patchRule(index, { cooldownSeconds: Math.max(1, Math.round(next)) }) },
+        onChange: function (next) { patchRule(index, { cooldownSeconds: clampInt(next, BREAKER_COOLDOWN_MIN_SECONDS, BREAKER_COOLDOWN_MAX_SECONDS) }) },
       }),
       h('span', { className: 'dsh-router-muted' }, t('breakerSecondsUnit')),
       h(SegmentedControl, {
@@ -413,13 +414,12 @@ export function HealthSettingsModal(props) {
         disabled: hasEmptyRule,
         onClick: function () {
           props.onUpdateHealth({
-            passive: passiveOn,
             discover: { enabled: discoverOn, intervalSeconds: intervalOf(discoverInterval) },
             probe: {
               enabled: probeOn,
               intervalSeconds: intervalOf(probeInterval),
               prompt: probePrompt.trim().length > 0 ? probePrompt.trim() : DEFAULT_PROBE_PROMPT,
-              timeoutSeconds: Math.max(1, Math.round(Number(probeTimeout)) || DEFAULT_PROBE_TIMEOUT_SECONDS),
+              timeoutSeconds: clampInt(Number(probeTimeout) || DEFAULT_PROBE_TIMEOUT_SECONDS, PROBE_TIMEOUT_MIN_SECONDS, PROBE_TIMEOUT_MAX_SECONDS),
               // 逐路由覆盖：路由与内容都填满才算一条——空路由是用户还没选完，
               // 空内容是用户刚删了字，两种情况都不该落一条进配置。
               prompts: promptOverrides
@@ -434,7 +434,7 @@ export function HealthSettingsModal(props) {
       }, t('applyChanges'))),
   },
     h('div', { className: 'dsh-router-modal-body' },
-      passiveSection,
+      timelineSection,
       discoverSection,
       probeSection,
       breakerSection))
@@ -502,7 +502,14 @@ export function AddCandidateModal(props) {
         value: query,
         onChange: function (event) { setQuery(event.target.value) },
       }),
-      props.catalog === null ? h('p', { className: 'dsh-router-modal-section-hint' }, t('catalogLoading')) : null,
+      // 读失败与"还在读"是两件事：`catalogFailed` 从前没有任何读者，于是失败之后
+      // 这个对话框永远显示「正在加载」，也没有重试入口。`ensureCatalog` 本身幂等，
+      // 重试就是再调一次它（页面已有的 `onLoadCatalog`）。
+      props.catalogFailed === true && props.catalog === null
+        ? h('div', { className: 'dsh-router-empty' },
+            h('p', null, t('catalogUnavailable')),
+            h(Button, { variant: 'outline', onClick: props.onLoadCatalog }, t('catalogRetry')))
+        : props.catalog === null ? h('p', { className: 'dsh-router-modal-section-hint' }, t('catalogLoading')) : null,
       entries.length === 0 && props.catalog !== null
         ? h('p', { className: 'dsh-router-empty' }, query ? t('noMatchingProfiles') : t('addCandidateEmpty'))
         : entries.map(function (entry) {

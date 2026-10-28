@@ -114,6 +114,11 @@ export function resolveChain(
     model: resolved.model,
     maxAttempts: attemptBudget(retries, selected, chain.firstHopMaxRetries),
     weight: 0,
+    // 第一跳的条件：候选表里没有它（同路由的候选会被上面的去重丢掉），所以它的
+    // `needs` 只能来自链级的 `primaryNeeds`。条件检查本来就对 index 0 生效。
+    // Note: 为何补字段而不是承认做不到 —— 见
+    // .agents/notes/implemented/2026-10-26-recheck-driven-fixes.md
+    ...(chain.primaryNeeds === undefined ? {} : { needs: chain.primaryNeeds }),
   }
   const candidates: StepCandidate[] = [
     implicit,
@@ -479,11 +484,31 @@ export function decideBeforeInner(
   const attempt = `(attempt ${state.totalAttempts})`
   // 取消：调用方已经不要这个结果了，替它重试是一次没人等的调用。
   if (aborted) return { kind: 'delegate', record: false, log: '' }
+  /**
+   * 这一击我们本来要交给内层（compaction 两件套、或用户没勾的码）。
+   *
+   * 如果该 provider 的策略是 `always`，内层会无界重试同一条路由，而
+   * `ResolvedAlwaysRetryPolicy` 只有 `mode`/`backoff`——既没有 `retryableCodes`
+   * 也没有上限可读，所以"照可重试集判断"在这里行不通。交回去的后果是 step 永不
+   * 结束（界面上一直"重试中"，没有任何切换发生）。
+   *
+   * 加载期的 `assertNoAlwaysPolicy` 看不到这一条：它只走链候选，而第一跳是用户
+   * 当前选中的模型，可能根本不在任何链里。所以判据必须在请求期。
+   */
+  const delegatedToInner = delegatesFirst(code) || !isSwitchOnEligible(state.chain, code)
+  if (delegatedToInner && timing.policy?.mode === 'always') {
+    return {
+      kind: 'terminate',
+      record: true,
+      log: `model-desk: ${code} on ${route} ${attempt}; provider policy is "always", which would retry this route `
+        + 'without a bound and never end the step — ending it here',
+    }
+  }
   // 内层拥有的码（compaction 两件套）与表外的码一律**先问内层**：以后 DSH 再长
   // 出一个恢复插件，也不会被最外层的我们抢走。内层放弃后由 decideAfterInner 接手。
   if (delegatesFirst(code)) return { kind: 'delegate', record: false, log: '' }
   // 用户显式取消勾选的码：插件不接管，由 DSH 按自己的策略重试与收尾。
-  if (!isSwitchOnEligible(state.chain, code)) {
+  if (delegatedToInner) {
     return { kind: 'delegate', record: false, log: '' }
   }
   // 白名单：这一击再打一次是同一个答案（密钥被拒、额度用尽、请求被拒），

@@ -41,6 +41,7 @@ import {
   DEFAULT_STICKY_TURNS,
   DEFAULT_STRATEGY,
   DEFAULT_SWITCH_ON,
+  MAX_TOKEN_CONTINUES,
   POLICY_VERSION,
 } from './defaults.ts'
 
@@ -138,6 +139,8 @@ export interface LegacyAwareConfig {
 
 /** The chain-level fields a legacy record may carry, in either vocabulary. */
 interface LegacyChainFields {
+  /** 第一跳的条件：与候选 `needs` 同形，旧配置没有这个键。 */
+  primaryNeeds?: { images?: boolean; minContextTokens?: number }
   switchOn?: Partial<SwitchOn>
   /** 白名单：`switchOn` 的键名数组。旧配置没有这个键，读成默认名单。 */
   immediateSwitch?: unknown
@@ -160,7 +163,12 @@ function policyIsCurrent(raw: LegacyAwareConfig): boolean {
 }
 
 function switchOnOf(over: Partial<SwitchOn> | undefined, policyCurrent: boolean): SwitchOn {
-  return policyCurrent ? { ...DEFAULT_SWITCH_ON, ...over } : { ...DEFAULT_SWITCH_ON }
+  if (policyCurrent) return { ...DEFAULT_SWITCH_ON, ...over }
+  // 旧配置：只改写那两个"当年的默认值 false"的键，其余键照用户写的读。整表丢弃
+  // 会连用户显式取消勾选的选择一起吞掉——`rateLimit: false` 那种明明是选择，
+  // 而另外两处的旧默认改写（`firstHopRetriesOf` / `normalizeCandidate`）只动
+  // 那一个可疑的值，这里必须同一条口径。
+  return { ...DEFAULT_SWITCH_ON, ...over, emptyResponse: true, invalidRequest: true }
 }
 
 /**
@@ -181,7 +189,9 @@ function maxTokensOf(over: Partial<ChainConfig['maxTokens']> | undefined): Chain
       ? over.autoContinue
       : DEFAULT_MAX_TOKEN_AUTO_CONTINUE,
     continues: typeof over?.continues === 'number'
-      ? Math.max(0, Math.min(9, Math.round(over.continues)))
+      // 上界读常量：字面量 9 与 `MAX_TOKEN_CONTINUES` 是同一个约束，写两处就会分叉
+      // （改一处、另一处照旧静默截断）。
+      ? Math.max(0, Math.min(MAX_TOKEN_CONTINUES, Math.round(over.continues)))
       : DEFAULT_MAX_TOKEN_CONTINUES,
   }
 }
@@ -189,6 +199,7 @@ function maxTokensOf(over: Partial<ChainConfig['maxTokens']> | undefined): Chain
 function chainFrom(candidates: LegacyCandidate[], over: LegacyChainFields, policyCurrent: boolean): ChainConfig {
   return {
     candidates: candidates.map(candidate => normalizeCandidate(candidate, policyCurrent)),
+    ...(over.primaryNeeds === undefined ? {} : { primaryNeeds: over.primaryNeeds }),
     switchOn: switchOnOf(over.switchOn, policyCurrent),
     immediateSwitch: immediateSwitchOf(over.immediateSwitch),
     stickyTurns: typeof over.stickyTurns === 'number' ? over.stickyTurns : DEFAULT_STICKY_TURNS,
@@ -274,6 +285,9 @@ export function effectiveChain(raw: LegacyAwareConfig): EffectiveChain {
       chain: chainFrom(fallbacks, {
         ...adopted,
         ...(pinned?.maxAttempts === undefined ? {} : { firstHopMaxAttempts: pinned.maxAttempts }),
+        // 被钉死那一条的条件同样属于第一跳：旧形状把它写在 `candidates[0].needs`
+        // 里，迁移时若不搬，用户的图片条件会随那次丢候选一起静默消失。
+        ...(pinned?.needs === undefined ? {} : { primaryNeeds: pinned.needs }),
       }, policyCurrent),
       source: 'profile',
       ignoredProfiles: Math.max(0, profiles.length - 1),

@@ -154,7 +154,9 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
   ctx.effect(() => ctx.shortcuts.register({
     id: 'model-desk.save' as ShortcutCommandId,
     label: () => t('saveShortcutLabel'),
-    aliases: ['model-desk save', '模型路由保存'],
+    // 旧中文别名保留：它已经进过用户的输入习惯与快捷键设置页，改名不该让一个
+    // 敲得出来的命令突然失效；新名字只是多一个入口。
+    aliases: ['model-desk save', '模型路由保存', '模型工作台保存'],
     // 默认绑定按平台分开，依据是 DSH 的 isWebBindingAllowed（shortcuts/src/binding.ts:
     // 96-111）：Windows/macOS 的 Web 放行"两键含 primary+alt/shift"，**Linux 的 Web 只
     // 认 Slash/Comma+shift/Period+shift 三组**。所以 Web 统一用 Comma+primary+shift
@@ -194,6 +196,7 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
     onRemoveRoster: function (id) { controller.removeRoster(id) },
     onMaxRetries: function (index, value) { controller.setMaxRetries(index, value) },
     onNeeds: function (index, patch) { controller.setNeeds(index, patch) },
+    onPrimaryNeeds: function (patch) { controller.setPrimaryNeeds(patch) },
     onMove: function (index, direction) { controller.moveCandidate(index, direction) },
     onReorder: function (fromIndex, toIndex) { controller.reorderCandidates(fromIndex, toIndex) },
     onRemove: function (index) { controller.removeCandidate(index) },
@@ -219,7 +222,6 @@ function registerUi(ctx: Context, t: (key: string) => string, initialNotesOpen: 
     onProbeAll: function () { controller.probeAll() },
     onOpenHealthModal: function () { controller.openHealthModal() },
     onUpdateHealth: function (patch) { controller.updateHealth(patch) },
-    onOpenNotes: function () { controller.openNotes() },
     onCloseNotes: function () { controller.closeNotes() },
     retainSurface: function () { controller.retainSurface() },
     releaseSurface: function () { controller.releaseSurface() },

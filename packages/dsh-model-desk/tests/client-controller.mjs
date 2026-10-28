@@ -24,11 +24,17 @@
  */
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as zod from 'zod'
 import { RELEASE_NOTES, RELEASE_VERSION } from '../src/release.generated.ts'
 import { changelogSection } from '../../../scripts/changelog-section.mjs'
+import { en, zh } from '../src/client/locales.ts'
+import { assertFreshBuild } from './freshness.mjs'
+
+// `lib/client.js` 是这套件被测的对象：源码改过却没重建时，跑的是旧产物。
+assertFreshBuild()
 
 const CLIENT_PATH = process.env.CLIENT_PATH ?? fileURLToPath(new URL('../lib/client.js', import.meta.url))
 
@@ -320,7 +326,7 @@ function applyOps(value, ops) {
  * @param options.seenVersion - the release this browser has already acknowledged;
  *   the running version by default, so most tests do not open the notes dialog.
  */
-async function mount({ value, writable = true, mutate, remote, firstFrame, seenVersion = RELEASE_VERSION } = {}) {
+async function mount({ value, writable = true, mutate, remote, firstFrame, seenVersion = RELEASE_VERSION, dropSession = false } = {}) {
   seenVersionState = seenVersion
   const calls = []
   let snapshot = firstFrame ?? { status: 'ready', value, writable, revision: 1 }
@@ -454,7 +460,7 @@ async function mount({ value, writable = true, mutate, remote, firstFrame, seenV
       // The browser half's apply mounts the generated ./remote contribution
       // before registering the UI.
       $mount: () => Promise.resolve(() => Promise.resolve()),
-    }, remote, { session: sessionFace }),
+    }, remote, dropSession ? {} : { session: sessionFace }),
     // The browser half mounts its own Remote and then registers the UI in a
     // child fiber carrying it; the harness runs the callback against a child
     // that carries the same stubs.
@@ -527,6 +533,8 @@ test('a rejected save surfaces the failure and clears saving', async () => {
   assert.equal(h.state().saving, false, 'saving clears when mutate rejects')
   assert.equal(h.state().failed, true, 'the rejection is reported, not swallowed')
   assert.equal(h.state().dirty, true, 'a save that did not land keeps the draft')
+  // 只说「保存失败，请重试」等于不告诉用户改哪儿：宿主的原因必须原样上屏。
+  assert.equal(h.state().ui.saveError, 'wire down')
 })
 
 test('an accepted save settles clean once the Host republishes', async () => {
@@ -604,13 +612,25 @@ test('a republication with the same value keeps the unsaved draft', async () => 
   assert.equal(h.state().draft.chain.candidates[0].maxRetries, 3)
 })
 
-test('a genuinely changed Host value re-seeds the draft', async () => {
-  const h = await mount({ value: config() })
-  h.actions.onMaxRetries(0, '3')
-  assert.equal(h.state().dirty, true)
-  h.republish({ value: config({ chain: chainValue([], { firstHopMaxRetries: 4 }) }), revision: 2 })
-  assert.equal(h.state().dirty, false, 'the Host is the authority once its value moves')
-  assert.equal(h.state().draft.chain.firstHopMaxRetries, 4)
+test('a changed Host value re-seeds a clean draft, and keeps a dirty one with a notice', async () => {
+  // 干净草稿：宿主就是权威，直接采纳。
+  const clean = await mount({ value: config() })
+  clean.republish({ value: config({ chain: chainValue([], { firstHopMaxRetries: 4 }) }), revision: 2 })
+  assert.equal(clean.state().dirty, false, 'the Host is the authority once its value moves')
+  assert.equal(clean.state().draft.chain.firstHopMaxRetries, 4)
+  assert.equal(clean.state().ui.externalChange, false, 'a clean draft was simply re-seeded')
+
+  // 脏草稿：用户的编辑不能被一次外部写入整份换掉，但必须说出来。
+  const dirty = await mount({ value: config() })
+  dirty.actions.onMaxRetries(0, '3')
+  assert.equal(dirty.state().dirty, true)
+  const carried = dirty.state().draft.chain.firstHopMaxRetries
+  assert.notEqual(carried, 4, 'fixture: the external value really differs from the draft')
+  dirty.republish({ value: config({ chain: chainValue([], { firstHopMaxRetries: 4 }) }), revision: 2 })
+  assert.equal(dirty.state().draft.chain.candidates[0].maxRetries, 3, 'the unsaved edit survives the external write')
+  assert.equal(dirty.state().draft.chain.firstHopMaxRetries, carried, 'the external value is not merged into the draft')
+  assert.equal(dirty.state().dirty, true, 'the draft still differs from what the Host stores')
+  assert.equal(dirty.state().ui.externalChange, true, 'and the page can say so instead of looking untouched')
 })
 
 test('an edit after a value-changing republish keeps the draft dirty', async () => {
@@ -1679,7 +1699,6 @@ const handoffOf = (over = {}) => ({
     maxDelegationsPerUserMessage: 8,
     maxReviewsPerUserMessage: 1,
     maxNewSessionsPerUserMessage: 2,
-    maxDelegationsPerDay: 24,
     nudgeWhenUnreceipted: false,
     maxNudgesPerTurn: 1,
   },
@@ -2014,6 +2033,16 @@ test('the catalog multi-select writes through the state updater, not the closure
     'fixture: the updater form is present in the source')
 })
 
+test('every state field the page shows has a reader, and catalogFailed has one', async () => {
+  // 这个坑的形状是"字段有人写、没人读"：`catalogFailed` 置位之后，对话框照旧永远
+  // 显示「正在加载」，也没有重试入口。结构性守卫生效的判据就是这里——它必须出现在
+  // 渲染分支里，并且页面真的把它传下去。
+  const modals = sourceOf('modals.ts')
+  assert.ok(modals.includes('props.catalogFailed'), 'the dialog must branch on the failure, not only on catalog === null')
+  assert.ok(modals.includes('props.onLoadCatalog'), 'the failure state needs a retry entry, which is the page existing action')
+  assert.ok(sourceOf('page.ts').includes('catalogFailed: state.ui.catalogFailed'), 'fixture: the page passes it through')
+})
+
 test('the configured-route list has one expression, shared by both halves', async () => {
   // M15：controller 与 page 曾各写一份 two-line wrapper（configuredRoutes 的
   // 草稿适配）——两份适配改一处忘一处，巡检与列表就会看到不同的路由集。
@@ -2126,6 +2155,40 @@ test('the connectivity check is classified on the Host, never by parsing a messa
     assert.equal((locales.match(new RegExp(`\\b${key}:`, 'g')) ?? []).length, 2,
       `${key} must be worded in both dictionaries`)
   }
+})
+
+test('the history drawer without a session face says "cannot read", not "no records"', async () => {
+  // 5.3 的同一条守卫：`loadPassive` 一直有它，`openDrawer` 没有——那个组合里
+  // `readSessionBlocks(undefined)` 会抛进 `.catch`，界面上"读不到"与"确实没有转移"
+  // 是两句话，用户分不出。
+  const h = await mount({ value: config(), dropSession: true })
+  h.actions.onOpenDrawer()
+  await flush()
+  const state = h.state()
+  assert.equal(state.ui.drawerError, true, 'a missing face is a read failure')
+  assert.equal(state.ui.drawerLoading, false, 'and the spinner must stop')
+  assert.deepEqual(state.ui.drawerRows, [])
+})
+
+test('every literal t() key in the browser half exists in both dictionaries', () => {
+  // 字典键集互等只证明"两份一样"，不证明"调用点用得到"。`noMatchingProfiles` 就这样
+  // 在 zh/en 里都不存在、而 modals 一直在调——界面直接回退成键名（用户读到
+  // "noMatchingProfiles"）。这条从调用侧扫字面量键；拼接出来的键（如
+  // `t('handoffNext_' + action)`）匹配不到，按动态键放行。
+  const dir = fileURLToPath(new URL('../src/client/', import.meta.url))
+  const files = readdirSync(dir, { recursive: true }).filter(name => String(name).endsWith('.ts'))
+  const literal = /\bt\('([A-Za-z0-9_]+)'\)/g
+  const missing = []
+  for (const name of files) {
+    const text = readFileSync(join(dir, String(name)), 'utf8')
+    for (const match of text.matchAll(literal)) {
+      const key = match[1]
+      if (!Object.hasOwn(zh, key) || !Object.hasOwn(en, key)) missing.push(`${String(name)}: ${key}`)
+    }
+  }
+  assert.deepEqual(missing, [], 'a literal t() key with no entry renders the key itself to the user')
+  // 夹具：这条守卫必须真的扫到了东西，否则它只是空转。
+  assert.ok(files.length > 10)
 })
 
 // 忙态必须看得见。预检即失败的路由（NO_ADAPTER / MISSING_CREDENTIAL）在微任务里
@@ -2242,6 +2305,26 @@ test('a legacy default pool is adopted as the chain', async () => {
   assert.equal('maxTotalAttempts' in h.state().draft.chain, false)
   assert.equal(h.state().draft.chain.stickyTurns, 1)
   assert.equal(h.state().draft.chain.strategy, 'round-robin')
+})
+
+test('a validated snapshot of a legacy config is not read as one empty chain', async () => {
+  // settings 快照是**校验后**的值：schemastery 给 `chains` 盖了空数组，而宿主读的是
+  // 原始配置（键是否存在）。只有旧 `chain` 的配置因此会在界面上显示成"一条空链"，
+  // 一保存就把空链写回宿主、连同旧键一起 unset —— 用户的降级候选被清空。
+  // 这组形状只可能来自校验：`save()` 保存新形状时会 unset `chain`。
+  const h = await mount({
+    value: {
+      enabled: true,
+      chains: [],
+      chain: { candidates: [cand('a', 'x', { maxRetries: 2 })], primaryNeeds: { images: false }, switchOn: switchOn() },
+      defaultChainId: 'default',
+    },
+  })
+  assert.deepEqual(h.state().draft.chains.map(chain => chain.candidates.map(routeOf)), [['a/x']])
+  assert.deepEqual(h.state().draft.chain.primaryNeeds, { images: false })
+  // 真·空链（旧 `chain` 也没有候选）仍然显示成一条空链：这是用户的真实状态。
+  const empty = await mount({ value: { enabled: true, chains: [], chain: { candidates: [] }, defaultChainId: 'default' } })
+  assert.deepEqual(empty.state().draft.chain.candidates, [])
 })
 
 // ---- one surface, one height source, one tone source ----
@@ -2864,15 +2947,14 @@ test('a release change opens the embedded notes once, and dismissing remembers i
 })
 
 test('the page always offers the update check, even after the notes dialog was acknowledged', async () => {
+  // `openNotes`/`onOpenNotes` 是死入口（page 从不传），已删；"重开本版说明"这个动作
+  // 正式不存在，自动打开仍走 `initialNotesOpen`。这里钉的是页头那个常驻入口还在。
   const { RouterPage } = loadClient()
   const h = await mount({ value: chipConfig() })
   assert.equal(h.state().ui.notesOpen, false)
-  h.actions.onOpenNotes()
-  assert.equal(h.state().ui.notesOpen, true, 'the post-update notes still open on demand')
   const tree = render(createEl(RouterPage, propsFor(h)))
   const text = collectText(tree).join('\n')
   assert.ok(text.includes('updateCheckButton'), 'the head keeps a permanent entry point')
-  assert.ok(text.includes('whatsNewTitle'), 'the post-update dialog names the running release')
 })
 
 // ---- Agent Fleet: native tab registration and the no-fixed-drawer guard ----

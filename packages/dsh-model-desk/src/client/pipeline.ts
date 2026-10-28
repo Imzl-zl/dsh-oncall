@@ -114,6 +114,17 @@ export function FirstHopSection(props) {
     h('div', { className: 'dsh-router-section-head' },
       h('h2', { className: 'dsh-router-section-title' }, t('firstHopSectionTitle')),
       h('span', { className: 'dsh-router-section-hint' }, t('firstHopSectionHint'))),
+    // 第一跳的条件：它没有候选行可挂，所以是链级的 `primaryNeeds`。用的是与候选
+    // 同一块面板——同一套三态语义，只有一个落点不同。
+    props.onPrimaryNeeds === undefined ? null : h('div', { className: 'dsh-router-conditions' },
+      ConditionsPanel({
+        t: t,
+        index: 'primary',
+        candidate: { needs: props.primaryNeeds },
+        disabled: props.disabled,
+        onNeeds: props.onPrimaryNeeds,
+      }),
+      h('span', { className: 'dsh-router-hint' }, t('firstHopNeedsHint'))),
     h('div', { className: 'dsh-router-row dsh-router-row-firsthop' },
       h('div', { className: 'dsh-router-row-line' },
         h('span', { className: 'dsh-router-icon' }, h(Icon, { d: ICON_BOLT, size: 16 })),

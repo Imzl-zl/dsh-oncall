@@ -146,7 +146,7 @@ last_updated: "2026-10-23"
 | 1 | weight / round-robin 下第一跳是否参与抽签 | **不参与（定案 2026-10-20）**：第一跳永远是用户选中的模型、永远先试；策略只决定它失败后从哪条降级候选开始。`startStep` 保留链首、只旋转降级候选，`resolveStartIndex` 只收降级候选。被否方案：给首跳加一个可配权重（新字段）——它把"我选了它就先用它"的承诺变成可被权重覆盖的默认值，且 UI 要多一个只对 weight 有意义的输入。代价：weight/round-robin 不能把首跳的流量分摊到别的渠道；需要分摊时把渠道都放进降级候选、把首跳当成固定入口。 | `router.ts` 的 `startStep` / `resolveStartIndex`；`tests/unit.mjs`、`tests/run.mjs` |
 | 2 | 连通性检查缺少超时 | **2026-10-21 已修**：只接受取消、不设 deadline 时，一个"接受 TCP 但永不应答"的端点会让 `ui.checking` 永久锁死，之后手动与定时检查全部 no-op。现为每条路由 10s 硬上限 + `Promise.race`，超时判 `unreachable`/`TIMEOUT`；deadline 与取消共用 `src/deadline.ts` 的 `fuseDeadline`（探测已同步收编）。 | `connectivity.ts`、`deadline.ts`；`.agents/notes/implemented/2026-10-21-connectivity-deadline-and-honest-history.md` |
 
-## 九、按会话选链与重试上限（2026-10-21，待决）
+## 九、按会话选链与重试上限（2026-10-21，已关闭）
 
 | # | 问题 | 定案（2026-10-21 用户裁定） | 备注 |
 |---|---|---|---|
@@ -200,9 +200,30 @@ last_updated: "2026-10-23"
 | 2 | 迁移时失败切换降到 step 边界后，逐候选预算与「最多 N 次真实调用」怎么重新定义 | 待设计（attempt 级 → step 级，语义变更） | 影响预算公式、中文通知、`max-tokens` 续跑与四套件判据 |
 | 3 | 是否保留 listener 顺序依赖（`prepend: true`）作为过渡 | 保留到迁移完成 | 顺序契约被上游点名要废止，过渡期不能新增依赖 |
 
-## 十三、审查后续与项目改名（2026-10-26，待决）
+## 十三、审查复核、修复批次与项目改名（2026-10-26）
 
-审查结论见[功能完成度与逻辑语义审查](feature-review-2026-10-26.md)：九项交付均存在，三条 Critical（图片粘滞窗口、健康设置保存死锁、交接 `newSession` 运行时崩溃）已复核。本节只登记需要用户拍板、且会改变实现形态的问题。
+复核与逐条判定见[功能完成度与逻辑语义审查](feature-review-2026-10-26.md)四节：三条 Critical 维持原判（真）；16 条 Important 中 15 条成立（4.2 / 4.11 触发面明显更窄，4.1 / 4.9 / 4.10 只在 opt-in 配置下成立）、1 条不成立（4.13），并新增 4.17。本节只登记两件事：已排定的修复批次，以及仍需用户拍板、会改变实现形态的问题。
+
+### 13.1 修复批次（2026-10-26 已落地）
+
+| 批次 | 落地内容 |
+|---|---|
+| **A**（路由 / 健康 / 界面小改） | 3.1 粘滞补满只认当轮自有图；3.2 五个数值边界收到 `defaults.ts` 一处，schema 与浏览器钳位同源，`save()` 把 host 拒绝原因上屏；4.1 `always` 策略在请求期收口（用户裁定「带 warn 的终态」，进裁决表成 `terminate` + `record`）；4.3 目录失败态与重试；4.4 探测 `Promise.race`（**包住 `prepareCall` 与 stream 两处 await**，不是记录写的 4 行）；4.6 `ACCOUNT_QUOTA` 三处归 `quota`（含记录漏掉的通知中文标签）；4.7 熔断文案改「冷却至 …，到期不会自己重试」（同批解决「durable 消息冻结相对秒数」）；4.12 条件跳过去重键逐路由；4.14 健康页位次按全链标注；4.15 迁移只强制两个旧默认键；4.17 补 `chain.primaryNeeds`，**4.13 文案同批**（落回第一跳不再说「已跳过」）；**删** 4.5 `health.passive`、4.8 `maxDelegationsPerDay`。 |
+| **B**（交接做实，2026-10-26 裁定） | 3.3 换公开面 `create` → `ctx.agents.get` → `selectModel`，旧 selection 读 `requestHeader()?.config`，假 faces 按真实签名重写；4.9 闸序（override 只跳过复核闸）；4.10 `report` 进回执、接力简报与收工通知（用户裁定「补齐」）；4.11 无投影回 `null`；4.16 由新套件 `tests/handoff-relay.mjs` 覆盖——独立 `DSH_HOME` 内起 shipped `web` profile，走真实 `sessionController.create → agents.get → selectModel → 工具 newSession`。 |
+
+条目的逐条断言位置见审查页第七节。全量验证：`npm test` 五套件 **249 / 127 / 25 / handoff-relay 19 项 / 37 场景** 全绿，host 与 client `tsc` 均 0。
+
+同日第二轮补了三件收尾：① **4.12 的自动网**——跳过通知的裁决抽进 `src/skip-plan.ts`（纯函数，返回通知计划与消耗的键），`index.ts` 只按计划 append；组合 harness 到不了"跳过集合变大"这个触发面（一次 boot 一个 step），改由两次纯函数调用覆盖，键改回整组拼串时该用例变红（已抽样）。② **5.6 行号漂移**——probe/connectivity 注释与 [源码地图](source-map.md) 里的 DSH 引用逐条回 rc.3 核对，对不上的改成函数名锚点。③ **GUI 保存链路实证**——隔离 home 用 `dsh plugin add` 真安装（插件行进 bundle include），改字段 → 保存 → 页面不再出现 `No configurable plugin entry`、`profiles/web/cordis.patch.yml` 里出现新值、刷新后 UI 与磁盘一致；可复跑步骤与坑见 `tools.md`。
+
+三条 Minor 同批收尾：`chain.ts` 的 `continues` 上界改读 `MAX_TOKEN_CONTINUES`（字面量 `9` 是同一约束的第二份）；三个读 `lib/` 的套件 + 接力套件开头调 `tests/freshness.mjs` 的 `assertFreshBuild()`（mtime 断言，源码比产物新就直接失败并点名 `npm run bundle`，已用一次 `touch` 抽样证明会红）；补 `noMatchingProfiles` 字典键，并加一条**从调用点扫字面量 `t('…')`** 的守卫——键集互等只证明两份一致，证明不了调用点有词。
+
+新套件当场抓到一个记录里没有的缺陷：插件在注册时把 `sessionController`/`agents` 捕获成引用，而 web 组合把它们挂得更晚，于是**每一次** `newSession` 都回「this composition does not provide both」；修法是 face 改成调用时求值的 getter。原型对账抓不到这条，只有真组合能。
+
+Minor 收尾（同轮）：5.3 三项已修（`nudges` 改 WeakMap + 换轮归零、`holdBusy` timer 入册并在 `dispose` 清空、`openDrawer` 补缺失守卫）；5.5 三处死代码已删（`allPhysicalRoutes`、`openNotes`/`onOpenNotes`、`handoff-wire` 的 `settled`/`child` 连同 fleet 类型与两份字典键）；5.6 复核结论是「`stateOf` 不成立」（rc.3 无 `@deprecated`、运行期无 warn），`probe.prompts[].route` 写错静默 no-op 为真、改加载期 warn；5.2 弱断言收紧为 `zod.ZodError`、`stub-script` 改成每套件一份（`STUB_SCRIPT`）。
+
+仍未做（全部是记账，不是缺陷修复）：5.2 的「场景配置形状」只作新场景约定（写 `chains`）、既有场景不改；5.3 的会话绑定只写不删（没有可靠删除钩子，每会话一行）；5.4 其余四项（英文夹全角括号、`0~99` 硬编码文案、同一状态两名、通知印原始键）。5.6 的源码行号漂移已重核（同日第二轮），不再列在这里。
+
+### 13.2 待拍板
 
 | # | 问题 | 设计默认 | 影响 |
 |---|---|---|---|
@@ -210,6 +231,5 @@ last_updated: "2026-10-23"
 | 2 | 持久化标识（`model_router_sessions`、`router/failover-history`、`router/channel-health`、`router/handoff`）是否随改名迁移 | **不动**，或迁移另开一轮 | 动了会丢既有会话绑定与历史投影；不动则长期存在「新旧两套词根」的已知债 |
 | 3 | 是否先为 10-23 立即切换白名单与 10-24 交接/名册/Fleet 补 `CHANGELOG` 条目 | **先开 `Unreleased`** | 当前 `release.generated.ts` 内嵌的仍是 0.5.0（10-22）说明，升级弹窗读不到这三项能力 |
 | 4 | 实现与设计页的偏离如何记账 | 待定：约 10 项（页签缺计数、健康页缺四格 KPI、白名单移到重试分区、§3 删除确认弹窗不存在、`styles.ts` 行数不符等）逐条标注「改文档」或「改实现」 | 不记账会让下一次审查重复发现同一批偏差 |
-| 5 | `AGENTS.md` 两处措辞是否修正 | 待用户确认后改 | §0 把 handoff 与「35 个真实 Loader 组合场景 0 失败」写在同一句，而 `tests/run.mjs` 中 `handoff` 出现 0 次；§6 硬规则要求真实组合验证，交接目前只有手造 faces 单测 |
-| 6 | 三条 Critical 的修复顺序 | 建议 `newSession` → 健康保存 → 粘滞窗口（前两条是「一用就撞墙」） | 影响发版窗口：第 2、3 条都可单独发补丁版 |
+| 5 | ~~`AGENTS.md` 两处措辞是否修正~~ | 已关闭（2026-10-26） | §0 / §5 的计数与验证命令已按实际改为五套件、37 场景；§6 的「真实组合验证」现在有 `tests/handoff-relay.mjs` 兜住交接 |
 

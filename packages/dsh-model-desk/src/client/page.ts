@@ -21,12 +21,12 @@
  * .agents/notes/implemented/2026-10-20-page-owns-the-column.md
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { h } from './dom.ts'
 import { Button, SegmentedTabs, Switch, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SegmentedTab } from '@deepseek-ai/dsh-client-ui-primitives'
 import { fill, routeStatus } from './format.ts'
-import { configuredRouteList, routeKeyOf } from '../routes.ts'
+import { configuredRouteList } from '../routes.ts'
 import { ChainView } from './chain.ts'
 import { AddCandidateModal, HealthSettingsModal, UpdateCheckModal, WhatsNewModal } from './modals.ts'
 import { RELEASE_NOTES, RELEASE_VERSION } from '../release.generated.ts'
@@ -68,20 +68,6 @@ export function RouterPage(props) {
     props.onActive('__health__')
   }, [props.onActive])
 
-  // Every physical route the health view can show: the configured fallbacks
-  // plus anything already observed. The first hop is absent until observed —
-  // it is whatever the user picked in DSH, which the plugin only learns when a
-  // request arrives.
-  var allPhysicalRoutes = useMemo(function () {
-    var set = new Set()
-    draft.chain.candidates.forEach(function (candidate) {
-      if (candidate.provider && candidate.model) set.add(routeKeyOf(candidate.provider, candidate.model))
-    })
-    if (state.ui.passive) Object.keys(state.ui.passive).forEach(function (route) { set.add(route) })
-    if (state.ui.discover) Object.keys(state.ui.discover).forEach(function (route) { set.add(route) })
-    return Array.from(set)
-  }, [draft.chain.candidates, state.ui.passive, state.ui.discover])
-
   // The save command's gate: this page is mounted while the workbench is.
   // 同一次挂载里要目录：候选行/健康行/弹窗里的下拉都拿它换显示名（用户在「模型」
   // 页映射的名字）。不加载的话行上只剩原始 id——那正是用户看不出区别的原因。
@@ -116,10 +102,13 @@ export function RouterPage(props) {
           className: 'dsh-router-footer-text',
           role: state.failed ? 'alert' : 'status',
         },
-          state.failed ? t('formSaveFailed')
+          // 宿主拒绝时把它的原话报出来：只说「保存失败，请重试」会让用户反复重试
+          // 同一个越界值而不知该改哪个字段（`saveError` 为空才是真的没有原因）。
+          state.failed ? (state.ui.saveError ?? t('formSaveFailed'))
             : state.saving ? t('formSaving')
-              : state.dirty ? t('dirtyBarText')
-                : t('allSavedText')),
+              : state.ui.externalChange && state.dirty ? t('draftKeptExternal')
+                : state.dirty ? t('dirtyBarText')
+                  : t('allSavedText')),
         h('div', { className: 'dsh-router-footer-actions' },
           h(Button, {
             variant: 'outline',
@@ -245,6 +234,7 @@ export function RouterPage(props) {
                     probe: state.ui.probe,
                     onStrategy: props.onStrategy,
                     onFirstHopMaxRetries: props.onFirstHopMaxRetries,
+                    onPrimaryNeeds: props.onPrimaryNeeds,
                     onWeight: props.onWeight,
                     onMaxRetries: props.onMaxRetries,
                     onMove: props.onMove,
@@ -278,6 +268,8 @@ export function RouterPage(props) {
     modal !== null && modal.kind === 'add-candidate' ? h(AddCandidateModal, {
       t: t,
       catalog: state.ui.catalog,
+      catalogFailed: state.ui.catalogFailed,
+      onLoadCatalog: props.onLoadCatalog,
       onClose: props.onCloseModal,
       onAdd: function (entries) { props.onAddCandidates(entries) },
     }) : null,

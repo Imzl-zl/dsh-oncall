@@ -17,13 +17,22 @@
  */
 
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { LlmAdapter, LlmError, resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
 
-const SCRIPT_URL = new URL('./stub-script.json', import.meta.url)
+/**
+ * Where the scenario script lives.
+ *
+ * `STUB_SCRIPT` lets each suite own its own file: `run.mjs` and `remote.mjs` used
+ * to write the same `stub-script.json`, so running them at the same time made one
+ * suite read the other's outcomes (they only ever "worked" because `npm test` is
+ * serial). The default keeps a lone manual run working with no env.
+ */
+const SCRIPT_PATH = process.env.STUB_SCRIPT ?? fileURLToPath(new URL('./stub-script.json', import.meta.url))
 
 function readScript() {
   try {
-    return JSON.parse(readFileSync(SCRIPT_URL, 'utf8'))
+    return JSON.parse(readFileSync(SCRIPT_PATH, 'utf8'))
   } catch {
     return {}
   }

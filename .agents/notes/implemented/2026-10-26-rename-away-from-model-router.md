@@ -38,6 +38,8 @@ Status: implemented
 
 `npm run bundle` 通过；`npm test` 四套件 **233 / 123 / 25 / 35 场景 0 失败**。组合套件拉起的是真实 `dsh --profile headless --patch`，因此新包名、新配置 ns、新 typert namespace 三处同时在真实 Loader 组合里成立。
 
+补记（2026-10-26 晚，同一会话的收尾轮）：改名时漏了**用户可见的中文自称**——`locales.ts` 的 `pageTitle`/`sidebarActionLabel` 仍是「模型路由」、`saveShortcutLabel` 仍是「保存模型路由配置」，英文侧对应 `Model Router`。已改为「模型工作台」/`Model Desk`；保存快捷键的中文别名保留旧的 `模型路由保存` 并新增 `模型工作台保存`（别名已在用户输入习惯与快捷键设置页里，改名不该让敲得出来的命令失效）。判据是隔离 web 实例实测侧栏行与页头都印「模型工作台」。
+
 ## Alternatives considered
 
 1. 保持 `dsh-models-router`

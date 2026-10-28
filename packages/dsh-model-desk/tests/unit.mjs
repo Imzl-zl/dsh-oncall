@@ -33,7 +33,17 @@ import { failoverHistoryProjection, failureCodeOfStream, FAILOVER_HISTORY_KEY, M
 import { breakerNotice } from '../src/notice.ts'
 import { assertStructural } from '../src/config.ts'
 import { structuralViolations } from '../src/rules.ts'
-import { POLICY_VERSION, SWITCH_ON_CODES, switchOnKeyOf } from '../src/defaults.ts'
+import {
+  BREAKER_COOLDOWN_MIN_SECONDS,
+  DEFAULT_IMMEDIATE_SWITCH,
+  DEFAULT_SWITCH_ON,
+  HEALTH_INTERVAL_MAX_SECONDS,
+  MAX_TOKEN_CONTINUES,
+  POLICY_VERSION,
+  PROBE_TIMEOUT_MIN_SECONDS,
+  SWITCH_ON_CODES,
+  switchOnKeyOf,
+} from '../src/defaults.ts'
 import { defaultSwitchOn, normalizeHandoff, normalizeHealth, parseRetryInput, validate, BREAKER_CODE_PRESETS } from '../src/client/validate.ts'
 import { deepEqual, fill, saveShortcutKeyKey } from '../src/client/format.ts'
 import { routeNames } from '../src/client/naming.ts'
@@ -43,7 +53,19 @@ import { emptyConditions, RouterState } from '../src/state.ts'
 import { probePromptFor, probeRoute } from '../src/probe.ts'
 import { checkConnectivity } from '../src/connectivity.ts'
 import { routeParts } from '../src/routes.ts'
+import { healthChannels } from '../src/client/health-channels.ts'
 import { precheckTierOf } from '../src/precheck.ts'
+import { planSkipNotices } from '../src/skip-plan.ts'
+import {
+  DESK_SLOTS,
+  DESK_WORKSTATION,
+  WAIT_SLOTS,
+  monitorBaseInsideDeskTop,
+  seatIsBehindDeskEdge,
+  workstationViolations,
+} from '../src/client/fleet/office-template.ts'
+import { buildScene, visualStateOf } from '../src/client/fleet/office-scene.ts'
+import { ROOM_ORIGIN, paintFrame } from '../src/client/fleet/office-render.ts'
 import { emptyBinding, SESSION_BINDINGS_DOMAIN, SessionBindings, sessionBindingsDomain } from '../src/bindings.ts'
 import {
   FLEET_CONCURRENCY,
@@ -303,6 +325,26 @@ test('before inner: the whitelist only names keys, and the others keep their bud
   // 表外的码经 `other` 归口：名单里没有 other 就不抢在 DSH 内层前面。
   assert.equal(switchesImmediately(state.chain, 'PI_AI_ERROR'), false)
   assert.equal(decideBeforeInner(state, 'PI_AI_ERROR', false).kind, 'delegate')
+})
+
+test('an "always" provider turns the delegated codes into a terminal ruling', () => {
+  // `ResolvedAlwaysRetryPolicy` 只有 mode/backoff：内层会无界重试同一条路由，而
+  // 插件读不到任何码表或上限。把这些码交给它 = step 永不结束（屏幕一直"重试中"）。
+  // 加载期审计看不到这条：它只走链候选，而第一跳可能不在任何链里。
+  const always = { mode: 'always', initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }
+  const normal = { mode: 'normal', maxRetries: 5, retryableCodes: [], initialDelayMs: 1, maxDelayMs: 1, jitterRatio: 0 }
+  // 用户没勾的码（表外经 other 归口，这里 other 关掉 → 归内层）：always 下必须终态。
+  const unowned = at({ ...immediateChain(5, 2), switchOn: { ...immediateChain(5, 2).switchOn, other: false } }, { attemptsOnCandidate: 1, totalAttempts: 1 })
+  const terminal = decideBeforeInner(unowned, 'PI_AI_ERROR', false, { policy: always })
+  assert.equal(terminal.kind, 'terminate')
+  assert.equal(terminal.record, true, 'taking the step down is a channel fact worth recording')
+  assert.match(terminal.log, /always/)
+  // 同一个码在 normal 策略下照旧交给内层。
+  assert.equal(decideBeforeInner(unowned, 'PI_AI_ERROR', false, { policy: normal }).kind, 'delegate')
+  // 我们接管的码不受影响：次数由插件自己数，always 与否无所谓。
+  assert.equal(decideBeforeInner(unowned, 'RATE_LIMIT', false, { policy: always }).kind, 'retry-self')
+  // 调用方已取消时不改写结局：那是"没人等这次调用"，不是渠道问题。
+  assert.equal(decideBeforeInner(unowned, 'PI_AI_ERROR', true, { policy: always }).kind, 'delegate')
 })
 
 test('after inner: a whitelisted code outside the table gets no router retry either', () => {
@@ -607,15 +649,21 @@ test('CircuitBreaker.sweep drops expired blocks only', () => {
   assert.equal(breaker.blockedUntil('p', 'long', 62_000).until, 3_600_000)
 })
 
-test('breakerNotice states the remaining cooldown', () => {
-  const text = breakerNotice({ provider: 'real-a', model: 'm1' }, { until: 10_500, scope: 'route' }, 10_000)
+test('breakerNotice states the cooldown deadline and promises no retry', () => {
+  const text = breakerNotice({ provider: 'real-a', model: 'm1' }, { until: 10_500, scope: 'route' })
   const rendered = text.content.find(block => block.type === 'text').text
   assert.ok(rendered.includes('已被自动禁用'))
-  assert.ok(rendered.includes('1 秒后自动重试'))
+  // 冷却只回答"何时解除"（breaker.ts 的 blockedUntil），没有任何自动重试：
+  // 旧文案的「约 N 秒后自动重试」是假话，这条断言钉住它不许回来。
+  assert.ok(!rendered.includes('自动重试'), rendered)
+  assert.ok(rendered.includes('冷却至'), rendered)
+  assert.ok(rendered.includes('下一条请求才会再试它'), rendered)
+  // durable 消息不能写相对秒数：明天读到同一条，它必须是同一句话。
+  assert.ok(!/约 \d+ 秒/.test(rendered), rendered)
 })
 
 test('breakerNotice names the whole channel for a channel-scope block', () => {
-  const text = breakerNotice({ provider: 'real-a', model: 'm1' }, { until: 10_500, scope: 'channel' }, 10_000)
+  const text = breakerNotice({ provider: 'real-a', model: 'm1' }, { until: 10_500, scope: 'channel' })
   const rendered = text.content.find(block => block.type === 'text').text
   assert.ok(rendered.includes('渠道 real-a 已整体自动禁用'), rendered)
   assert.ok(rendered.includes('该渠道下所有模型'), rendered)
@@ -634,21 +682,205 @@ const hostConfig = raw => {
   }
 }
 
-test('the skip-notice gate is one gate for all three skip kinds, keyed per turn', () => {
+test('the once-per-turn notice ledger is one ledger for every notice kind, keyed per turn', () => {
   const states = new RouterState()
   const agent = {} // state 只拿它当 WeakMap 键；agentKey 助手在本文件后部定义
-  // 同一 (turn, key) 只放行一次：工具循环每步都重决同一批跳过，发一次就够。
-  assert.equal(states.shouldNoteSkip(agent, 1, 'condition:a/b:需图片输入'), true)
-  assert.equal(states.shouldNoteSkip(agent, 1, 'condition:a/b:需图片输入'), false)
-  // 不同 key（另一类跳过 / 另一个候选）互不遮挡，且各自都被去重——一次 fire 可能
-  // 同时跳过条件候选、能力候选和冷却候选，三种都得各自只报一次。
-  assert.equal(states.shouldNoteSkip(agent, 1, 'breaker:a/b'), true)
-  assert.equal(states.shouldNoteSkip(agent, 1, 'capability:a/b'), true)
-  assert.equal(states.shouldNoteSkip(agent, 1, 'breaker:a/b'), false)
-  assert.equal(states.shouldNoteSkip(agent, 1, 'capability:a/b'), false)
-  assert.equal(states.shouldNoteSkip(agent, 1, 'condition:a/b:需图片输入'), false, 'an earlier key stays deduped after others were announced')
+  // 空账本读出来是一个空集，且不会被写坏（记账走 recordTurnNoticeKeys）。
+  assert.deepEqual([...states.turnNoticeKeys(agent, 1)], [])
+  states.recordTurnNoticeKeys(agent, 1, ['condition:a/b'])
+  assert.deepEqual([...states.turnNoticeKeys(agent, 1)], ['condition:a/b'])
+  // 不同 key（另一类跳过 / 另一个候选 / 不是跳过的那条绑定通知）互不遮挡：一次
+  // fire 可能同时跳过条件候选、能力候选和冷却候选，各自都要各自报一次。
+  states.recordTurnNoticeKeys(agent, 1, ['breaker:a/b', 'capability:a/b', 'binding:gone'])
+  assert.equal(states.turnNoticeKeys(agent, 1).size, 4)
+  assert.equal(states.turnNoticeKeys(agent, 1).has('condition:a/b'), true, 'an earlier key stays recorded after others were announced')
+  // 空批次不建账本：没有要记的就不该出现一个"本轮已有通知"的假状态。
+  const untouched = {}
+  states.recordTurnNoticeKeys(untouched, 1, [])
+  assert.deepEqual([...states.turnNoticeKeys(untouched, 1)], [])
   // 新一轮重新武装：新的失败链要重新告知。
-  assert.equal(states.shouldNoteSkip(agent, 2, 'breaker:a/b'), true)
+  assert.deepEqual([...states.turnNoticeKeys(agent, 2)], [])
+  states.recordTurnNoticeKeys(agent, 2, ['breaker:a/b'])
+  assert.deepEqual([...states.turnNoticeKeys(agent, 2)], ['breaker:a/b'])
+})
+
+// ---- 4.12 的自动网：同一轮里跳过集合变大，只许多报新增的那一条 ----
+//
+// 组合 harness 一次 boot 只有一个 step，"同一步跳过 {A}、下一步跳过 {A, C}"这个
+// 形态在真实组合里到不了（见 feature-review 2026-10-26 第七节末尾）。所以把
+// "报哪几条"抽成纯函数（./skip-plan.ts）后在这里两次调用它：同一个 turn 的两次
+// fire，第二次把第一次的 keys 当作已报账本。
+test('a skip set that grows mid-turn announces only the candidate that joined it', () => {
+  const route = (provider, model = 'm1') => ({ provider, model })
+  const resolved = route('own-route')
+  const ledger = new Set()
+  const step1 = planSkipNotices({
+    conditionSkipped: [{ candidate: route('image-only'), reason: '仅无图轮' }],
+    capabilitySkipped: [],
+    blocked: [],
+    fellBackToOwnRoute: false,
+    resolved,
+    alreadyNoted: ledger,
+  })
+  // 键是逐路由的：`condition:<provider/model>`，与 capability/breaker 同形。
+  assert.deepEqual(step1.keys, ['condition:image-only/m1'])
+  assert.deepEqual(step1.notices.map(notice => notice.key), ['condition:image-only/m1'])
+  // 裁决是纯的：调用方传进来的账本不许被它改写（记账是调用方的事，两处各写一半
+  // 就会出现"报过但没人记"或"记了但没报"）。
+  assert.equal(ledger.size, 0, 'the plan must not mutate the caller ledger')
+
+  const step2 = planSkipNotices({
+    conditionSkipped: [
+      { candidate: route('image-only'), reason: '仅无图轮' },
+      { candidate: route('small-window'), reason: '上下文不足' },
+    ],
+    capabilitySkipped: [],
+    blocked: [],
+    fellBackToOwnRoute: false,
+    resolved,
+    alreadyNoted: new Set(step1.keys),
+  })
+  // 这一步才对：只有新加入的那一条开腔。整组拼串的键（`condition:<a:reason|b:reason>`）
+  // 在这一步与第一步不同，会把已经说过的 image-only 重报一遍——durable 的 user 消息
+  // 进模型上下文，重报就是重复计 token。
+  assert.deepEqual(step2.notices.map(notice => notice.key), ['condition:small-window/m1'])
+  assert.deepEqual(step2.keys, ['condition:small-window/m1'])
+})
+
+test('the skip plan keeps the three kinds apart and never announces one route twice', () => {
+  const candidate = { provider: 'a', model: 'm1' }
+  const plan = planSkipNotices({
+    conditionSkipped: [{ candidate, reason: '仅带图轮' }],
+    capabilitySkipped: [{ candidate, tier: 'route-missing', code: 'UNKNOWN_MODEL' }],
+    blocked: [{ candidate, block: { until: 1_000, scope: 'route' } }],
+    fellBackToOwnRoute: false,
+    resolved: { provider: 'own', model: 'm1' },
+    alreadyNoted: new Set(),
+  })
+  // 三条都报（三类互不遮挡），且顺序是条件 → 能力 → 冷却，与 append 顺序一致。
+  assert.deepEqual(plan.notices.map(notice => notice.key), ['condition:a/m1', 'capability:a/m1', 'breaker:a/m1'])
+  assert.deepEqual(plan.notices.map(notice => notice.kind), ['condition', 'capability', 'breaker'])
+  // 同一次 fire 里重复出现的候选只算一次。
+  const once = planSkipNotices({
+    conditionSkipped: [{ candidate, reason: '仅带图轮' }, { candidate, reason: '仅带图轮' }],
+    capabilitySkipped: [], blocked: [], fellBackToOwnRoute: false,
+    resolved: { provider: 'own', model: 'm1' },
+    alreadyNoted: new Set(),
+  })
+  assert.deepEqual(once.notices.map(notice => notice.key), ['condition:a/m1'])
+})
+
+test('falling back to the user route does not announce that route as skipped', () => {
+  // 4.13：隐式第一跳就是 resolved 本身。落回它却说"已跳过第一跳"是假话。
+  const plan = planSkipNotices({
+    conditionSkipped: [{ candidate: { provider: 'own', model: 'm1' }, reason: '仅带图轮' }],
+    capabilitySkipped: [], blocked: [],
+    fellBackToOwnRoute: true,
+    resolved: { provider: 'own', model: 'm1' },
+    alreadyNoted: new Set(),
+  })
+  assert.deepEqual(plan.notices, [])
+  assert.deepEqual(plan.keys, [], 'the suppressed notice must not consume a key either')
+  // 别的候选照报：它们确实被跳过，请求也没发到它们。
+  const withOther = planSkipNotices({
+    conditionSkipped: [
+      { candidate: { provider: 'own', model: 'm1' }, reason: '仅带图轮' },
+      { candidate: { provider: 'other', model: 'm1' }, reason: '仅无图轮' },
+    ],
+    capabilitySkipped: [], blocked: [],
+    fellBackToOwnRoute: true,
+    resolved: { provider: 'own', model: 'm1' },
+    alreadyNoted: new Set(),
+  })
+  assert.deepEqual(withOther.notices.map(notice => notice.key), ['condition:other/m1'])
+})
+
+// ---- 像素办公室：模板不变量、场景分配、渲染器调用形状 ----
+const fleetAgent = (id, state) => ({
+  id,
+  label: id,
+  mode: 'continuable',
+  state,
+  running: state === 'running',
+  lastTurnCompleted: undefined,
+  model: undefined,
+  timing: undefined,
+  tokenUsage: undefined,
+  task: undefined,
+  durationMs: undefined,
+  addressable: true,
+})
+
+test('the workstation template keeps its three invariants, and the check can fail', () => {
+  // 模板本身成立：脚在桌沿内、显示器底座在桌面内。
+  assert.deepEqual(workstationViolations(0, 0), [])
+  assert.equal(seatIsBehindDeskEdge(0, 0), true)
+  assert.equal(monitorBaseInsideDeskTop(0, 0), true)
+  // 反证：把显示器中心推出去 20px，检查必须报错——否则这条断言是空的。
+  const pushed = { ...DESK_WORKSTATION, monitorDX: DESK_WORKSTATION.monitorDX + 20 }
+  const baseHalf = (pushed.monitorW - 4) / 2
+  const spanX = (pushed.halfW + pushed.halfD) * 24
+  const cx = pushed.monitorDX + baseHalf
+  assert.ok(cx > spanX, 'the pushed monitor base must fall outside the desk-top diamond')
+})
+
+test('the scene seats everyone who is not idle, and overflows past the desk slots', () => {
+  // 5 个非空闲 → 5 个工位；1 个空闲 → 待命区。
+  const five = buildScene(100, 100, [
+    fleetAgent('a', 'running'), fleetAgent('b', 'anomaly'), fleetAgent('c', 'done'),
+    fleetAgent('d', 'unknown'), fleetAgent('e', 'running'), fleetAgent('f', 'idle'),
+  ])
+  assert.equal(five.seated.length, DESK_SLOTS.length)
+  assert.equal(five.waiting.length, 1)
+  assert.equal(five.overflow, 0)
+  assert.equal(five.total, 6)
+  assert.equal(five.animating, true, 'a running or stuck agent keeps the clock alive')
+  // 座位顺序 = 输入顺序（房间不能和旁边的列表吵架）。
+  assert.deepEqual(five.seated.map(person => person.agent.id), ['a', 'b', 'c', 'd', 'e'])
+  // 状态条挂在桌面正下方，不随人工位移动。
+  for (const person of [...five.seated, ...five.waiting]) {
+    assert.equal(person.chip[0], person.at[0])
+    assert.ok(person.chip[1] > person.at[1])
+  }
+  // 第 6 个非空闲装不下 → 计数溢出，不静默丢掉。
+  const seven = buildScene(100, 100, [
+    fleetAgent('a', 'running'), fleetAgent('b', 'running'), fleetAgent('c', 'running'),
+    fleetAgent('d', 'running'), fleetAgent('e', 'running'), fleetAgent('f', 'running'),
+  ])
+  assert.equal(seven.seated.length, DESK_SLOTS.length)
+  assert.equal(seven.overflow, 1)
+  // 全空闲：不跑时钟。
+  const quiet = buildScene(100, 100, [fleetAgent('x', 'idle')])
+  assert.equal(quiet.animating, false)
+  assert.equal(quiet.waiting.length, 1)
+  assert.ok(WAIT_SLOTS.length >= 1)
+})
+
+test('the fleet state becomes a visual state in exactly one place', () => {
+  assert.equal(visualStateOf('running'), 'busy')
+  assert.equal(visualStateOf('anomaly'), 'stuck')
+  assert.equal(visualStateOf('done'), 'done')
+  assert.equal(visualStateOf('idle'), 'idle')
+  assert.equal(visualStateOf('unknown'), 'unknown')
+})
+
+test('a frame blits the baked room once and paints every seated agent', () => {
+  const calls = { images: 0, rects: 0 }
+  const gradient = { addColorStop() {} }
+  const ctx = {
+    imageSmoothingEnabled: true,
+    globalAlpha: 1,
+    fillStyle: '',
+    clearRect() {},
+    drawImage() { calls.images += 1 },
+    fillRect() { calls.rects += 1 },
+    beginPath() {}, moveTo() {}, lineTo() {}, closePath() {}, fill() {}, ellipse() {},
+    createRadialGradient() { return gradient },
+  }
+  const scene = buildScene(ROOM_ORIGIN.x, ROOM_ORIGIN.y, [fleetAgent('a', 'running'), fleetAgent('b', 'idle')])
+  paintFrame(ctx, scene, 1, {})
+  assert.equal(calls.images, 1, 'the static room is one blit per frame')
+  assert.ok(calls.rects > 10, 'each workstation paints its desk, screen and clutter')
 })
 
 test('switchOnKeyOf maps the channel-own faults (AUTH/QUOTA) and never the user-abort', () => {
@@ -659,6 +891,21 @@ test('switchOnKeyOf maps the channel-own faults (AUTH/QUOTA) and never the user-
   assert.equal(switchOnKeyOf('ABORTED'), undefined)
   assert.equal(switchOnKeyOf('NO_ADAPTER'), undefined)
   assert.equal(switchOnKeyOf('RATE_LIMIT'), 'rateLimit')
+})
+
+test('ACCOUNT_QUOTA is the quota key, not an unclassified code', () => {
+  // deepseek-account 把 QUOTA 改写成 ACCOUNT_QUOTA（上游真码，llm/src/error.ts 的
+  // ACCOUNT_QUOTA_EXCEEDED_CODE）。不映射就等于：用户在「失败切换」里勾的「额度用尽」
+  // 管不到它，健康页也不判它不健康，通知里印英文码。
+  assert.equal(switchOnKeyOf('ACCOUNT_QUOTA'), 'quota')
+  // 一码一键：别名不许进码表，否则界面网格里会出现两个写同一个键的勾选框。
+  assert.equal(SWITCH_ON_CODES.some(entry => entry.code === 'ACCOUNT_QUOTA'), false)
+  // 同一个键的两个读者必须同意：白名单（额度用尽重试还是同一份额度）与健康判定。
+  const chain = { switchOn: { ...DEFAULT_SWITCH_ON }, immediateSwitch: [...DEFAULT_IMMEDIATE_SWITCH] }
+  assert.equal(switchesImmediately(chain, 'ACCOUNT_QUOTA'), true)
+  assert.equal(classifyHealth('ACCOUNT_QUOTA'), 'unhealthy')
+  // 表外未映射的码仍落到兜底键，别名没有把兜底吃掉。
+  assert.equal(switchOnKeyOf('PI_AI_ERROR'), undefined)
 })
 
 test('the switch-on table, the host schema and the browser draft are one fact', () => {
@@ -702,6 +949,32 @@ test('the client save shape lands where the host reads it', () => {
   assert.equal(seen.health.discover.intervalSeconds, 5)
   // 新形状：链在顶层 chain 下，客户端存进去的降级候选 Host 读得到。
   assert.ok(Array.isArray(seen.chain.candidates))
+})
+
+test('health has no passive switch: the fold always runs, so the field is gone', () => {
+  // 一个在 schema、UI、校验里各走一遍而 host 零读者的开关只会骗人：它看起来能关掉
+  // 被动观测，实际什么也关不掉。删字段比造一套"要不要记录"的语义小得多。
+  assert.equal(Object.hasOwn(hostConfig({}).health, 'passive'), false)
+  assert.equal(Object.hasOwn(normalizeHealth({ passive: false }), 'passive'), false)
+})
+
+test('the health numbers read back inside the schema bounds, so a save is never refused forever', () => {
+  // 曾经：表单只钳下限（探测超时钳到 1），宿主 schema 是 2..60 → 保存被拒，
+  // 页脚只说「保存失败，请重试」，用户对着同一个值反复重试。边界现在只有
+  // ../defaults.ts 一份，两个读者读同一组数。
+  const read = normalizeHealth({
+    discover: { intervalSeconds: 999999 },
+    probe: { intervalSeconds: -5, timeoutSeconds: 1 },
+    breaker: { rules: [{ code: 'AUTH', cooldownSeconds: 0 }] },
+  })
+  assert.equal(read.discover.intervalSeconds, HEALTH_INTERVAL_MAX_SECONDS)
+  assert.equal(read.probe.intervalSeconds, 0)
+  assert.equal(read.probe.timeoutSeconds, PROBE_TIMEOUT_MIN_SECONDS)
+  assert.equal(read.breaker.rules[0].cooldownSeconds, BREAKER_COOLDOWN_MIN_SECONDS)
+  // 同一份对象过 host schema 必须被接受——这就是"保存不会再被拒"的判据。
+  const parsed = hostConfig({ health: read }).health
+  assert.equal(parsed.probe.timeoutSeconds, PROBE_TIMEOUT_MIN_SECONDS)
+  assert.equal(parsed.discover.intervalSeconds, HEALTH_INTERVAL_MAX_SECONDS)
 })
 
 test('a legacy flat health config keeps its schedule by converting minutes to seconds', () => {
@@ -1389,6 +1662,35 @@ test('the session first image turn still arms the sticky window (pre-step preced
   assert.equal(states.conditionsFor(agent, 4, 1).hasImages, false)
 })
 
+// 生产时序的另一半：`index.ts` 在每个 step 的第一次 request 里都调一次
+// setStickyTurns（不只是会话开头）。补满因此必须只认"本轮自有图"，否则纯文本会话
+// 每步都把窗口补满，hasImages 从第 2 轮起恒真，`needs.images: false` 的候选永不入选。
+test('a text-only turn cannot refill the sticky window (stickyTurns is written every step)', () => {
+  const states = new RouterState()
+  const agent = agentKey()
+  for (let turn = 1; turn <= 4; turn += 1) {
+    states.noteConditions(agent, turn, 1, turnConditions(false, undefined))
+    assert.equal(states.conditionsFor(agent, turn, 1).hasImages, false, `turn ${turn} is text-only and must not read as image-bearing`)
+    states.setStickyTurns(agent, 2) // 这一轮那次 agent/request 的写入
+  }
+})
+
+test('one image turn fills the window once, and it still decays under the same timing', () => {
+  const states = new RouterState()
+  const agent = agentKey()
+  states.noteConditions(agent, 1, 1, turnConditions(true, undefined))
+  states.setStickyTurns(agent, 2)
+  states.noteConditions(agent, 2, 1, turnConditions(false, undefined))
+  states.setStickyTurns(agent, 2)
+  assert.equal(states.conditionsFor(agent, 2, 1).hasImages, true)
+  states.noteConditions(agent, 3, 1, turnConditions(false, undefined))
+  states.setStickyTurns(agent, 2)
+  assert.equal(states.conditionsFor(agent, 3, 1).hasImages, true)
+  states.noteConditions(agent, 4, 1, turnConditions(false, undefined))
+  states.setStickyTurns(agent, 2)
+  assert.equal(states.conditionsFor(agent, 4, 1).hasImages, false, 'two text turns after the image must clear it')
+})
+
 test('an image turn refreshes the sticky window', () => {
   const states = new RouterState()
   const agent = agentKey()
@@ -1562,6 +1864,30 @@ test('probeRoute times out as unreachable, never as a silent hang', async () => 
   assert.equal(result.kind, 'unreachable')
   assert.equal(result.error, 'TIMEOUT')
   assert.ok(Date.now() - started < 5000, 'the deadline fired instead of waiting on the stream')
+})
+
+test('probeRoute cuts an adapter that ignores the abort instead of hanging on it', async () => {
+  // `neverEnding` 会看 signal，覆盖的是"配合的适配器"。这一条模拟无视 abort 的那种：
+  // 不出字节、不结束、也不抛。没有 race 的实现会永久挂在这里——而且挂住的是
+  // `probeInFlight`，之后每一次定时探测都被静默跳过（index.ts 的 tick 守卫）。
+  const deaf = (async function* () {
+    await new Promise(() => {})
+    yield { type: 'text-delta', index: 0, text: 'never' }
+  })()
+  const started = Date.now()
+  const result = await probeRoute(fakeLlm({ makeStream: () => deaf }), route, 'ping', 1)
+  assert.equal(result.kind, 'unreachable')
+  assert.equal(result.error, 'TIMEOUT')
+  assert.ok(Date.now() - started < 5000, 'the race must beat an adapter that never settles')
+})
+
+test('probeRoute cuts a prepare phase that never resolves', async () => {
+  // 同一条边界的第二个 await：`prepareCall` 也可能在流存在之前就悬挂。
+  const started = Date.now()
+  const result = await probeRoute({ prepareCall: () => new Promise(() => {}) }, route, 'ping', 1)
+  assert.equal(result.kind, 'unreachable')
+  assert.equal(result.error, 'TIMEOUT')
+  assert.ok(Date.now() - started < 5000, 'the race must cover the prepare phase too')
 })
 
 test('probeRoute reads a route it cannot even call as unavailable, not as a fault', async () => {
@@ -2626,6 +2952,13 @@ test('a config written before policy v2 gets the new "switch on everything" defa
   assert.equal(migrated.chains[0].switchOn.invalidRequest, true, 'the old default false must not survive the upgrade')
   assert.equal(migrated.chains[0].switchOn.emptyResponse, true)
   assert.equal(migrated.chains[0].switchOn.other, true, 'codes outside the table switch by default too')
+  // 只有那两个"当年的默认值 false"的键被改写。用户在旧配置里显式取消的勾选必须留下：
+  // `rateLimit` 当年就是默认 true，写成 false 只可能是他自己点的，整表丢弃会吞掉它。
+  const unChecked = effectiveChains({
+    chains: [namedChain('default', '', { candidates: [cand('a')], switchOn: { rateLimit: false } })],
+  })
+  assert.equal(unChecked.chains[0].switchOn.rateLimit, false, 'an explicit opt-out written before v2 is a choice, not the old default')
+  assert.equal(unChecked.chains[0].switchOn.emptyResponse, true, 'the two old-default keys are still rewritten once')
   // 已经带 v2 标记的配置：用户的选择原样保留。
   // 同一次迁移也把"旧默认 0 次重试"改写成新默认 5：插件接管重试之后，默认比 DSH 自己的
   // provider 策略（5）更小，等于让升级后的韧性变差。
@@ -2650,6 +2983,11 @@ test('a chain without a max-tokens policy reads the defaults, and one with it ke
   assert.deepEqual(plain.chains[0].maxTokens, { autoContinue: true, continues: 2 })
   const tuned = effectiveChains({ chains: [namedChain('default', '', { maxTokens: { autoContinue: false, continues: 5 } })] })
   assert.deepEqual(tuned.chains[0].maxTokens, { autoContinue: false, continues: 5 })
+  // 上界只有一个来源：这里曾写死字面量 9，与 `MAX_TOKEN_CONTINUES` 是同一个约束。
+  const clamped = effectiveChains({
+    chains: [namedChain('default', '', { maxTokens: { autoContinue: true, continues: 999 } })],
+  })
+  assert.equal(clamped.chains[0].maxTokens.continues, MAX_TOKEN_CONTINUES)
 })
 
 test('a session routes on the chain it bound, else on the default chain', () => {
@@ -2705,6 +3043,36 @@ test('resolveChain drops a fallback that names the selected route', () => {
   const chain = resolveChain({ provider: 'a', model: 'm' }, chainValue({ candidates: [cand('a'), cand('b')] }))
   assert.deepEqual(chain.candidates.map(c => `${c.provider}/${c.model}`), ['a/m', 'b/m'])
   assert.equal(chain.order.length, 2)
+})
+
+test('the chain primaryNeeds reaches the implicit first hop, so its condition is expressible', () => {
+  // 第一跳是 DSH 已选中的模型，不在候选表里；同名候选又会被去重丢掉，所以它的条件
+  // 只能来自链级的 primaryNeeds。没有这个字段时，"只用于带图轮的主模型"无法表达。
+  const chain = resolveChain(
+    { provider: 'selected', model: 'm' },
+    chainValue({ candidates: [cand('a')], primaryNeeds: { images: true } }),
+  )
+  assert.deepEqual(chain.candidates[0].needs, { images: true })
+  // 条件检查本来就对 index 0 生效：纯文本轮上第一跳自身不满足。
+  assert.equal(unmetCondition(chain.candidates[0], { hasImages: false, projectedTokens: undefined }), '需图片输入')
+  assert.equal(unmetCondition(chain.candidates[0], { hasImages: true, projectedTokens: undefined }), undefined)
+  // 同一条路把它带进执行链：schema → 迁移/规范化 → resolveChain。
+  const effective = effectiveChains({
+    chains: [{ id: 'c', name: '', candidates: [], primaryNeeds: { minContextTokens: 120000 } }],
+  })
+  assert.deepEqual(effective.chains[0].primaryNeeds, { minContextTokens: 120000 })
+  // 旧形状（profiles）里被钉死的那一条就是第一跳：它自带的条件必须搬过去，
+  // 否则迁移会连着用户的图片条件一起丢掉。
+  const migrated = effectiveChains({
+    profiles: [{
+      when: { provider: 'selected', model: 'm' },
+      candidates: [
+        { provider: 'selected', model: 'm', maxRetries: 0, needs: { images: false } },
+        { provider: 'a', model: 'm', maxRetries: 0 },
+      ],
+    }],
+  })
+  assert.deepEqual(migrated.chains[0].primaryNeeds, { images: false })
 })
 
 test('resolveChain has nothing to route when no fallback is configured', () => {
@@ -3389,7 +3757,6 @@ const handoffConfig = (over = {}) => ({
     maxDelegationsPerUserMessage: 8,
     maxReviewsPerUserMessage: 1,
     maxNewSessionsPerUserMessage: 2,
-    maxDelegationsPerDay: 24,
     nudgeWhenUnreceipted: false,
     maxNudgesPerTurn: 1,
   },
@@ -3561,6 +3928,9 @@ function handoffAgent(id, options = {}) {
     session: {
       id,
       header: { cwd: 'D:\\work', ...options.header },
+      // 旧会话的模型选择只从这条 durable 头里读（session.requestHeader()?.config）：
+      // 内存里的选择器住在一个拿不到的私有类上。
+      requestHeader: () => (options.selection === undefined ? undefined : { config: options.selection }),
       append(type, message, appendOptions) {
         if (log !== undefined) log.push('session.append')
         appended.push({ type, message, options: appendOptions })
@@ -3655,9 +4025,9 @@ const flushReview = () => new Promise(resolve => setImmediate(resolve))
 
 test('newSession runs the six relay steps in order and carries selection, binding and budget', async () => {
   const log = []
-  const oldAgent = handoffAgent('old', { log })
-  const newAgent = handoffAgent('new', { log })
   const selection = { provider: 'acme', model: 'main-1' }
+  const oldAgent = handoffAgent('old', { log, selection })
+  const newAgent = handoffAgent('new', { log })
   const goal = { id: 'goal-1', revision: 4, objective: '把 P2 收尾', phase: 'active', roundsStarted: 2, maxGoalRounds: 10 }
   const created = []
   const cleared = []
@@ -3667,15 +4037,14 @@ test('newSession runs the six relay steps in order and carries selection, bindin
     clear(agent, ref) { log.push('goal.clear'); cleared.push({ agent, ref }) },
   }
   const createRequests = []
+  const selected = []
+  // 真实公开面：`create(request)` 与 `selectModel(request)`（index.d.ts:101,107）。
+  // 从前这里手写的是私有类上的三个方法，于是测试把错契约固化了。
   const controller = {
-    selectionFor() { log.push('selectionFor'); return { current: selection } },
-    async createSession(request) { log.push('createSession'); createRequests.push(request); return { agent: newAgent } },
-    selectForNextRequest(agent, value) {
-      log.push('selectForNextRequest')
-      assert.equal(agent, newAgent)
-      assert.deepEqual(value, selection)
-    },
+    async create(request) { log.push('create'); createRequests.push(request); return { sessionId: 'new' } },
+    async selectModel(request) { log.push('selectModel'); selected.push(request) },
   }
+  const registry = { get: id => (id === 'new' ? newAgent : undefined) }
   const state = handoffState({
     lastUserText: '把名册收尾',
     records: [{ at: 5, epoch: 1, turn: 1, kind: 'delegate', rosterId: 'coder' }],
@@ -3690,7 +4059,8 @@ test('newSession runs the six relay steps in order and carries selection, bindin
   const tool = handoffTool(config, {
     subagents: { async startActivation() { throw new Error('this test never delegates') } },
     goals,
-    sessionController: controller,
+    sessionController: () => controller,
+    agents: () => registry,
     projections: handoffProjections(state, [{ content: '写单测', status: 'in_progress' }]),
     logger: { error() {}, warn() {} },
   }, observedLedger(ledger, log), observedBindings(bindings, log))
@@ -3702,13 +4072,16 @@ test('newSession runs the six relay steps in order and carries selection, bindin
   assert.equal(createRequests[0].cwd, 'D:\\work')
   assert.equal(typeof createRequests[0].reusable, 'function')
   assert.equal(createRequests[0].reusable('any'), false, 'the relay never reuses a session')
-  // 六步：读旧选择 → 建会话 → 首跳 → 绑定与预算 → 简报 → 旧 goal 与 notice。
+  // 六步：建会话 → 首跳 → 绑定与预算 → 简报 → 旧 goal 与 notice。
+  // （第 1 步"读旧选择"读的是 durable 的 requestHeader，不经过 controller。）
   // goal.create 排在简报之前：重建失败时目标还得进简报（§4.6 步 6），而简报只发一次。
   assert.deepEqual(log, [
-    'selectionFor', 'createSession', 'selectForNextRequest',
+    'create', 'selectModel',
     'binding.read', 'binding.write', 'ledger.carry',
     'goal.create', 'followup', 'goal.clear', 'session.append',
   ])
+  // 选择经公开的 selectModel 落地：会话 id + 旧会话真跑过的 provider/model。
+  assert.deepEqual(selected, [{ sessionId: 'new', provider: 'acme', model: 'main-1' }])
   assert.deepEqual(bindings.read('new'), { chain: 'coding', retries: { 'p/m': 2 } })
   // 携带的预算就是闸门读数：投影 1 次派发 + 这次 newSession 自身 +1（投影里还没有它）。
   assert.deepEqual(ledger.carriedOf('new'), { delegations: 1, reviews: 0, newSessions: 1, perRole: { coder: 1 } })
@@ -3742,14 +4115,51 @@ test('newSession runs the six relay steps in order and carries selection, bindin
   assert.match(notice, /finish:done/)
 })
 
+test('health channels list every chain position, not only the chain being edited', () => {
+  // 4.14：位次曾读 `draft.chain`（正在编辑的那条），于是切链会改变对同一条渠道的
+  // 结论（甚至显示"未配置到降级链"），而检查与探测走的却是全链。判据是
+  // "每个 (链, 位次) 一条"，且观测到但没配在链里的路由不带位次。
+  const dict = { channelUsedInChainNamed: '{chain} 第 {n} 位', chainDefaultName: '默认链' }
+  const t = key => dict[key] ?? key
+  const channels = healthChannels({
+    draft: {
+      chains: [
+        { name: '', candidates: [{ provider: 'shared', model: 'm1' }] },
+        { name: '写代码', candidates: [{ provider: 'shared', model: 'm1' }, { provider: 'only', model: 'm2' }] },
+      ],
+    },
+    passive: { 'seen/route': {} },
+    t: t,
+  })
+  const labelsOf = route => (channels.find(channel => channel.route === route)?.usages ?? []).map(usage => usage.label)
+  assert.deepEqual(labelsOf('shared/m1'), ['默认链 第 1 位', '写代码 第 1 位'])
+  assert.deepEqual(labelsOf('only/m2'), ['写代码 第 2 位'])
+  assert.deepEqual(labelsOf('seen/route'), [], 'an observed route with no chain position carries no badge')
+})
+
+test('the hand-written SessionController face names only methods the real service has', async () => {
+  // 3.3 的形状：face 手写三个方法，真实服务只有两个，`as` 强转让 tsc 沉默，
+  // 一直到 newSession 才 `TypeError: controller.selectionFor is not a function`。
+  // 这条用真实包的原型对账——不是再抄一份 d.ts，那只会多一个会漂移的副本。
+  const { SessionController } = await import('@deepseek-ai/dsh-api-session-controller')
+  const source = readFileSync(new URL('../src/handoff-tool.ts', import.meta.url), 'utf8')
+  const start = source.indexOf('export interface SessionControllerFace {')
+  const face = source.slice(start, source.indexOf('export interface AgentRegistryFace', start))
+  const declared = [...face.matchAll(/^\s{2}(\w+)\(/gm)].map(match => match[1]).sort()
+  assert.deepEqual(declared, ['create', 'selectModel'], 'fixture: the face declares exactly the two public methods')
+  for (const method of declared) {
+    assert.equal(typeof SessionController.prototype[method], 'function',
+      `${method} is not on the real SessionController (the ApiSessionAgentController is private and unreachable)`)
+  }
+})
+
 test('the relay carries no selection and no binding when there is nothing to carry', async () => {
   const log = []
   const oldAgent = handoffAgent('old', { log })
   const newAgent = handoffAgent('new', { log })
   const controller = {
-    selectionFor() { log.push('selectionFor'); return {} },
-    async createSession() { log.push('createSession'); return { agent: newAgent } },
-    selectForNextRequest() { log.push('selectForNextRequest') },
+    async create() { log.push('create'); return { sessionId: 'new' } },
+    async selectModel() { log.push('selectModel') },
   }
   const config = handoffConfig({
     roster: [rosterEntry({ id: 'coder', role: 'work' })],
@@ -3760,15 +4170,17 @@ test('the relay carries no selection and no binding when there is nothing to car
   await bindings.write('old', { chain: 'coding', retries: {} })
   const tool = handoffTool(config, {
     subagents: { async startActivation() { throw new Error('this test never delegates') } },
-    sessionController: controller,
+    sessionController: () => controller,
+    agents: () => ({ get: id => (id === 'new' ? newAgent : undefined) }),
     projections: handoffProjections(handoffState(), undefined),
     logger: { error() {}, warn() {} },
   }, observedLedger(ledger, log), observedBindings(bindings, log))
 
   await tool.call({ action: 'newSession', handoffNote: '继续' }, oldAgent)
 
-  // 没有选择就不调 selectForNextRequest；carryChainBinding 为假就不读不写绑定。
-  assert.deepEqual(log, ['selectionFor', 'createSession', 'followup', 'session.append'])
+  // 旧会话没有 requestHeader（没跑过请求）→ 不调 selectModel；
+  // carryChainBinding 为假 → 不读不写绑定。
+  assert.deepEqual(log, ['create', 'followup', 'session.append'])
   assert.equal(bindings.read('new'), undefined)
   assert.equal(ledger.carriedOf('new'), undefined)
 })
@@ -3791,11 +4203,11 @@ test('a goal that cannot be rebuilt still reaches the briefing', async () => {
       create() { throw new Error('goal tool unavailable') },
       clear(agent, ref) { cleared.push({ agent, ref }) },
     },
-    sessionController: {
-      selectionFor: () => ({}),
-      async createSession() { return { agent: newAgent } },
-      selectForNextRequest() {},
-    },
+    sessionController: () => ({
+      async create() { return { sessionId: 'new' } },
+      async selectModel() {},
+    }),
+    agents: () => ({ get: () => newAgent }),
     projections: handoffProjections(handoffState(), undefined),
     logger: { error() {}, warn(message) { warnings.push(message) } },
   }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
@@ -3856,6 +4268,12 @@ test('facts reports todos as unknown, not as an empty list, when the projection 
   const receipt = await tool.call({ action: 'facts' }, agent)
   assert.equal(receipt.todos, null)
   assert.equal(receipt.goal, null)
+  // 计数同理：没有投影 = 没数过。回 0 会让模型读成"从没派人"，
+  // 而闸门读的是 counters（0 是它该有的拒绝基线），两处不许混。
+  assert.equal(receipt.compactions, null)
+  assert.equal(receipt.turns, null)
+  assert.equal(receipt.toolFailures, null)
+  assert.equal(receipt.delegations, null)
 })
 
 test('delegate assembles the child request from the roster and keeps one reader per field', async () => {
@@ -3986,6 +4404,28 @@ test('a review that finds gaps blocks finish with the gap list the ledger stored
   )
 })
 
+test('reviewOverride waives the review gate only, never the handoffNote gate', async () => {
+  const agent = handoffAgent('s1')
+  const base = handoffConfig()
+  const config = handoffConfig({
+    protocol: { ...base.protocol, requireReviewFor: ['done'] },
+    newSession: { ...base.newSession, onFinish: ['done'] },
+  })
+  const tool = handoffTool(config, {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  // 同一份配置，两个不同的拒绝：不写 override 时被复核闸挡住……
+  await assert.rejects(() => tool.call({ action: 'finish', outcome: 'done' }, agent), /no review/)
+  // ……写了 override 就该轮到 note 闸：`done` 在 onFinish 里，接力必须有下一步任务。
+  await assert.rejects(
+    () => tool.call({ action: 'finish', outcome: 'done', reviewOverride: '赶时间' }, agent),
+    /handoffNote/,
+  )
+})
+
 test('a finish outcome listed in newSession.onFinish goes through the same relay', async () => {
   const oldAgent = handoffAgent('old')
   const newAgent = handoffAgent('new')
@@ -4001,22 +4441,53 @@ test('a finish outcome listed in newSession.onFinish goes through the same relay
   })
   const tool = handoffTool(config, {
     subagents: { async startActivation() { throw new Error('this test never delegates') } },
-    sessionController: {
-      selectionFor: () => ({}),
-      async createSession() { created += 1; return { agent: newAgent } },
-      selectForNextRequest() {},
-    },
+    sessionController: () => ({
+      async create() { created += 1; return { sessionId: 'new' } },
+      async selectModel() {},
+    }),
+    agents: () => ({ get: () => newAgent }),
     projections: handoffProjections(handoffState(), undefined),
     logger: { error() {}, warn() {} },
   }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
 
-  const receipt = await tool.call({ action: 'finish', outcome: 'done', handoffNote: '下一段从测试开始' }, oldAgent)
+  const receipt = await tool.call(
+    { action: 'finish', outcome: 'done', handoffNote: '下一段从测试开始', report: '改完 A，还差 B' },
+    oldAgent,
+  )
 
   assert.equal(created, 1, 'the auto-relay is the same function, not a second path')
-  assert.deepEqual(receipt, { action: 'finish', recorded: true, outcome: 'done', newSessionId: 'new' })
+  // report 原样进回执：它是"做了什么/还剩什么"的唯一落点，从前无人接收。
+  assert.deepEqual(receipt, {
+    action: 'finish',
+    recorded: true,
+    outcome: 'done',
+    report: '改完 A，还差 B',
+    newSessionId: 'new',
+  })
   const text = newAgent.followed[0].content.map(block => block.text).join('\n')
   assert.match(text, /【接力】上一会话收工：finish:done/)
   assert.match(text, /【交接说明】下一段从测试开始/)
+  assert.match(text, /【收工说明】改完 A，还差 B/, 'the new session gets what was left, not only where to start')
+  // 用户侧也有一句：不必展开折叠的工具结果才知道收工说了什么。
+  const noticeText = oldAgent.appended.map(entry => entry.message.content.map(block => block.text).join('\n')).join('\n')
+  assert.match(noticeText, /收工回执（已完成）：改完 A，还差 B/)
+})
+
+test('finish without a relay still echoes the report and says it once', async () => {
+  const agent = handoffAgent('s1')
+  const tool = handoffTool(handoffConfig(), {
+    subagents: { async startActivation() { throw new Error('this test never delegates') } },
+    projections: handoffProjections(handoffState(), undefined),
+    logger: { error() {}, warn() {} },
+  }, new HandoffLedger(fakeDomainTables().context()), new SessionBindings(fakeContext(undefined)))
+
+  const receipt = await tool.call({ action: 'finish', outcome: 'needs_user', report: '等你决定要不要换方案' }, agent)
+  assert.deepEqual(receipt, { action: 'finish', recorded: true, outcome: 'needs_user', report: '等你决定要不要换方案' })
+  const text = agent.appended.map(entry => entry.message.content.map(block => block.text).join('\n')).join('\n')
+  assert.match(text, /收工回执（需要你决定）：等你决定要不要换方案/)
+  // 没写 report 就不发通知：不为一句空话多花一条 durable 消息。
+  await tool.call({ action: 'finish', outcome: 'done' }, agent)
+  assert.equal(agent.appended.filter(entry => entry.message.content.some(block => block.text.includes('收工回执'))).length, 1)
 })
 
 test('the roster rules reject blank ids, duplicate ids, empty purposes and undefined roles', () => {
@@ -4067,7 +4538,9 @@ test('normalizeHandoff reads a config written before the section existed as its 
   assert.equal(fresh.limits.maxDelegationsPerUserMessage, 8)
   assert.equal(fresh.limits.maxReviewsPerUserMessage, 1)
   assert.equal(fresh.limits.maxNewSessionsPerUserMessage, 2)
-  assert.equal(fresh.limits.maxDelegationsPerDay, 24)
+  // 没有「每日派发上限」：这个字段曾经在 schema、名册 UI 和校验里各走一遍，
+  // 而 handoff.ts 一次都没读过它。删字段而不是造一套跨重启的时间源。
+  assert.equal(Object.hasOwn(fresh.limits, 'maxDelegationsPerDay'), false)
   assert.equal(fresh.subagentBackend, 'spawn')
 })
 

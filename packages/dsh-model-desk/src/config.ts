@@ -16,9 +16,14 @@
 
 import z from '@deepseek-ai/schemastery'
 import {
+  BREAKER_COOLDOWN_MAX_SECONDS,
+  BREAKER_COOLDOWN_MIN_SECONDS,
   DEFAULT_BREAKER_COOLDOWN_SECONDS,
   DEFAULT_BREAKER_SCOPE,
   DEFAULT_CHAIN_ID,
+  HEALTH_INTERVAL_MAX_SECONDS,
+  PROBE_TIMEOUT_MAX_SECONDS,
+  PROBE_TIMEOUT_MIN_SECONDS,
   DEFAULT_FIRST_HOP_MAX_RETRIES,
   DEFAULT_HANDOFF_LIMITS,
   DEFAULT_HANDOFF_MAX_RUNS_PER_USER_MESSAGE,
@@ -92,10 +97,27 @@ export const candidateSchema = z.object({
   weight: z.number().step(1).min(0).max(100).default(0)
     .description('权重；只有「按权重」策略会读它，其他策略下写多少都不影响'),
   needs: z.object({
-    images: z.boolean().description('图片条件：true = 仅当本次请求包含图片时使用此候选；false = 仅当本次请求不含图片时使用；不填 = 不限。对第一个候选（你选中的模型）同样生效'),
+    images: z.boolean().description('图片条件：true = 仅当本次请求包含图片时使用此候选；false = 仅当本次请求不含图片时使用；不填 = 不限。第一跳的条件在链的 primaryNeeds 里单独配置'),
     minContextTokens: z.number().step(1).min(0).description('仅当预估上下文达到该 token 数时使用此候选；0 表示不限制'),
-  }).description('高级路由条件：不满足时跳过此候选（含第一个候选）'),
+  }).description('高级路由条件：不满足时跳过此候选（只作用于链上的降级候选；第一跳用 primaryNeeds）'),
 })
+
+/**
+ * The first hop's own condition — the same shape as a candidate's `needs`.
+ *
+ * The first hop is the model DSH has already selected, so it is not in
+ * `candidates` and has nowhere to carry a condition. Without this field the
+ * "zero-click vision route" (a text-first chain whose image candidate is gated)
+ * cannot describe its own primary: `needs` on a candidate that names the
+ * selected route is dropped by `resolveChain`'s de-duplication.
+ *
+ * A condition here that the request does not meet skips the first hop and the
+ * chain continues with its fallbacks; the skip is announced like any other.
+ */
+export const primaryNeedsSchema = z.object({
+  images: z.boolean().description('第一跳的图片条件：true = 仅当本次请求包含图片时走第一跳；false = 仅当本次请求不含图片时走；不填 = 不限'),
+  minContextTokens: z.number().step(1).min(0).description('仅当预估上下文达到该 token 数时才走第一跳；0 表示不限制'),
+}).description('第一跳（你选中的模型）的路由条件：不满足时跳过它，直接从降级候选开始')
 
 /** Which failures move to the next candidate. Fixed set, Chinese labels. */
 export const switchOnSchema = z.object({
@@ -133,6 +155,7 @@ const chainFields = {
   stickyTurns: z.number().step(1).min(0).max(99).default(DEFAULT_STICKY_TURNS)
     .description('带图轮之后，继续按「有图」路由的无图轮数；0 = 无图轮立即切回（默认）'),
   strategy: strategySchema,
+  primaryNeeds: primaryNeedsSchema,
   firstHopMaxRetries: z.number().step(1).min(0).max(MAX_RETRIES).default(DEFAULT_FIRST_HOP_MAX_RETRIES)
     .description('第一跳（当前选中的模型）失败后最多重试几次（不含首次调用；0 = 首发失败即降级）'),
   maxTokens: z.object({
@@ -167,7 +190,7 @@ export const namedChainSchema = z.object({
  */
 export const discoverSchema = z.object({
   enabled: z.boolean().default(true).description('定时连通性检查：到点向渠道要一份模型清单，不生成内容、不花 Token'),
-  intervalSeconds: z.number().step(1).min(0).max(86400).default(DEFAULT_INTERVAL_SECONDS)
+  intervalSeconds: z.number().step(1).min(0).max(HEALTH_INTERVAL_MAX_SECONDS).default(DEFAULT_INTERVAL_SECONDS)
     .description('定时检查周期（秒；0 表示只手动跑，不后台轮询）。限流是每个渠道各自的，按你自己渠道的承受能力设'),
 })
 
@@ -182,7 +205,7 @@ export const discoverSchema = z.object({
  */
 export const probeSchema = z.object({
   enabled: z.boolean().default(false).description('定时真探测：真的发一条最小消息，唯一能证明模型能出字，但会花 Token'),
-  intervalSeconds: z.number().step(1).min(0).max(86400).default(DEFAULT_INTERVAL_SECONDS)
+  intervalSeconds: z.number().step(1).min(0).max(HEALTH_INTERVAL_MAX_SECONDS).default(DEFAULT_INTERVAL_SECONDS)
     .description('定时真探测周期（秒；0 表示只手动跑）'),
   prompt: z.string().default(DEFAULT_PROBE_PROMPT)
     .description('探测发什么内容；默认单个字符最不容易触发渠道内容过滤'),
@@ -190,7 +213,7 @@ export const probeSchema = z.object({
     route: z.string().required().description('渠道，格式 provider/model'),
     prompt: z.string().required().description('这个渠道专用探测内容，覆盖全局默认'),
   })).default([]).description('按渠道覆盖探测内容：不同渠道违禁词不同，被拦的就单独写一个'),
-  timeoutSeconds: z.number().step(1).min(2).max(60).default(DEFAULT_PROBE_TIMEOUT_SECONDS)
+  timeoutSeconds: z.number().step(1).min(PROBE_TIMEOUT_MIN_SECONDS).max(PROBE_TIMEOUT_MAX_SECONDS).default(DEFAULT_PROBE_TIMEOUT_SECONDS)
     .description('单次探测超时时间（秒）'),
 })
 
@@ -204,7 +227,7 @@ export const probeSchema = z.object({
 export const breakRuleSchema = z.object({
   code: z.string().default('').description('错误码，精确匹配；留空表示这一条不按码匹配'),
   message: z.string().default('').description('错误信息包含这个字符串就命中；留空表示不按信息匹配'),
-  cooldownSeconds: z.number().step(1).min(1).max(86400).default(DEFAULT_BREAKER_COOLDOWN_SECONDS)
+  cooldownSeconds: z.number().step(1).min(BREAKER_COOLDOWN_MIN_SECONDS).max(BREAKER_COOLDOWN_MAX_SECONDS).default(DEFAULT_BREAKER_COOLDOWN_SECONDS)
     .description('命中后禁用多少秒；冷却到了自动放行重试，不是永久拉黑'),
   scope: z.union(['route', 'channel']).default(DEFAULT_BREAKER_SCOPE)
     .description('禁用范围：仅此模型 = 只禁这条 provider/model；整条渠道 = 该 provider 下所有模型一起禁（密钥失效、网关整体故障时用）'),
@@ -219,10 +242,13 @@ export const breakerSchema = z.object({
   rules: z.array(breakRuleSchema).default([]),
 })
 
-/** 渠道健康监控配置：四档各自独立，用户自己选开哪些。 */
+/**
+ * 渠道健康监控配置：三档各自独立，用户自己选开哪些。
+ *
+ * 被动观测不在这张表里：它只是把真实对话的结果折进投影（`health.ts`），零请求、
+ * 零 Token、也没有"要不要记录"可决定——一个没有读者的开关只会骗人。
+ */
 export const healthSchema = z.object({
-  passive: z.boolean().default(true)
-    .description('运行时记录：正常对话的结果自动记入渠道健康，零成本，但只能反映已经发生过的事'),
   discover: discoverSchema.default({}),
   probe: probeSchema.default({}),
   breaker: breakerSchema.default({}),
@@ -284,8 +310,6 @@ export const handoffLimitsSchema = z.object({
     .description('复核上限，不是配额：第一次就通过就收工'),
   maxNewSessionsPerUserMessage: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxNewSessionsPerUserMessage)
     .description('开新会话上限；随会话复制，不因开新会话而重置'),
-  maxDelegationsPerDay: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxDelegationsPerDay)
-    .description('进程内每日累计，重启归零'),
   nudgeWhenUnreceipted: z.boolean().default(DEFAULT_HANDOFF_LIMITS.nudgeWhenUnreceipted)
     .description('没交回执就停时追问一次（会触发一次真实模型调用）'),
   maxNudgesPerTurn: z.number().step(1).min(0).default(DEFAULT_HANDOFF_LIMITS.maxNudgesPerTurn)
@@ -340,7 +364,7 @@ export const Config = z.object({
   chain: chainSchema.default({}).volatile()
     .description('旧形状：唯一的全局链。只在新形状缺失时读取，首次保存后会被移除'),
   health: healthSchema.default({}).volatile()
-    .description('渠道健康监控：运行时记录、连通性检查、发送测试消息、自动禁用四档'),
+    .description('渠道健康监控：连通性检查、发送测试消息、自动禁用三档；被动观测始终在（它只是折真实对话的结果）'),
   handoff: handoffSchema.default({}).volatile()
     .description('委派名册：一个 handoff 工具（派人 / 收工 / 开新会话 / 看事实）+ 名册 + 闸门 + 接力。默认关'),
   // 策略版本：v2 = "失败默认全切"。旧配置里 emptyResponse/invalidRequest 被写成了
@@ -412,6 +436,8 @@ export interface MaxTokenPolicy {
  */
 export interface ChainConfig {
   candidates: Candidate[]
+  /** The first hop's own condition (`needs` shape); absent = unconstrained. */
+  primaryNeeds?: { images?: boolean; minContextTokens?: number }
   switchOn: SwitchOn
   /**
    * 不重试、直接切下一条候选的失败键，按 `switchOn` 的键名书写。
@@ -455,9 +481,8 @@ export interface ProbeConfig {
   timeoutSeconds: number
 }
 
-/** 渠道健康监控配置：四档各自独立。 */
+/** 渠道健康监控配置：三档各自独立。 */
 export interface HealthConfig {
-  passive: boolean
   discover: DiscoverConfig
   probe: ProbeConfig
   breaker: BreakerConfig
@@ -545,7 +570,6 @@ export interface HandoffLimitsConfig {
   maxDelegationsPerUserMessage: number
   maxReviewsPerUserMessage: number
   maxNewSessionsPerUserMessage: number
-  maxDelegationsPerDay: number
   nudgeWhenUnreceipted: boolean
   maxNudgesPerTurn: number
 }

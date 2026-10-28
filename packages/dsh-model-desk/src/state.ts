@@ -117,6 +117,18 @@ interface TurnNote {
   step: number
   /** Turn-accumulated (sticky-extended) image condition. */
   hasImages: boolean
+  /**
+   * This turn brought its own image (claimed input or a tool result) —
+   * as opposed to `hasImages`, which is also true for a turn the sticky
+   * window merely extended.
+   *
+   * The refill in {@link RouterState.setStickyTurns} may only happen for a
+   * turn with its own image: it exists because `agent/pre-step` runs before
+   * the chain (and its `stickyTurns`) is known, not to top up every turn.
+   * Without this flag a text-only session refills the window on every step
+   * and the image condition never expires.
+   */
+  ownImages: boolean
   /** No-image turns the image condition still holds for. */
   stickyRemaining: number
   projectedTokens: number | undefined
@@ -165,6 +177,9 @@ export interface TurnCarry {
   /** 从它身上已经自动续了几次（通知文案要说清楚）。 */
   continues: number
 }
+
+/** The "nothing announced yet" answer: a shared frozen empty set, never written. */
+const NO_NOTICE_KEYS: ReadonlySet<string> = new Set<string>()
 
 export class RouterState {
   private readonly steps = new WeakMap<Agent, StepState>()
@@ -285,6 +300,7 @@ export class RouterState {
         step,
         projectedTokens: conditions.projectedTokens,
         hasImages: previous.hasImages || conditions.hasImages,
+        ownImages: previous.ownImages || conditions.hasImages,
       })
       return
     }
@@ -294,6 +310,7 @@ export class RouterState {
       turn,
       step,
       hasImages,
+      ownImages: conditions.hasImages,
       // 真有图的轮次把窗口补满；被粘滞延长的轮次消耗一格；没粘住的归零。
       stickyRemaining: conditions.hasImages ? this.stickyTurnsOf(agent) : Math.max(0, remaining - 1),
       projectedTokens: conditions.projectedTokens,
@@ -309,7 +326,7 @@ export class RouterState {
     if (!hasImage) return
     const note = this.turns.get(agent)
     if (note === undefined || note.turn !== turn) return
-    this.turns.set(agent, { ...note, hasImages: true, stickyRemaining: this.stickyTurnsOf(agent) })
+    this.turns.set(agent, { ...note, hasImages: true, ownImages: true, stickyRemaining: this.stickyTurnsOf(agent) })
   }
 
   /** The conditions for this step, or the defaults when pre-step was not observed. */
@@ -329,11 +346,15 @@ export class RouterState {
    * not stick. Fixing the note here (same turn, window still 0) closes that gap
    * without moving chain resolution earlier — resolution needs the resolved route,
    * which does not exist at pre-step time.
+   *
+   * The refill is gated on the turn's OWN image (`note.ownImages`): every step of
+   * every turn reaches this method, so an ungated refill would keep a text-only
+   * session permanently "image-bearing" and the window would never decay.
    */
   setStickyTurns(agent: Agent, turns: number): void {
     this.sticky.set(agent, Math.max(0, turns))
     const note = this.turns.get(agent)
-    if (note !== undefined && note.stickyRemaining === 0 && turns > 0) {
+    if (note !== undefined && note.ownImages && note.stickyRemaining === 0 && turns > 0) {
       this.turns.set(agent, { ...note, stickyRemaining: Math.max(0, turns) })
     }
   }
@@ -343,25 +364,34 @@ export class RouterState {
   }
 
   /**
-   * Whether the skip notices for this (agent, turn, key) have not been emitted
-   * yet. A tool-loop turn re-decides every step and would repeat an identical
-   * row per step; the first one carries the information. One gate for all three
-   * skip kinds (condition / capability / breaker): the key names the group, so
-   * the three paths cannot drift apart again.
+   * The keys of the once-per-turn notices this turn has already announced.
    *
-   * A turn keeps the SET of keys it already announced, not just the last one:
-   * a single fire can skip a condition candidate, a capability candidate and a
-   * cooling candidate at once, and each of those must stay deduped on its own.
+   * A tool-loop turn re-decides every step and would repeat an identical row per
+   * step; the first one carries the information. A turn keeps the SET of keys it
+   * already announced, not just the last one: a single fire can skip a condition
+   * candidate, a capability candidate and a cooling candidate at once, and each
+   * of those must stay deduped on its own.
+   *
+   * The caller decides what a key means; today they are per-route
+   * (`condition:`/`capability:`/`breaker:` + route, see ./skip-plan.ts) and one
+   * is not a skip at all (a session bound to a deleted chain). Reading and
+   * recording are separate calls so the decision can be a pure function while
+   * this map stays the single ledger.
    */
-  shouldNoteSkip(agent: Agent, turn: number, key: string): boolean {
+  turnNoticeKeys(agent: Agent, turn: number): ReadonlySet<string> {
+    const note = this.conditionSkips.get(agent)
+    return note !== undefined && note.turn === turn ? note.keys : NO_NOTICE_KEYS
+  }
+
+  /** Record keys this turn has now announced. */
+  recordTurnNoticeKeys(agent: Agent, turn: number, keys: readonly string[]): void {
+    if (keys.length === 0) return
     const note = this.conditionSkips.get(agent)
     if (note === undefined || note.turn !== turn) {
-      this.conditionSkips.set(agent, { turn, keys: new Set([key]) })
-      return true
+      this.conditionSkips.set(agent, { turn, keys: new Set(keys) })
+      return
     }
-    if (note.keys.has(key)) return false
-    note.keys.add(key)
-    return true
+    for (const key of keys) note.keys.add(key)
   }
 
   /**

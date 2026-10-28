@@ -32,6 +32,8 @@ const HOME = `${HERE}.dshhome`
 const SESSIONS = `${HERE}.sessions`
 /** What the binding fixture observed inside the booted process (rewritten per scenario). */
 const BINDING_OBSERVED = `${HERE}.binding-observed.json`
+/** This suite's own scenario script (see `stub-adapter.mjs`'s `STUB_SCRIPT`). */
+const SCRIPT = `${HERE}stub-script-run.json`
 
 const SWITCH_ON = {
   rateLimit: true, server: true, timeout: true, transport: true,
@@ -69,6 +71,10 @@ const BOUND_CHAIN = {
 // settlement reports sits beside `message`, and only real events carry it there.
 import { channelHealthProjection } from '../src/health.ts'
 import { failoverHistoryProjection } from '../src/lineage.ts'
+import { assertFreshBuild } from './freshness.mjs'
+
+// 每个场景都用一个真实 `dsh` 子进程加载 `lib/index.js`：产物比源码旧时必须先重建。
+assertFreshBuild()
 
 const SCENARIOS = [
   {
@@ -681,6 +687,64 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'primary-condition-skips-the-first-hop',
+    note: '第一跳条件（primaryNeeds.images: true）不满足：纯文本轮跳过识图主模型、从降级候选开始，并留一条点名第一跳的跳过通知',
+    // 4.17 的端到端判据：条件对第一跳可表达、可执行、可留痕。没有这个字段时，
+    // 第一跳（用户选中的模型）永远先被打一发——识图主模型在纯文本轮也照打。
+    router: {
+      enabled: true,
+      chain: {
+        candidates: [C('stub-backup', 1)],
+        firstHopMaxRetries: 0,
+        switchOn: { ...SWITCH_ON },
+        primaryNeeds: { images: true },
+      },
+    },
+    script: {
+      policy: { maxRetries: 0 },
+      'stub-primary': { outcomes: ['ok'] },
+      'stub-backup': { outcomes: ['ok'] },
+    },
+    check(events) {
+      // 第一跳一次都没被打：请求从头就在降级候选上。
+      eq('no request reaches the skipped first hop', headers(events), ['stub-backup/stub-model'])
+      const texts = notices(events).map(n => n.text)
+      eq('one skip notice', texts.filter(t => t.includes('使用条件不满足')).length, 1)
+      ok('the notice names the first hop and the reason',
+        texts.some(t => t.includes('stub-primary/stub-model') && t.includes('需图片输入')))
+      eq('turn end', turnEnd(events), 'completed')
+    },
+  },
+  {
+    name: 'first-hop-skip-is-not-announced-when-the-request-falls-back-to-it',
+    note: '第一跳与唯一降级候选的条件都不满足：请求落回第一跳，但不许出现「已跳过第一跳」的假话（只报降级候选）',
+    // 4.13 的形态。第一跳的条件让它落了空，链上也没人能接，于是请求回到第一跳——
+    // 这时再说"第一跳已跳过"就是一句与屏幕相反的话。跳过通知因此只在真的落到别处时发。
+    router: {
+      enabled: true,
+      chain: {
+        candidates: [C('stub-backup', 1, { needs: { images: true } })],
+        firstHopMaxRetries: 0,
+        switchOn: { ...SWITCH_ON },
+        primaryNeeds: { images: true },
+      },
+    },
+    script: {
+      policy: { maxRetries: 0 },
+      'stub-primary': { outcomes: ['ok'] },
+      'stub-backup': { outcomes: ['ok'] },
+    },
+    check(events) {
+      eq('the request falls back to the user own route', headers(events), ['stub-primary/stub-model'])
+      const texts = notices(events).map(n => n.text)
+      eq('one skip notice, for the fallback candidate only', texts.filter(t => t.includes('使用条件不满足')).length, 1)
+      ok('the notice names the fallback', texts.some(t => t.includes('stub-backup') && t.includes('需图片输入')))
+      ok('no false claim about skipping the first hop',
+        !texts.some(t => t.includes('stub-primary/stub-model') && t.includes('使用条件不满足')))
+      eq('turn end', turnEnd(events), 'completed')
+    },
+  },
+  {
     name: 'master-off',
     note: '总闸关闭：配了规则也不接管',
     router: { enabled: false, profiles: [profile([C('stub-primary', 1), C('stub-backup', 1)])], default: { enabled: false, candidates: [], switchOn: { ...SWITCH_ON } } },
@@ -1049,6 +1113,8 @@ function chainFieldsYaml(chain, pad) {
   ]
   if (chain.firstHopMaxRetries !== undefined) lines.push(`${pad}firstHopMaxRetries: ${chain.firstHopMaxRetries}`)
   if (chain.stickyTurns !== undefined) lines.push(`${pad}stickyTurns: ${chain.stickyTurns}`)
+  // JSON 是合法 YAML flow：链级条件（第一跳的 primaryNeeds）原样写进去。
+  if (chain.primaryNeeds !== undefined) lines.push(`${pad}primaryNeeds: ${JSON.stringify(chain.primaryNeeds)}`)
   if (chain.strategy !== undefined) lines.push(`${pad}strategy: ${chain.strategy}`)
   if (chain.maxTokens !== undefined) {
     lines.push(`${pad}maxTokens: { autoContinue: ${chain.maxTokens.autoContinue}, continues: ${chain.maxTokens.continues} }`)
@@ -1085,7 +1151,9 @@ function chainOf(router) {
 function boot(scenario) {
   rmSync(SESSIONS, { recursive: true, force: true })
   rmSync(BINDING_OBSERVED, { force: true })
-  writeFileSync(`${HERE}stub-script.json`, JSON.stringify(scenario.script, null, 2))
+  // 自己的脚本文件（见 stub-adapter 的 STUB_SCRIPT）：与 `remote.mjs` 共用一份时，
+  // 两个套件并行跑会互相读对方的 outcomes。
+  writeFileSync(SCRIPT, JSON.stringify(scenario.script, null, 2))
   writeFileSync(`${HERE}overlay.yml`, overlayYaml(scenario.router, scenario.selection, scenario.binding, scenario.noStorage === true))
   // spawnSync over execFileSync: dsh writes load warnings to stderr even when
   // it exits 0, and an error-terminal turn exits non-zero — neither fact says
@@ -1093,7 +1161,7 @@ function boot(scenario) {
   const result = spawnSync(
     process.execPath,
     [DSH_BIN, '--profile', 'headless', '--patch', `${HERE}overlay.yml`, 'reply with the single word OK'],
-    { cwd: HERE, env: { ...process.env, DSH_HOME: HOME }, encoding: 'utf8', timeout: 180000 },
+    { cwd: HERE, env: { ...process.env, DSH_HOME: HOME, STUB_SCRIPT: SCRIPT }, encoding: 'utf8', timeout: 180000 },
   )
   return { combined: `${result.stdout ?? ''}${result.stderr ?? ''}`, events: readEvents() }
 }

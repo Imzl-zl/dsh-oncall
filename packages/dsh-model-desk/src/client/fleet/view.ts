@@ -30,6 +30,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { StateDotState } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from '../dom.ts'
+import { OfficeRoom } from './office-view.ts'
 import { fill } from '../format.ts'
 import { routeKeyOf } from '../../routes.ts'
 import { Icon, ICON_ARROW_LEFT, ICON_REFRESH } from '../icons.ts'
@@ -718,6 +719,15 @@ export function SessionView(props) {
       onOpenSession: props.onOpenSession,
     }),
     h(Budget, { t: t, budget: session.budget }),
+    // The room: one canvas per session, hidden under the narrow container band
+    // by the fleet stylesheet (it never paints where it cannot be seen).
+    hasChildren
+      ? h(OfficeRoom, {
+          agents: session.agents,
+          onOpen: props.onOpenSession,
+          label: t('fleetSessionAgentsTitle'),
+        })
+      : null,
     session.catalogLoaded === false
       ? h(SessionUnknown, {
           t: t,

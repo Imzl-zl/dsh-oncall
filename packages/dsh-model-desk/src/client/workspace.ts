@@ -3,10 +3,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Button, Input, SegmentedControl, Tag } from '@deepseek-ai/dsh-client-ui-primitives'
 import { h } from './dom.ts'
-import { routeKeyOf, routeParts } from '../routes.ts'
 import { fill, formatLatency, formatWindowHours, healthToneStyle, routeStatus } from './format.ts'
 import { routeNames } from './naming.ts'
 import { ChannelMetricsDashboard } from './health-ui.ts'
+import { healthChannels } from './health-channels.ts'
 import { bucketTimeline, windowSuccessRate } from '../timeline.ts'
 import { Icon, ICON_BOLT, ICON_CHART, ICON_CLOCK, ICON_GEAR, ICON_SEARCH, ICON_SPINNER } from './icons.ts'
 
@@ -74,16 +74,6 @@ function probeTone(verdict) {
   return 'outline'
 }
 
-/** One physical route as the health page lists it, with where it is used. */
-interface HealthChannel {
-  /** `provider/model`, the key every fold and the Host are keyed by. */
-  route: string
-  provider: string
-  model: string
-  /** Where this route appears in the draft: one entry per chain position. */
-  usages: { label: string }[]
-}
-
 export function GlobalHealthWorkspace(props) {
   var t = props.t
   var draft = props.draft
@@ -124,42 +114,10 @@ export function GlobalHealthWorkspace(props) {
   // from the configured half: it is whatever model the user picked in DSH, which
   // the plugin does not know until a request arrives, so it can only appear once
   // it has been observed.
+  // 收集规则住在 `./health-channels.ts`：它读**全部链**（不是"正在编辑的那条"），
+  // 也是唯一能被单测直接断言的地方。
   var allChannels = useMemo(function () {
-    // Keyed by route, and declared as a route→channel table so `Object.values`
-    // yields channels instead of `unknown`: the row below reads `.route`,
-    // `.provider`, `.model` and `.usages`.
-    var map: Record<string, HealthChannel> = {}
-    var ensure = function (provider, model) {
-      if (!provider || !model) return null
-      var key = routeKeyOf(provider, model)
-      if (!map[key]) {
-        map[key] = {
-          route: key,
-          provider: provider,
-          model: model,
-          usages: [],
-        }
-      }
-      return map[key]
-    }
-
-    if (draft && draft.chain && draft.chain.candidates) {
-      draft.chain.candidates.forEach(function (candidate, index) {
-        var channel = ensure(candidate.provider, candidate.model)
-        // 单链之下没有"哪条规则"可跳：所有候选都属于同一条链。所以 usage 只说明
-        // 它在这条链里的位次，不再做按规则的跳转。
-        if (channel) channel.usages.push({
-          // 整句模板 + 占位符：拼 `t(key) + ' #' + n` 会印出「降级链第 #1」这种半中半英的序号。
-          label: fill(t('channelUsedInChain'), { n: index + 1 }),
-        })
-      })
-    }
-
-    if (passive) Object.keys(passive).forEach(function (key) { var parts = routeParts(key); ensure(parts.provider, parts.model) })
-    if (discover) Object.keys(discover).forEach(function (key) { var parts = routeParts(key); ensure(parts.provider, parts.model) })
-    if (probe) Object.keys(probe).forEach(function (key) { var parts = routeParts(key); ensure(parts.provider, parts.model) })
-
-    return Object.values(map)
+    return healthChannels({ draft: draft, passive: passive, discover: discover, probe: probe, t: t })
   }, [draft, passive, discover, probe, t])
 
   var filteredChannels = allChannels.filter(function (channel) {

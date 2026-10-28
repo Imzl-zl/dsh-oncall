@@ -39,7 +39,7 @@ last_updated: "2026-10-12"
     - { provider: pi-ai-claude,     model: claude-sonnet-5, maxRetries: 0 }
 ```
 
-- 第一个候选**必须**就是用户自己选的那个（`candidates[0]` 钉死为 `when` 模型，不可删、不可换序、不适用条件）——让它先试，符合直觉；跳过它就是无失败也静默改路。
+- 第一个候选**必须**就是用户自己选的那个（`candidates[0]` 钉死为 `when` 模型，不可删、不可换序）——让它先试，符合直觉；跳过它就是无失败也静默改路。旧形状里它的 `needs` 迁移后成为链级 `primaryNeeds`（第一跳的条件位，见下文）；跳过只发生在用户显式配了条件且本次不满足时，并留通知。
 - 顺序即优先级，行内上移/下移调整（DSH 设置表单无拖拽先例）。
 - 每个候选可单独设「失败后重试几次再往下走」（`maxRetries`，0 = 首发失败即切）。
 
@@ -90,13 +90,17 @@ last_updated: "2026-10-12"
 | `minContextTokens` | `tokenMeter` 的 `contextPressure` 投影，`projectedTokens` 即"下一个请求会花多少" | **估算**，token-meter 自述系统性低估 CJK，不能当精确阈值 |
 | 推理档位（自动，不占条件位） | 请求 config 的 `reasoningEffort` 对比候选 `resolveModel()` 的 `reasoning.efforts` | **精确**；不支持时 Router 经 `resolveCallConfig` 预校验自动跳过该候选 |
 
-**条件对 primary 同样生效**（含 `candidates[0]` 与兜底池的隐式第一跳）：显式条件是用户意图，跳过它才是无视配置；跳过留 notice，不静默。primary 仍然豁免的只有自动机制——熔断冷却与能力预校验，那些 DSH 在选择时已校验过。此裁定修订了[未决事项](open-questions.md)二.5。
+**条件对 primary 生效：成立（2026-10-26 落地）**。第一跳是 `resolveChain`（`src/router.ts:104-127`）用 `resolved` 现造的隐式候选；候选表里与选中路由同名的条目会被 `:110` 的去重过滤丢掉，所以第一跳的条件只能来自链级的 `chain.primaryNeeds`（与候选 `needs` 同形，`src/config.ts` 的 `primaryNeedsSchema`）。`resolveChain` 把它挂到隐式首跳上，条件过滤、跳过通知、每轮重判全部复用现有代码；链配置页的「第一跳」分区有同一块三态控件（`src/client/pipeline.ts` 复用候选条件面板）。
+
+跳过第一跳时，请求从降级候选开始并留一条点名第一跳的通知；**链上无人能接、请求落回第一跳时不再发「已跳过第一跳」**——那种情况下被跳过的那条正是即将被打的一条（组合场景 `first-hop-skip-is-not-announced-when-the-request-falls-back-to-it` 钉住）。
+
+仍然成立的部分：跳过任何候选都留 notice、不静默；primary 豁免的只有自动机制——熔断冷却与能力预校验，那些 DSH 在选择时已校验过。
 
 **`hasImages` 按 turn 累积，取数 = 本步 claimed 用户消息 ∪ 本轮 `tool/result` 事件里嵌套的图片块**。两个来源都不可省：`agent/pre-step` 的 messages 只是本步新 claimed 的输入，工具循环的第二步之后基本为空（不带累积，带图 turn 的第二步会滑回文本模型，而图片还在请求历史里）；`read_image` 的图从工具结果进来，下一步的请求才含它。`projectedTokens` 仍按 step。
 
-**`stickyTurns`（profile/default 各有，默认 0）**：带图轮之后继续按「有图」路由的无图轮数。追问刚发过的图片（不带新图）时设 2~3，识图模型多粘几轮；0 = 无图轮立即切回。真带图的轮次补满窗口，被粘滞的轮次消耗一格。
+**`stickyTurns`（链上一条，默认 0）**：带图轮之后继续按「有图」路由的无图轮数。追问刚发过的图片（不带新图）时设 2~3，识图模型多粘几轮；0 = 无图轮立即切回。真带图的轮次补满窗口，被粘滞的轮次消耗一格。
 
-**识图路由的完整形态依赖 DSH 侧一次配置**：给文本模型在模型设置里勾选 `input:[text,image]`。发送准入门只查这份声明、不查真实能力（`api/session-controller/src/commands.ts:336-348`），勾选后带图消息永远过门禁；路由器用上面的互斥条件保证 API 永远收不到它处理不了的图。路由器没接管时（关闭/配错/候选全挂）撞 API 报错是响亮的失败。完整理由与代价见[决策笔记](../../.agents/notes/implemented/2026-10-14-image-route-conditions-and-admission-gate-boundary.md)。
+**识图路由的完整形态依赖 DSH 侧一次配置**：给文本模型在模型设置里勾选 `input:[text,image]`。发送准入门只查这份声明、不查真实能力（`api/session-controller/src/commands.ts:336-348`），勾选后带图消息永远过门禁；路由器用上面的互斥条件保证 API 永远收不到它处理不了的图。**该保证依赖第一跳条件**：`primaryNeeds` 落地后成立；当前代码没有这个字段，带图轮会先打到 primary（见本节第一条）。落地后两种用法都通——选中识图模型 + 文本候选 `needs.images: false`（无需动 DSH 设置），或选中文本模型并给它勾「支持图片输入」+ 识图候选 `needs.images: true`。路由器没接管时（关闭/配错/候选全挂）撞 API 报错是响亮的失败。完整理由与代价见[决策笔记](../../.agents/notes/implemented/2026-10-14-image-route-conditions-and-admission-gate-boundary.md)。
 
 **工具能力不做前置条件**：DSH 没有任何机器可读的"模型支持 function calling"元数据（`LlmModelInfo` 唯一能力字段是 `inputModalities`）。工具不兼容在运行时由 provider 拒绝、规范化为 `INVALID_REQUEST`（deepseek）或 `PI_AI_ERROR`（pi-ai），进入 `agent/request-error` 由 Router 按 `switchOn` 承接；`INVALID_REQUEST` 是 switchOn 可选项（默认不勾）。理由见[决策笔记](../../.agents/notes/implemented/2026-10-12-drop-tools-eligibility-condition.md)；推理档位自动跳过的理由见[决策笔记](../../.agents/notes/implemented/2026-10-12-router-prevalidates-reasoning-effort.md)。
 
@@ -108,7 +112,7 @@ last_updated: "2026-10-12"
 
 一条全局降级链，对所有模型生效（`enabled` 开着时）：
 
-- **第一跳是用户当前选中的模型**，重试次数由 `chain.firstHopMaxRetries` 配置（默认 0），不在候选列表里；
+- **第一跳是用户当前选中的模型**，重试次数由 `chain.firstHopMaxRetries` 配置（默认 5，与 DSH 原生 `retryPolicy` 的 5 对齐），不在候选列表里；
 - 失败后从 `chain.candidates` 里按起点策略开始（`order` 按顺序 / `weight` 按权重抽 / `round-robin` 轮询）；第一跳永远先试、不参与抽签；
 - `chain.candidates` 为空 = 没有降级可走，插件整个不进入请求路径（不接管）。
 
@@ -250,7 +254,7 @@ DSH 在自己的 `agent/pre-step` listener 里比较 `selection.assembled` 与 `
 |---|---|
 | 接管总闸 | 「接管路由」开关，页面头右侧（默认关）。关闭时插件不进入请求路径 |
 | 起点策略 | order / weight / round-robin 分段控件 + 当前策略说明；weight/round-robin 下第一跳可能不是起点（如实说明） |
-| 第一跳 | 一行：「你当前选中的模型」+ 「失败后重试」步进器（`firstHopMaxRetries`，默认 0）+ 该额度内由 DSH 原生重试执行的说明 |
+| 第一跳 | 一行：「你当前选中的模型」+ 「失败后重试」步进器（`firstHopMaxRetries`，默认 5）+ 该额度内由 DSH 原生重试执行的说明 |
 | 降级链 | 分区标题右侧 primary「添加候选渠道」；有序扁平行：provider / 模型 ID、健康 Tag、失败后重试、权重（weight 策略）、高级条件、上下移与删除 |
 | 候选高级条件 | 图片三态（不限 / 仅带图 / 仅无图）+ 最小上下文门槛 |
 | 切换条件 | 限流 / 服务端错误 / 超时 / 网络传输 / 空回复（复选框，默认对齐 DSH 自己的 normal policy）+ 请求被拒绝（默认不勾） |

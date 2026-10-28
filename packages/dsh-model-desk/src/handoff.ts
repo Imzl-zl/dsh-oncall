@@ -30,7 +30,7 @@
 
 import type { Agent, AgentOptions, ModelSelection } from '@deepseek-ai/dsh-agent'
 import { boundContextSummary, createUserMessage, HarnessError } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, ReasoningEffortId, UserMessage } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
@@ -128,9 +128,8 @@ const recordSchema = z.object({
   at: z.number(),
   epoch: z.number(),
   turn: z.number().optional(),
-  kind: z.enum(['delegate', 'finish', 'newSession', 'facts', 'settled']),
+  kind: z.enum(['delegate', 'finish', 'newSession', 'facts']),
   rosterId: z.string().optional(),
-  child: z.string().optional(),
   outcome: z.string().optional(),
 })
 
@@ -576,6 +575,10 @@ export function latestReview(
  * The `finish` gate, in the proposal's order (§4.4): goal first, then review,
  * then the `handoffNote` requirement. Each refusal names the rule and the
  * numbers, and never guesses what the model meant.
+ *
+ * `reviewOverride` waives the REVIEW rule only — the note requirement is a
+ * different question (does the relay have a next step at all) and keeps its
+ * own gate below.
  */
 export function checkFinishGate(
   gate: GateInput,
@@ -593,18 +596,22 @@ export function checkFinishGate(
     const review = latestReview(gate.reviews, gate.counters.epoch, args.reviewId)
     if (review?.verdict !== 'pass') {
       const override = args.reviewOverride?.trim() ?? ''
-      if (override !== '' && gate.config.protocol.allowReviewOverride) return
-      const detail = review === undefined
-        ? `no review of this session landed after the last user message${args.reviewId === undefined ? '' : ` (reviewId ${args.reviewId} names none)`}`
-        : review.verdict === 'gaps'
-          ? `the latest review found gaps: ${review.gaps.length === 0 ? '(no detail)' : review.gaps.join('; ')}`
-          : 'the latest review is not a passing one'
-      gateRefusal(
-        `finish{outcome: '${args.outcome}'} is refused — ${detail}. `
-        + 'Delegate to a review role again, use needs_user, or pass reviewOverride with a written reason.'
-        + (gate.config.protocol.allowReviewOverride ? '' : ' reviewOverride is disabled in this configuration.'),
-        'HANDOFF_REVIEW_REQUIRED',
-      )
+      // 覆盖只跳过**复核**这一道闸，不能连带跳过后面的 note 闸：这两个是两件事，
+      // 而且 note 闸守的是接力会话的下一步任务。从前这里 `return` 直接跳出整个
+      // checkFinishGate，于是一句 override 就能开出一个没有任务的接力会话。
+      if (override === '' || !gate.config.protocol.allowReviewOverride) {
+        const detail = review === undefined
+          ? `no review of this session landed after the last user message${args.reviewId === undefined ? '' : ` (reviewId ${args.reviewId} names none)`}`
+          : review.verdict === 'gaps'
+            ? `the latest review found gaps: ${review.gaps.length === 0 ? '(no detail)' : review.gaps.join('; ')}`
+            : 'the latest review is not a passing one'
+        gateRefusal(
+          `finish{outcome: '${args.outcome}'} is refused — ${detail}. `
+          + 'Delegate to a review role again, use needs_user, or pass reviewOverride with a written reason.'
+          + (gate.config.protocol.allowReviewOverride ? '' : ' reviewOverride is disabled in this configuration.'),
+          'HANDOFF_REVIEW_REQUIRED',
+        )
+      }
     }
   }
   if ((gate.config.newSession.onFinish as readonly string[]).includes(args.outcome)
@@ -675,9 +682,20 @@ export function failoverChainOf(entry: RosterEntry): string | undefined {
     : entry.failover
 }
 
-/** The selection a new session should carry, read off the old one. */
-export function selectionOf(selection: { current?: ModelSelection } | undefined): ModelSelection | undefined {
-  return selection?.current
+/**
+ * The selection a relayed session should start on, read off the old session's
+ * own last request header (`session.requestHeader()?.config`).
+ *
+ * The header is the durable fact about what that session actually ran; the
+ * in-memory selection lives on a private controller class no caller can reach.
+ */
+export function selectionOf(config: { provider?: string; model?: string; reasoningEffort?: ReasoningEffortId } | undefined): ModelSelection | undefined {
+  if (config?.provider === undefined || config.model === undefined) return undefined
+  return {
+    provider: config.provider,
+    model: config.model,
+    ...config.reasoningEffort === undefined ? {} : { reasoningEffort: config.reasoningEffort },
+  }
 }
 
 /** One agent's session id, for ledger keys. */

@@ -277,14 +277,6 @@ export function RosterView(props: RosterViewProps) {
           disabled: props.disabled,
           hint: t('handoffBudgetPerTurnHint'),
           onChange: function (next) { props.onField(['limits', 'maxDelegationsPerTurn'], next) },
-        }),
-        h(NumberField, {
-          id: 'handoff-max-day',
-          label: t('handoffBudgetPerDay'),
-          value: handoff.limits.maxDelegationsPerDay,
-          disabled: props.disabled,
-          hint: t('handoffBudgetPerDayHint'),
-          onChange: function (next) { props.onField(['limits', 'maxDelegationsPerDay'], next) },
         }))),
 
     // ---- master-detail ----

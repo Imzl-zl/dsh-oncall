@@ -31,6 +31,18 @@ export function fill(template, vars) {
   return template.replace(/\{(\w+)\}/g, function (_, key) { return String(vars[key]) })
 }
 
+/**
+ * How one chain names itself in the UI: its display name, else the dictionary's
+ * "default chain". One expression, two readers (the chain list and the health
+ * page's position labels); an empty name is a normal state, not a missing one.
+ *
+ * Lives here rather than in `chain.ts` so React-free modules can use it —
+ * `chain.ts` imports React for its components.
+ */
+export function chainDisplayName(t, chain) {
+  return chain.name !== undefined && chain.name !== '' ? chain.name : t('chainDefaultName')
+}
+
 export function formatLatency(latencyMs) {
   if (typeof latencyMs !== 'number' || isNaN(latencyMs)) return '—'
   if (latencyMs >= 1000) return (latencyMs / 1000).toFixed(2) + 's'

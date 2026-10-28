@@ -94,6 +94,15 @@ interface RouterUi {
   catalog: ModelCatalog | null
   catalogFailed: boolean
   catalogLoading: boolean
+  /** The Host's own words for the last refused save; null when we have none. */
+  saveError: string | null
+  /**
+   * The Host's stored value changed while this draft had unsaved edits.
+   *
+   * The edits were KEPT (losing them is worse than showing a stale Host value),
+   * so the page has to say so instead of letting the footer read "unsaved".
+   */
+  externalChange: boolean
   drawerOpen: boolean
   drawerLoading: boolean
   drawerError: boolean
@@ -190,8 +199,18 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   var seed = function () {
     var value = scope.getSnapshot().value ?? {}
     // 旧配置（单链 / 按模型分规则 + 默认兜底池）在这里迁成命名链：规则模块与宿主读的
-    // 是同一个 effectiveChains，所以浏览器看到的就是 Host 会执行的那一批。
-    var effective = effectiveChains(value)
+    // 是同一个 effectiveChains。
+    //
+    // 但两边拿到的**形状不一样**：宿主读 `fiber._config`（原始配置，"有没有这个键"
+    // 是形状判据），而 settings 快照是**校验后**的值——schemastery 会给任何数组盖上
+    // `[]`，于是只有旧 `chain` 的配置在界面上变成"一条空链"：降级候选全消失，而按
+    // 一下保存就会把空链写回宿主（`save()` 还顺手 unset 旧键），用户的链被清空。
+    // 这里按宿主那条规则把可用信息还原：空的 `chains` 且旧 `chain` 有候选 = 旧形状。
+    // （只有校验后的值会出现这个组合；`save()` 保存新形状时会 unset `chain`。）
+    var validated = value
+    var looksLegacy = Array.isArray(validated.chains) && validated.chains.length === 0
+      && Array.isArray(validated.chain?.candidates) && validated.chain.candidates.length > 0
+    var effective = effectiveChains(looksLegacy ? { ...validated, chains: undefined } : validated)
     return {
       // 与 host schema 的默认值同源：接管会改请求实际打到的渠道，默认关。
       enabled: value.enabled ?? false,
@@ -219,6 +238,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     catalog: null,
     catalogFailed: false,
     catalogLoading: false,
+    saveError: null,
+    externalChange: false,
     drawerOpen: false,
     drawerLoading: false,
     drawerError: false,
@@ -272,6 +293,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
   // 原生快捷键命令靠它判断"现在该不该由我接这个键"——DSH 的快捷键上下文只告诉
   // 它有没有模态、是哪個模态，不告诉它哪个设置面在前台。
   var surfaceCount = 0
+  /** Busy-state floor timers in flight; cleared on dispose (`holdBusy`). */
+  var busyTimers = new Set<ReturnType<typeof setTimeout>>()
 
   function project(): RouterSnapshot {
     var snapshot = scope.getSnapshot()
@@ -300,6 +323,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
         catalog: ui.catalog,
         catalogFailed: ui.catalogFailed,
         catalogLoading: ui.catalogLoading,
+        saveError: ui.saveError,
+        externalChange: ui.externalChange,
         drawerOpen: ui.drawerOpen,
         drawerLoading: ui.drawerLoading,
         drawerError: ui.drawerError,
@@ -616,13 +641,24 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     // .agents/notes/implemented/2026-10-15-ui-refactor-hardening.md。
     var next = seed()
     if (deepEqual(next, host)) return
+    // 草稿有未保存的编辑时保留它：把用户正在改的东西整份换成宿主的值，比晚一步
+    // 反映宿主变化糟得多。基线照样前进，所以 dirty 仍然如实（保存会覆盖外部值），
+    // 页脚也会说出这件事（externalChange），不静默。
+    var dirtyDraft = !deepEqual(draft, host)
     host = next
+    // 宿主值恰好等于我们的草稿 = 这是刚才那次保存落地的回声，照常采纳。
+    if (dirtyDraft && !deepEqual(next, draft)) {
+      ui.externalChange = true
+      publish()
+      return
+    }
     // The baseline and the draft must be two independent snapshots. Sharing
     // one object behind both names makes every edit mutate the baseline
     // too, and `dirty` — the whole unsaved-changes signal — then reads
     // false forever. See .agents/notes/implemented/2026-10-15-host-draft-baseline-independence.md。
     draft = clone(next)
     failed = false
+    ui.externalChange = false
     publish()
   })
 
@@ -640,6 +676,28 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ? undefined
       : target.chains.filter(function (chain) { return chain.id === ui.chainId })[0]
     return picked !== undefined ? picked : defaultChainOf(target)
+  }
+
+  /**
+   * One tri-state `needs` write, for both landings (a candidate, the first hop).
+   *
+   * `images` is three-valued: require/forbid set an extreme, `any` removes the
+   * field; a non-positive `minContextTokens` is "no bound" and is removed too.
+   * An empty result is `undefined`, not `{}` — the host reads absence as
+   * "unconstrained" and a shape with no keys would be a second way to say it.
+   */
+  function applyNeeds(current, patch) {
+    var next = Object.assign({}, current ?? {})
+    if (patch.imagesMode !== undefined) {
+      if (patch.imagesMode === 'require') next.images = true
+      else if (patch.imagesMode === 'forbid') next.images = false
+      else delete next.images
+    }
+    if (patch.minContextTokens !== undefined) {
+      if (patch.minContextTokens > 0) next.minContextTokens = patch.minContextTokens
+      else delete next.minContextTokens
+    }
+    return Object.keys(next).length > 0 ? next : undefined
   }
 
   /** 链名的上限：够写清任务，又不至于把链列表撑爆。 */
@@ -794,6 +852,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       draft = seed()
       ui.chainId = null
       ui.rosterId = null
+      ui.saveError = null
+      ui.externalChange = false
       failed = false
       publish()
     },
@@ -802,6 +862,7 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       if (validate(draft).length) { publish(); return }
       saving = true
       failed = false
+      ui.saveError = null
       publish()
       // mutate 拒绝（wire 抛错、恢复读失败）时必须自己收尾：saving 卡在 true
       // 会让保存按钮永久转圈，且用户看不到任何失败原因。
@@ -821,10 +882,14 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ], scope.getSnapshot().revision).then(function (accepted) {
         saving = false
         failed = !accepted
+        if (accepted) ui.externalChange = false
         publish()
       }, function (e) {
         saving = false
         failed = true
+        // 拒绝原因必须上屏：没有它，页脚只会说「保存失败，请重试」，用户对着同一个
+        // 越界值反复重试而不知道改哪儿。
+        ui.saveError = describeError(e)
         publish()
       })
     },
@@ -862,18 +927,19 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     /** Patch one candidate's `needs`; an empty patch clears the field. */
     setNeeds: function (index, patch) {
       var candidate = edited(draft).candidates[index]
-      var next = Object.assign({}, candidate.needs ?? {})
-      // images 三态：require/forbid 各设一极，any 删掉这个字段。
-      if (patch.imagesMode !== undefined) {
-        if (patch.imagesMode === 'require') next.images = true
-        else if (patch.imagesMode === 'forbid') next.images = false
-        else delete next.images
-      }
-      if (patch.minContextTokens !== undefined) {
-        if (patch.minContextTokens > 0) next.minContextTokens = patch.minContextTokens
-        else delete next.minContextTokens
-      }
-      candidate.needs = Object.keys(next).length > 0 ? next : undefined
+      candidate.needs = applyNeeds(candidate.needs, patch)
+      publish()
+    },
+    /**
+     * The first hop's condition — the chain's `primaryNeeds`.
+     *
+     * Same tri-state as a candidate's `needs`, different landing spot: the first
+     * hop is the model DSH selected, so it has no candidate row to hang a
+     * condition on.
+     */
+    setPrimaryNeeds: function (patch) {
+      var chain = edited(draft)
+      chain.primaryNeeds = applyNeeds(chain.primaryNeeds, patch)
       publish()
     },
     setStickyTurns: function (value) {
@@ -949,11 +1015,21 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ui.drawerLoading = true
       ui.drawerError = false
       ui.drawerRows = []
+      // 与 `loadPassive` 同一条守卫：这个组合里没有 `ctx.remote.session` 时直接说读不到，
+      // 而不是让 `readSessionBlocks(undefined)` 抛进 `.catch`（那条路径报的是"没有记录"
+      // 之外的另一句话，用户分不出是"没转移"还是"读不了"）。
+      var sessionFace = ctx.remote && ctx.remote.session
+      if (!sessionFace) {
+        ui.drawerLoading = false
+        ui.drawerError = true
+        publish()
+        return
+      }
       publish()
       // 与健康历史走同一次读取（readSessionBlocks）：那是同一批会话、同一套
       // 失败口径。此前这里是第二份实现，还把逐会话失败吞成空记录——"读不到"
       // 于是渲染成"没有转移"，正是健康历史那轮修掉的同一句话。
-      readSessionBlocks(ctx.remote.session).then(function (reads) {
+      readSessionBlocks(sessionFace).then(function (reads) {
         ui.drawerRows = foldFailoverRows(reads, Date.now())
         ui.drawerLoading = false
         publish()
@@ -1059,7 +1135,13 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
     holdBusy: function (started, settle) {
       var left = MIN_BUSY_MS - (Date.now() - started)
       if (left <= 0) { settle(); return }
-      setTimeout(settle, left)
+      // 记在册上：卸载时一起清掉。否则已卸载的控制器会在几毫秒后醒来 publish 一次，
+      // 而 `publish()` 又会 re-arm 巡检定时器（`disposed` 守卫是最后一道，不是唯一一道）。
+      var timer = setTimeout(function () {
+        busyTimers.delete(timer)
+        settle()
+      }, left)
+      busyTimers.add(timer)
     },
     /**
      * Read the Host's last probe report — what the scheduled run measured. The
@@ -1159,11 +1241,6 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       ui.modal = { kind: 'health' }
       publish()
     },
-    /** Re-open this release's notes from the page head. */
-    openNotes: function () {
-      ui.notesOpen = true
-      publish()
-    },
     /**
      * Open the update check and ask the Host whether a newer version is out.
      *
@@ -1221,6 +1298,8 @@ export function createController(ctx, scope, t, initialNotesOpen = notesForCurre
       checkAborts.clear()
       probeAborts.forEach(function (abort) { abort.abort() })
       probeAborts.clear()
+      busyTimers.forEach(function (timer) { clearTimeout(timer) })
+      busyTimers.clear()
     },
   }
   return controller

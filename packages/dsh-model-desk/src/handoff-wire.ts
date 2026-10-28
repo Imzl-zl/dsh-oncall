@@ -32,9 +32,8 @@ export interface HandoffRecord {
   epoch: number
   /** The turn the call happened in, for `maxDelegationsPerTurn`. */
   turn?: number
-  kind: 'delegate' | 'finish' | 'newSession' | 'facts' | 'settled'
+  kind: 'delegate' | 'finish' | 'newSession' | 'facts'
   rosterId?: string
-  child?: string
   outcome?: string
 }
 

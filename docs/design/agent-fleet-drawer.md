@@ -269,7 +269,6 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 | `limits.maxDelegationsPerUserMessage` | 8 | 顶部（三本账之一） |
 | `limits.maxReviewsPerUserMessage` | 1 | 顶部（三本账之一） |
 | `limits.maxNewSessionsPerUserMessage` | 2 | 顶部（三本账之一） |
-| `limits.maxDelegationsPerDay` | 24 | 顶部 |
 | `limits.nudgeWhenUnreceipted` | false | 收工闸门 |
 | `limits.maxNudgesPerTurn` | 1 | 收工闸门 |
 | `onUnreceiptedStop.delegateTo` | ""（只报告） | 收工闸门 |
@@ -565,3 +564,66 @@ P1 已落地的右栏与配置页修正不依赖以上任何一项。右栏活�
 - [OpenAI Agents SDK — Handoffs](https://openai.github.io/openai-agents-python/handoffs/)
 - [Claude Code — Run agents in parallel](https://code.claude.com/docs/en/agents)
 - [OpenTelemetry — Traces](https://opentelemetry.io/docs/concepts/signals/traces/)
+
+## 像素办公室视图（2026-10-27 定稿）
+
+把"谁在忙、谁卡住"从一列标签变成一张房间图；实现参照 `spike/pixel-office-v5.html`（定稿原型，`?template=1` 可看单工位模板，`?debug=1` 可看网格与足迹）。同一会话的子智能体坐同一间房。
+
+**信息架构（三层，不可拍平）**
+
+| 层 | 画什么 | 数据 |
+|---|---|---|
+| 工作区 | 一个工作区块，块内并排它在跑的会话房间（一个工作区可并发多个会话） | 工作区 + 会话列表 |
+| 会话 = 房间 | 一间等距房间，最多 6 个工位，超员显示 "+N" | 该会话的直接子智能体（`router/handoff` 投影） |
+| 子智能体 = 工位 | 一个小人 + 桌椅 + 显示器；点它打开该子会话 | 子会话 id（打开走既有入口） |
+
+**网格与单位**
+
+- 等距 2:1，`TW=48`、`TH=24`；**1 格步进 = TW/2 = 24px 屏幕像素**（所有排布都按这个换算，别按 48）。
+- 墙高 66；房间格数按视图档位取（单间 10×7）。
+
+**工位模板（唯一数值来源，房间只做平移）**
+
+| 字段 | 值 | 含义 |
+|---|---|---|
+| `deskH` | 13 | 桌面离地高度（≈坐姿人身 0.4） |
+| `halfW` / `halfD` | 0.22 / 0.42 | 桌面足迹（格）：长边沿 `uy`，短边朝观察者 |
+| `seatDX` / `seatDY` | −7 / −8 | 座位：**长边正中、桌子远侧、脚落在桌沿以内** |
+| `monitorDX` / `monitorDY` | 1 / +3 | 显示器中心 / 底座相对桌面顶面 |
+| `monitorW` / `monitorH` | 16 / 9 | 显示器尺寸（≈一个头宽） |
+| `chairW` / `chairH` | 16 / 14 | 椅背（人身后） |
+| `chipDY` | 12 | 状态小条相对锚点 |
+
+**三条硬规则（写成断言，不靠肉眼）**
+
+1. **座位在桌沿以内**：人的脚必须被桌面前沿遮挡（否则人浮空）；"人高过显示器"只能靠显示器矮/低，不能靠抬高人。
+2. **显示器底座在桌面多边形内**：底座高度处桌面半宽随菱形收窄，底座半宽 ≤ 该半宽。
+3. **状态条不压桌**：chip 锚点固定在桌面正下方 `chipDY`，不随人移动。
+
+**布局规格（10×7 单间）**
+
+- 工位：后排 `gy=1.2`、`gx=2.5/5/7.5`；前排 `gy=2.9`、`gx=3.75/6.25`；间距 2.5 格。
+- 地毯：`gy 0.5–3.5`、`gx 0.8–9.2`（只铺工位区，四周露木地板）。
+- 待命区：`gy 4.6–6.2`、`gx 0.8–3.2` + 矮隔断；空闲/收工的子智能体站这里。
+- 装饰：左墙窗 + 海报，右墙钟 + 海报；吊灯 2 盏，光池画进静态层。
+
+**性能预算**
+
+- 静态房间（地板/墙/家具/装饰）烘一次进离屏画布，只在尺寸变化时重画；每帧只贴角色。
+- 画布用**逻辑像素**（单间约 424×314）+ 整数倍 CSS 放大 + `image-rendering: pixelated`。
+- 循环 ~10fps，且只在"有在岗/卡住 且 页面可见 且 非窄档"时跑；全空闲只画一帧；不可见房间不画。
+- 窄档（容器 ≤460）不建 canvas，退回 DOM 列表。
+
+**实现落点（2026-10-27）**
+
+| 文件 | 职责 |
+|---|---|
+| `src/client/fleet/office-template.ts` | 模板数值、投影、三条不变量（纯函数） |
+| `src/client/fleet/office-scene.ts` | `FleetAgent[]` → 房间场景（座位/待命/溢出/chip 锚点），一份状态→视觉态映射 |
+| `src/client/fleet/office-render.ts` | 唯一接触 2D context 的模块：静态层一次 + 每帧只贴角色；共享 `FrameClock`（10fps、可见才跑） |
+| `src/client/fleet/office-view.ts` | React 组件：测量、整数放大、订阅时钟、点击上抛；无 2D context 时只剩 chips |
+| `src/client/fleet/view.ts` | `SessionView` 在预算条下方挂载房间（`hasChildren` 才挂） |
+| `src/client/fleet/styles.ts` | `.dsh-fleet-office*` + `@container fleet (max-width: 459px)` 整块隐藏 |
+
+**已验证**：模板不变量与反证、场景分配（5 工位/超员/待命区/顺序）、渲染器每帧只 blit 一次静态层；`npm test` 五套件 253/127/25/19/37 全绿；隔离 `web` 实例里智能体页签正常渲染、无控制台错误，无子智能体时不建 canvas（降级路径）。
+**未验**：有真实子智能体时房间的实际观感（需要一次真实模型调用触发 handoff）。

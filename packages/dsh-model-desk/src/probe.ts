@@ -46,17 +46,18 @@ function unavailable(route: ProbeRoute, now: number, reason: string): ProbeRoute
  * None of these is an endpoint refusing a request — no request exists:
  *
  * - `NO_ADAPTER`: no adapter is registered for the provider, so
- *   `prepareCall` refuses before anything is assembled
- *   (`packages/llm/llm/src/index.ts:995`).
- * - `MISSING_CREDENTIAL`: the route resolves no credential, raised while the
- *   adapter builds auth, before the request is sent
- *   (`llm-deepseek-api-key/src/index.ts:30`, `llm-pi-ai/src/index.ts:200`).
+ *   `prepareCall` refuses before anything is assembled (`LlmRuntime.registration`
+ *   in `packages/llm/llm/src/index.ts` raises it).
+ * - `MISSING_CREDENTIAL`: the route resolves no credential, raised by
+ *   `resolveApiKey` while the adapter builds auth, before the request is sent
+ *   (`llm-deepseek-api-key/src/index.ts`, `llm-pi-ai/src/index.ts`).
  * - `INVALID_CREDENTIAL`: the stored credential is present but unusable —
  *   blank, or carrying characters no HTTP header can — raised by
  *   `assertUsableApiKey` before the header is built
- *   (`llm/src/index.ts:151`). `llm-pi-ai/src/discovery.ts:240` states the
- *   reason outright: without it, "the `fetch` below would throw ... blaming
- *   the network for a local, deterministic fault".
+ *   (`packages/llm/llm/src/index.ts:151`). `usableProbeKey` in
+ *   `packages/llm/llm-pi-ai/src/discovery.ts` states the reason outright:
+ *   without it, "the `fetch` below would throw ... blaming the network for a
+ *   local, deterministic fault".
  *
  * `types.ts` reserves `unreachable` for "the call was made and the endpoint,
  * the credential, or the model refused it", so all three belong to
@@ -106,7 +107,17 @@ export async function probeRoute(
   // order inside it is the classification this module leans on: our own deadline
   // is a fact about the channel, the caller hanging up is not.
   const deadline = fuseDeadline(signal, timeoutSeconds)
-  try {
+  /**
+   * The whole measurement, as one promise the deadline can beat.
+   *
+   * Racing is what makes "this call always answers" an invariant: an adapter
+   * that ignores its signal would otherwise hold this function — and
+   * `probeInFlight` with it, which silences every later scheduled tick — for as
+   * long as it likes. Both awaits inside are racy for the same reason:
+   * `prepareCall` can hang before any stream exists. The abandoned call is left
+   * to the adapter; the caller gets the honest TIMEOUT.
+   */
+  const measure = async (): Promise<ProbeRouteResult> => {
     const call = await llm.prepareCall({
       provider: route.provider,
       model: route.model,
@@ -126,9 +137,10 @@ export async function probeRoute(
       }
       if (chunk.type === 'finish' && (chunk.reason.kind === 'error' || chunk.reason.kind === 'aborted')) {
         // Both delivery shapes land here: `adapterStream` converts an adapter
-        // throw into an in-band finish, and an abort produces `kind:'aborted'`
-        // — the probe's own deadline or the caller's cancellation, whichever
-        // fired (`llm/src/index.ts:1161-1169`). Classifying only
+        // throw into an in-band finish through `adapterFailureChunk`, and an
+        // abort produces `kind:'aborted'` — the probe's own deadline or the
+        // caller's cancellation, whichever fired
+        // (`packages/llm/llm/src/index.ts`). Classifying only
         // `kind:'error'` sent the whole abort family to the "empty stream"
         // branch below, so a hung endpoint read as "could not measure"
         // instead of "did not answer".
@@ -147,9 +159,11 @@ export async function probeRoute(
         const code = chunk.reason.failure.code
         if (code === 'ABORTED') return unavailable(route, now, 'cancelled')
         // 3. A failure the adapter hit while *building* the request arrives
-        //    here rather than as a throw (llm/src/index.ts:1113,1161). A
-        //    missing credential never reaches the wire, so it must not read
-        //    as the channel refusing a call.
+        //    here rather than as a throw: `adapterStream` yields
+        //    `adapterFailureChunk` from both its dispatch and its iteration
+        //    catch (packages/llm/llm/src/index.ts). A missing credential never
+        //    reaches the wire, so it must not read as the channel refusing a
+        //    call.
         if (NEVER_CALLED_CODES.has(code)) return unavailable(route, now, code)
         return { provider: route.provider, model: route.model, kind: 'unreachable', error: code, at: now }
       }
@@ -157,6 +171,9 @@ export async function probeRoute(
     // The stream ended without content and without an error finish: nothing to
     // measure, and nothing that says the channel is sick either.
     return unavailable(route, now, 'empty stream')
+  }
+  try {
+    return await Promise.race([measure(), deadline.whenExpired])
   } catch (error) {
     // The timeout is classified apart from the caller's abort: one is a fact
     // about the channel, the other is the caller hanging up.
@@ -164,14 +181,16 @@ export async function probeRoute(
       return { provider: route.provider, model: route.model, kind: 'unreachable', error: 'TIMEOUT', at: now }
     }
     // 调用方取消不是渠道故障——必须在通用 code 之前判：适配器会把调用方 abort
-    // 规范化成 `ABORTED` 码（llm-deepseek/src/adapter.ts:64、llm-pi-ai 同款），
-    // 走通用分支就会以 unreachable 落进报告，UI 把"没能测"读成"有问题"。
+    // 规范化成 `ABORTED` 码（两个适配器都在自己的 `generate()` 里按
+    // `options.signal.aborted` 重抛：`llm-deepseek/src/adapter.ts`、
+    // `llm-pi-ai/src/adapter.ts`），走通用分支就会以 unreachable 落进报告，
+    // UI 把"没能测"读成"有问题"。
     if (signal?.aborted === true) return unavailable(route, now, 'cancelled')
     const code = (error as { code?: unknown }).code
     if (code === 'ABORTED') return unavailable(route, now, 'cancelled')
     // 同一个边界，从抛出这一侧再过一遍：没注册适配器的 provider 是
-    // `prepareCall` 直接拒绝的（llm/src/index.ts:995），报告成 unreachable
-    // 就等于说"渠道拒了一次从未发生的调用"。
+    // `prepareCall` 直接拒绝的（`LlmRuntime.registration`，packages/llm/llm/src/index.ts），
+    // 报告成 unreachable 就等于说"渠道拒了一次从未发生的调用"。
     if (typeof code === 'string' && NEVER_CALLED_CODES.has(code)) return unavailable(route, now, code)
     if (typeof code === 'string' && code.length > 0) {
       return { provider: route.provider, model: route.model, kind: 'unreachable', error: code, at: now }

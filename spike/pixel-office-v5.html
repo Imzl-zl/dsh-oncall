@@ -1,0 +1,700 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Fleet — 房间楼层图（定稿原型 v5）</title>
+<style>
+  /* Spike v5: 48x24 isometric grid, one room per SESSION, floor-plan for the
+     global scope, drill-down to a room, then to an agent's session. */
+  :root {
+    --bg: #0c0f13; --panel: #141920; --line: #232a33;
+    --text: #d7dde5; --dim: #8b96a5;
+    --ok: #7ee787; --warn: #e3b341; --bad: #ff7b72;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--text);
+    font: 13px/1.6 ui-sans-serif, system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+  h1 { font-size: 15px; margin: 0 0 4px; font-weight: 600; }
+  .hint { color: var(--dim); font-size: 12px; margin: 0 0 12px; max-width: 980px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  button { font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 6px; cursor: pointer;
+    background: #1c232b; color: var(--text); border: 1px solid var(--line); }
+  button:hover { border-color: #3a4450; }
+  .rail { width: 900px; min-width: 320px; max-width: 1400px; resize: horizontal; overflow: auto;
+    padding: 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel);
+    container-type: inline-size; container-name: fleet; }
+  .rail-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .rail-title { font-size: 12px; font-weight: 600; }
+  .rail-scope { font-size: 10.5px; color: var(--dim); margin-left: auto; }
+  .rooms { display: flex; flex-direction: column; gap: 10px; }
+  .wsBlock { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px 8px; background: #10141a; }
+  .wsHead { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; font-size: 11px; }
+  .wsHead .dot { width: 6px; height: 6px; border-radius: 1px; }
+  .wsName { font-weight: 600; }
+  .wsMeta { margin-left: auto; color: var(--dim); font-size: 10px; }
+  .roomRow { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+  .roomCard { border: 1px solid var(--line); border-radius: 8px; padding: 6px; background: #12161b; cursor: pointer; }
+  .roomCard:hover { border-color: #3f4c5c; }
+  .roomCard .name { font-size: 11px; font-weight: 600; display: flex; gap: 6px; align-items: center; }
+  .roomCard .meta { font-size: 10px; color: var(--dim); }
+  .roomCard canvas { display: block; width: 100%; image-rendering: pixelated; border-radius: 4px; }
+  .stage { display: none; }
+  .stage.on { display: block; }
+  /* The canvas is centred inside .stage, so the cards must be positioned
+     inside a frame that is EXACTLY the canvas box — otherwise every card sits
+     left of its agent by half the leftover width. */
+  .frame { position: relative; margin: 0 auto; }
+  canvas.scene { display: block; margin: 0 auto; image-rendering: pixelated; }
+  .chip2 { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 4px;
+    padding: 2px 5px; border-radius: 4px; background: rgba(12,16,21,0.8); border: 1px solid #2b3440;
+    font-size: 10px; cursor: pointer; white-space: nowrap; }
+  .chip2:hover { z-index: 5; background: rgba(20,26,34,0.98); }
+  .chip2 .dot { width: 6px; height: 6px; border-radius: 1px; }
+  .bubble { position: absolute; transform: translate(-50%, -100%); max-width: 200px; padding: 5px 7px;
+    border-radius: 5px; background: #efe9da; color: #201e19; font-size: 10.5px; line-height: 1.45; }
+  .bubble b { display: block; font-size: 9.5px; color: #6b6250; }
+  .chips { display: none; }
+  @container fleet (max-width: 520px) { .rooms { display: none; } .chips { display: block; } }
+  .stats { font-size: 10.5px; color: var(--dim); margin-top: 8px; }
+  .chip { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px;
+    border: 1px solid var(--line); margin-bottom: 6px; background: #12161b; }
+  .chip .state { margin-left: auto; font-size: 10.5px; }
+</style>
+</head>
+<body>
+  <h1>Agent Fleet — 房间楼层图（spike v5）</h1>
+  <p class="hint">
+    48×24 等距网格；<b>一个会话 = 一间房</b>。全局是房间网格（只画状态色 + 小人剪影），点房间进单间（真实场景、状态卡、气泡），
+    点小人 = 打开该子会话。静态房间按 Room 3 张 240×170 缓存，不可见房间不画。
+  </p>
+
+  <div class="controls">
+    <button id="btn-scope">切到：全部会话</button>
+    <button id="btn-run">模拟：全部在岗</button>
+    <button id="btn-idle">模拟：全部空闲</button>
+  </div>
+
+  <div class="rail" id="rail">
+    <div class="rail-head"><span class="rail-title">智能体</span><span class="rail-scope" id="scope"></span></div>
+    <div class="rooms" id="rooms"></div>
+    <div class="stage" id="stage"><div class="frame" id="frame"><canvas class="scene" id="scene"></canvas></div></div>
+    <div class="chips" id="chips"></div>
+    <div class="stats" id="stats"></div>
+  </div>
+
+<script>
+'use strict'
+// ===========================================================================
+// World: 48x24 isometric grid (2:1). One "tile" now fits a person, so object
+// heights finally share a unit: char 32 = 1.33 tiles, desk 14, monitor 18.
+// ===========================================================================
+const TW = 48, TH = 24
+const WALL_H = 66
+const PAL = {
+  floor: ['#8a5c36', '#7b502d'],
+  floorLine: 'rgba(0,0,0,0.16)',
+  wallA: '#302e3a', wallB: '#3a3744', skirt: '#1d1b22', wainA: '#3d3b47', wainB: '#474451',
+  wood: ['#a9743f', '#8a5a2f', '#6b4423'],
+  metal: ['#5b6472', '#3d4551', '#1a1f27'],
+  lamp: ['#2b313b', '#11151b', '#ffd28c'],
+  plant: ['#4f8460', '#3f6b4f', '#2c4a37'],
+  paper: ['#efe8d7', '#cfc6b2'],
+  rug: ['#33404f', '#2b3440'],
+  zone: ['#5b6270', '#525a68'],
+}
+const COLOR = { running: '#7ee787', idle: '#5b6673', stalled: '#ff7b72', done: '#e3b341' }
+const LABEL = { running: '在岗', idle: '空闲', stalled: '卡住', done: '已收工' }
+const SHIRTS = ['#5b8def', '#d2a8ff', '#7ee787', '#f2a65a', '#79c0ff', '#ff9bce']
+const HAIRS = ['#2b2118', '#4a2f1b', '#1f2a37', '#5b3a1a']
+
+const hash = (text) => {
+  let h = 2166136261
+  for (const ch of text) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) }
+  return Math.abs(h)
+}
+const prepare = (role) => {
+  const n = hash(role.id)
+  return { ...role, shirt: SHIRTS[n % SHIRTS.length], hair: HAIRS[n % HAIRS.length], prop: n % 3 }
+}
+
+// ---- demo data: workspace -> sessions -> agents ----------------------------
+// One workspace can run several sessions at once, so the hierarchy is three
+// levels: workspace (a floor), session (a room on it), agent (a desk in it).
+const WORKSPACES = [
+  { id: 'w1', name: 'dsh-model-desk', sessions: ['s1', 's2'] },
+  { id: 'w2', name: 'CraftAgent', sessions: ['s3'] },
+]
+
+const SESSIONS = [
+  { id: 's1', title: '收尾三件事', agents: [
+    { id: 'coder', name: '实现', state: 'running', note: '改链路的去重键', progress: 0.6 },
+    { id: 'reviewer', name: '复核', state: 'running', note: '审 4.12 断言', progress: 0.35 },
+    { id: 'tester', name: '测试', state: 'running', note: '跑第 38 条场景', progress: 0.8 },
+    { id: 'ops', name: '运维', state: 'done', note: '回执已签', progress: 1 },
+  ] },
+  { id: 's2', title: 'GUI 保存链路', agents: [
+    { id: 'probe', name: '探针', state: 'running', note: '起隔离 web 实例', progress: 0.5 },
+    { id: 'chips', name: '断言', state: 'idle' },
+  ] },
+  { id: 's3', title: '像素办公室', agents: [
+    { id: 'artist', name: '美术', state: 'running', note: '调等距桌子', progress: 0.7 },
+    { id: 'pixel', name: '像素', state: 'stalled', note: '8 分钟无结算', progress: 0.2 },
+    { id: 'docs', name: '文档', state: 'idle' },
+  ] },
+]
+SESSIONS.forEach((session) => { session.agents = session.agents.map(prepare) })
+
+// ===========================================================================
+// Character sprites: 24x32, coloured outline, 3-step shading
+// ===========================================================================
+const ART_W = 24, ART_H = 32
+function makeSprite(role, pose) {
+  const c = document.createElement('canvas')
+  c.width = ART_W; c.height = ART_H
+  const g = c.getContext('2d')
+  g.imageSmoothingEnabled = false
+  const rect = (x, y, w, h, color) => { g.fillStyle = color; g.fillRect(x, y, w, h) }
+  const shade = (hex, k) => {
+    const n = parseInt(hex.slice(1), 16)
+    const f = (v) => Math.max(0, Math.round(v * (1 - k)))
+    return `rgb(${f((n >> 16) & 255)},${f((n >> 8) & 255)},${f(n & 255)})`
+  }
+  const skin = '#f2c49b', skinDark = '#d9a07f'
+  const outline = shade(role.shirt, 0.62)
+  const parts = [
+    [7, 2, 10, 15, role.hair], [5, 4, 14, 12, role.hair],
+    [9, 7, 6, 8, skin], [8, 8, 8, 6, skin],
+    [9, 17, 6, 8, role.shirt], [7, 18, 10, 6, role.shirt],
+    [6, 19, 2, 5, role.shirt], [16, 19, 2, 5, role.shirt],
+  ]
+  if (pose.startsWith('type')) parts.push([5, 23, 3, 2, skin], [16, 23, 3, 2, skin])
+  else parts.push([8, 25, 3, 6, '#2b3440'], [13, 25, 3, 6, '#2b3440'], [7, 31, 4, 1, '#171d26'], [13, 31, 4, 1, '#171d26'])
+  for (const [x, y, w, h] of parts) {
+    rect(x - 1, y, w, h, outline); rect(x + 1, y, w, h, outline)
+    rect(x, y - 1, w, h, outline); rect(x, y + 1, w, h, outline)
+  }
+  for (const [x, y, w, h, color] of parts) rect(x, y, w, h, color)
+  rect(14, 17, 3, 8, shade(role.shirt, 0.3))
+  rect(17, 3, 3, 13, shade(role.hair, 0.3))
+  rect(9, 10, 3, 3, '#20262e'); rect(14, 10, 3, 3, '#20262e')
+  rect(9, 10, 1, 1, '#ffffff'); rect(14, 10, 1, 1, '#ffffff')
+  rect(12, 13, 1, 2, skinDark); rect(11, 15, 2, 1, '#c0745f')
+  rect(8, 6, 8, 2, role.hair)
+  return c
+}
+const ATLAS = new WeakMap()
+function spriteFor(role, pose) {
+  let set = ATLAS.get(role)
+  if (set === undefined) { set = new Map(); ATLAS.set(role, set) }
+  if (!set.has(pose)) set.set(pose, makeSprite(role, pose))
+  return set.get(pose)
+}
+
+// ===========================================================================
+// Room painting. Same primitives for the floor-plan thumbnail and the full
+// room; only the tile count differs, so the two views cannot drift apart.
+// ===========================================================================
+const roomCache = new Map()
+function paintRoom(tilesW, tilesH, withZone) {
+  const key = `${tilesW}x${tilesH}x${withZone}`
+  if (roomCache.has(key)) return roomCache.get(key)
+  const w = (tilesW + tilesH) * (TW / 2) + 16
+  const h = (tilesW + tilesH) * (TH / 2) + WALL_H + 44
+  const c = document.createElement('canvas')
+  c.width = w; c.height = h
+  const g = c.getContext('2d')
+  g.imageSmoothingEnabled = false
+  const ox = w / 2, oy = WALL_H + 8
+  const p = (gx, gy) => [ox + (gx - gy) * (TW / 2), oy + (gx + gy) * (TH / 2)]
+  const poly = (pts, color) => {
+    g.beginPath(); g.moveTo(pts[0][0], pts[0][1])
+    for (const q of pts.slice(1)) g.lineTo(q[0], q[1])
+    g.closePath(); g.fillStyle = color; g.fill()
+  }
+  const ellipse = (x, y, rx, ry, color, alpha) => {
+    g.globalAlpha = alpha; g.fillStyle = color
+    g.beginPath(); g.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2); g.fill(); g.globalAlpha = 1
+  }
+
+  // floor
+  for (let gy = 0; gy < tilesH; gy += 1) {
+    for (let gx = 0; gx < tilesW; gx += 1) {
+      const [x, y] = p(gx, gy)
+      poly([[x, y], [x + TW / 2, y + TH / 2], [x, y + TH], [x - TW / 2, y + TH / 2]],
+        (gx + gy) % 2 === 0 ? PAL.floor[0] : PAL.floor[1])
+      poly([[x, y], [x + TW / 2, y + TH / 2], [x + TW / 2, y + TH / 2 + 1], [x, y + 1]], PAL.floorLine)
+    }
+  }
+  // rug under the desk block only: the wood must show around it, or the room
+  // reads as one flat slab with furniture on top
+  for (let gy = 0.5; gy < 3.5; gy += 0.5) {
+    for (let gx = 0.8; gx < 9.2; gx += 0.5) {
+      const [x, y] = p(gx, gy)
+      poly([[x, y], [x + TW / 4, y + TH / 4], [x, y + TH / 2], [x - TW / 4, y + TH / 4]],
+        (Math.round(gx * 2) + Math.round(gy * 2)) % 2 === 0 ? PAL.rug[0] : PAL.rug[1])
+    }
+  }
+  // walls + wainscot + skirting
+  const a = p(0, 0), b = p(tilesW, 0), d = p(0, tilesH)
+  poly([[a[0], a[1] - WALL_H], [b[0], b[1] - WALL_H], [b[0], b[1]], [a[0], a[1]]], PAL.wallA)
+  poly([[a[0], a[1] - WALL_H], [d[0], d[1] - WALL_H], [d[0], d[1]], [a[0], a[1]]], PAL.wallB)
+  poly([[a[0], a[1] - 16], [b[0], b[1] - 16], [b[0], b[1]], [a[0], a[1]]], PAL.wainA)
+  poly([[a[0], a[1] - 16], [d[0], d[1] - 16], [d[0], d[1]], [a[0], a[1]]], PAL.wainB)
+  poly([[a[0], a[1] - 17], [b[0], b[1] - 17], [b[0], b[1] - 16], [a[0], a[1] - 16]], PAL.skirt)
+  poly([[a[0], a[1] - 17], [d[0], d[1] - 17], [d[0], d[1] - 16], [a[0], a[1] - 16]], PAL.skirt)
+
+  // posters on the left wall, clock on the right wall
+  const poster = (gy0, gy1, color) => {
+    const p0 = p(0, gy0), p1 = p(0, gy1)
+    poly([[p0[0], p0[1] - 44], [p1[0], p1[1] - 44], [p1[0], p1[1] - 22], [p0[0], p0[1] - 22]], '#1b1e26')
+    poly([[p0[0], p0[1] - 42], [p1[0], p1[1] - 42], [p1[0], p1[1] - 24], [p0[0], p0[1] - 24]], color)
+  }
+  poster(1.2, 3.0, '#3f5f8a')
+  poster(3.8, 5.2, '#3c6b4f')
+  const [clx, cly] = p(0, tilesH - 1.2)
+  ellipse(clx, cly - 34, 9, 9, '#1b1e26', 1)
+  ellipse(clx, cly - 34, 8, 8, '#e7e0cf', 1)
+  g.fillStyle = '#2b2320'; g.fillRect(clx - 1, cly - 39, 1, 5); g.fillRect(clx, cly - 34, 4, 1)
+
+  // two ceiling lamps with warm pools
+  for (const [gx, gy] of [[2.2, 1.6], [tilesW - 2.4, 2.6]]) {
+    const [x, y] = p(gx, gy)
+    const top = y - WALL_H + 6
+    g.fillStyle = PAL.lamp[0]; g.fillRect(x - 10, top + 16, 20, 5)
+    g.fillStyle = PAL.lamp[2]; g.fillRect(x - 8, top + 21, 16, 2)
+    const grad = g.createRadialGradient(x, y + 8, 1, x, y + 8, 62)
+    grad.addColorStop(0, 'rgba(255,208,138,0.26)')
+    grad.addColorStop(0.6, 'rgba(255,200,130,0.10)')
+    grad.addColorStop(1, 'rgba(255,200,130,0)')
+    g.fillStyle = grad
+    g.beginPath(); g.ellipse(x, y + 8, 62, 31, 0, 0, Math.PI * 2); g.fill()
+  }
+
+  // plant + file box
+  const [px, py] = p(0.8, 2.2)
+  ellipse(px, py + 3, 12, 5, '#000', 0.3)
+  g.fillStyle = '#6b4b2a'; g.fillRect(px - 6, py - 13, 12, 13)
+  g.fillStyle = '#835c34'; g.fillRect(px - 6, py - 13, 12, 2)
+  g.fillStyle = PAL.plant[2]; g.fillRect(px - 9, py - 26, 8, 13); g.fillRect(px + 1, py - 29, 8, 15)
+  g.fillStyle = PAL.plant[0]; g.fillRect(px - 5, py - 34, 10, 12)
+  g.fillStyle = PAL.plant[1]; g.fillRect(px + 4, py - 31, 5, 10)
+
+  // waiting zone at the front-left, with a low partition
+  if (withZone) {
+    for (let gy = 4.6; gy < 6.2; gy += 0.5) {
+      for (let gx = 0.8; gx < 3.2; gx += 0.5) {
+        const [x, y] = p(gx, gy)
+        poly([[x, y], [x + TW / 4, y + TH / 4], [x, y + TH / 2], [x - TW / 4, y + TH / 4]],
+          (Math.round(gx * 2) + Math.round(gy * 2)) % 2 === 0 ? PAL.zone[0] : PAL.zone[1])
+      }
+    }
+    const [dx, dy] = p(1.9, 4.5)
+    g.fillStyle = '#3b4654'; g.fillRect(dx - 26, dy - 9, 52, 7)
+    g.fillStyle = '#4a5768'; g.fillRect(dx - 26, dy - 9, 52, 1)
+    g.fillStyle = '#2b3440'; g.fillRect(dx - 24, dy - 2, 3, 6); g.fillRect(dx + 21, dy - 2, 3, 6)
+  }
+
+  // vignette
+  const vg = g.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.36, w / 2, h / 2, Math.max(w, h) * 0.64)
+  vg.addColorStop(0, 'rgba(0,0,0,0)')
+  vg.addColorStop(1, 'rgba(0,0,0,0.42)')
+  g.fillStyle = vg; g.fillRect(0, 0, w, h)
+
+  const out = { canvas: c, width: w, height: h, project: p }
+  roomCache.set(key, out)
+  return out
+}
+
+// ---- workstation ------------------------------------------------------------
+/**
+ * Desk geometry in the iso basis, so the slab lies ON the floor plane instead
+ * of pasting a screen-space rectangle over an isometric room:
+ *   ux = (TW/2, TH/2)  (right-down),  uy = (-TW/2, TH/2)  (left-down)
+ * The top surface reaches the seated agent's elbows (y - 15); legs are 15 tall.
+ */
+// ---------------------------------------------------------------------------
+// Workstation TEMPLATE.
+//
+// A workstation is authored once, in a local frame whose origin is the desk's
+// floor centre, and then stamped at every grid point. Nothing in the drawing
+// code is allowed to invent an offset: every number lives here, so tuning one
+// workstation tunes all of them, and the values can be checked in the template
+// preview (`?template=1`) at 3x zoom with the anchor crosshair on screen.
+//
+// Units: pixels, y is up-negative. `halfW`/`halfD` are in TILES along the iso
+// basis; the desk's on-screen half-span is (halfW + halfD) * (TW / 2).
+// ---------------------------------------------------------------------------
+const WS = {
+  // Desk height ~0.42 of a seated agent (32px tall): 13px reads as a desk, 10px
+  // reads as a low table and makes the legs look stubby.
+  deskH: 13,                 // desk top above the floor
+  // Footprint swapped: the long axis runs along uy now, so the desk reads as a
+  // long desk whose short side faces the viewer (screen diamond ~39 x 9 px).
+  halfW: 0.22, halfD: 0.42,
+  // A seated agent belongs on the MIDDLE of the desk's long edge, on the far
+  // side of the slab -- not on a corner. In iso that is a = -(halfW + margin)
+  // (push back along the depth axis) with b = 0 (centred along the length),
+  // which lands at about (-7, -4) on screen.
+  // Feet stay behind the desk's near face (which hides them); the head clears
+  // the monitor because the monitor is short and low, not because the agent
+  // floats upward.
+  seatDX: -7, seatDY: -8,
+  // On the desk's right half of the LONG axis, so it never covers the agent
+  // seated on the middle of the far edge. (Along the long axis the top face
+  // reaches ~+-19px, so 10 is comfortably inside it.)
+  monitorDX: 1,              // monitor centre, relative to the anchor
+  monitorDY: 3,              // monitor base, relative to the desk top
+  monitorW: 16, monitorH: 9,
+  chairW: 16, chairH: 14,
+  chipDY: 12,                // status chip, below the anchor
+}
+
+function drawWorkstation(g, role, x, y, frame) {
+  const ux = [TW / 2, TH / 2], uy = [-TW / 2, TH / 2]
+  const at = (a, b, dz = 0) => [x + a * ux[0] + b * uy[0], y + a * ux[1] + b * uy[1] - dz]
+  const { deskH, halfW, halfD } = WS
+  const seatX = x + WS.seatDX
+  const seatY = y + WS.seatDY
+  const fill = (pts, color) => {
+    g.beginPath(); g.moveTo(pts[0][0], pts[0][1])
+    for (const q of pts.slice(1)) g.lineTo(q[0], q[1])
+    g.closePath(); g.fillStyle = color; g.fill()
+  }
+
+  // 1) chair back, behind the agent
+  const chairX = seatX - WS.chairW / 2, chairY = seatY - ART_H + 6
+  g.fillStyle = '#3b4654'; g.fillRect(chairX, chairY, WS.chairW, WS.chairH)
+  g.fillStyle = '#4a5768'; g.fillRect(chairX, chairY, WS.chairW, 2)
+  g.fillStyle = '#2b3440'; g.fillRect(chairX + WS.chairW - 3, chairY, 3, WS.chairH)
+
+  // 2) the agent, feet at the SEAT point (behind the desk in depth)
+  const pose = role.state === 'running' && frame % 12 < 6 ? 'typeA' : 'typeB'
+  g.drawImage(spriteFor(role, pose), seatX - ART_W / 2, seatY - ART_H + 2)
+
+  // 3) desk legs first (they are behind the slab), dropped from the footprint
+  const corners = [at(-halfW, -halfD, deskH), at(halfW, -halfD, deskH), at(halfW, halfD, deskH), at(-halfW, halfD, deskH)]
+  g.fillStyle = '#5a3a20'
+  for (const c of corners) g.fillRect(Math.round(c[0]) - 1, Math.round(c[1]), 2, deskH + 1)
+
+  // 4) slab: top face (lit), near face + right face (mid/dark), lit far rim.
+  //    The near faces are what hide the agent's thighs, so the person reads as
+  //    SEATED instead of swallowed.
+  fill(corners, PAL.wood[0])
+  const nearA = corners[3], nearB = corners[2], sideB = corners[1]
+  fill([nearA, nearB, [nearB[0], nearB[1] + 4], [nearA[0], nearA[1] + 4]], PAL.wood[1])
+  fill([nearB, sideB, [sideB[0], sideB[1] + 4], [nearB[0], nearB[1] + 4]], PAL.wood[2])
+  fill([corners[0], corners[1], [corners[1][0], corners[1][1] + 1], [corners[0][0], corners[0][1] + 1]], 'rgba(255,255,255,0.18)')
+  // a modesty panel under the near edge, so legs do not show through the gap
+  fill([[nearA[0], nearA[1] + 4], [nearB[0], nearB[1] + 4], [nearB[0], nearB[1] + 9], [nearA[0], nearA[1] + 9]], '#6b4423')
+
+  // 5) contact shadow on the floor, drawn under the whole footprint
+  g.fillStyle = 'rgba(0,0,0,0.28)'
+  g.beginPath(); g.ellipse(x, y + 2, 28, 7, 0, 0, Math.PI * 2); g.fill()
+
+  // 6) monitor: its BASE must sit inside the desk-top polygon, so it is placed
+  //    relative to the desk centre and inset, not at a fixed pixel offset.
+  const deskTopY = y - deskH
+  // monitor sits to the agent's LEFT and is ~one head wide, so it never covers
+  // the face; its base is inset from the desk-top edges
+  const mx = x + WS.monitorDX
+  const mw = WS.monitorW, mh = WS.monitorH, baseY = deskTopY + WS.monitorDY
+  g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(mx - mw / 2 + 2, baseY - 1, mw - 4, 2)
+  g.fillStyle = PAL.metal[1]; g.fillRect(mx - 2, baseY - 6, 4, 6); g.fillRect(mx - 5, baseY - 2, 10, 2)
+  g.fillStyle = PAL.metal[2]; g.fillRect(mx - mw / 2, baseY - mh - 6, mw, mh)
+  g.fillStyle = PAL.metal[1]; g.fillRect(mx - mw / 2, baseY - mh - 6, mw, 1)
+  g.fillStyle = COLOR[role.state]
+  g.globalAlpha = role.state === 'running' ? 0.6 + 0.4 * ((frame % 18) / 18) : 0.92
+  g.fillRect(mx - mw / 2 + 2, baseY - mh - 4, mw - 4, mh - 3)
+  g.globalAlpha = 1
+
+  // 7) clutter on the top face, kept small so it does not fight the monitor
+  g.fillStyle = PAL.paper[0]; g.fillRect(x - 26, deskTopY - 4, 12, 3)
+  g.fillStyle = PAL.paper[1]; g.fillRect(x - 26, deskTopY - 1, 12, 1)
+  g.fillStyle = PAL.metal[0]; g.fillRect(x - 33, deskTopY - 5, 4, 4)
+
+  if (role.state === 'stalled') {
+    g.fillStyle = '#ff7b72'; g.fillRect(seatX + 12, seatY - ART_H - 2, 2, 7)
+    g.fillStyle = '#ff7b72'; g.fillRect(seatX + 12, seatY - ART_H + 6, 2, 2)
+  }
+  return { anchor: [x, y + WS.chipDY], bubble: [seatX, seatY - ART_H - 6] }
+}
+
+// ===========================================================================
+// Global scope: a grid of room thumbnails
+// ===========================================================================
+const rail = document.getElementById('rail')
+const roomsEl = document.getElementById('rooms')
+const stage = document.getElementById('stage')
+const frameEl = document.getElementById('frame')
+const scene = document.getElementById('scene')
+const chipsEl = document.getElementById('chips')
+const stats = document.getElementById('stats')
+const scopeEl = document.getElementById('scope')
+let scope = 'global'          // global | room
+let activeRoom = null
+let activeWorkspace = null
+let frame = 0, last = 0, dirty = true
+
+function drawThumb(canvasEl, session) {
+  const room = paintRoom(4, 3, false)
+  canvasEl.width = room.width; canvasEl.height = room.height
+  const g = canvasEl.getContext('2d')
+  g.imageSmoothingEnabled = false
+  g.drawImage(room.canvas, 0, 0)
+  const agents = session.agents.slice(0, 4)
+  agents.forEach((role, i) => {
+    const [gx, gy] = [0.9 + (i % 2) * 1.6, 0.7 + Math.floor(i / 2) * 1.5]
+    const [x, y] = room.project(gx + 0.5, gy + 0.5)
+    g.fillStyle = 'rgba(0,0,0,0.35)'
+    g.beginPath(); g.ellipse(x, y + 2, 10, 4, 0, 0, Math.PI * 2); g.fill()
+    g.drawImage(spriteFor(role, 'stand'), x - ART_W / 2, y - ART_H + 2)
+    g.fillStyle = COLOR[role.state]; g.fillRect(x - ART_W / 2 - 4, y - ART_H, 3, 3)
+  })
+}
+
+function renderGlobal() {
+  const totalAgents = SESSIONS.reduce((n, s) => n + s.agents.length, 0)
+  scopeEl.textContent = `${WORKSPACES.length} 个工作区 · ${SESSIONS.length} 个会话 · ${totalAgents} 个子智能体`
+  roomsEl.innerHTML = ''
+  // Level 1: one block per workspace. Its sessions are the rooms inside it, so
+  // "several sessions running in the same workspace" is visible, not flattened.
+  for (const workspace of WORKSPACES) {
+    const block = document.createElement('div')
+    block.className = 'wsBlock'
+    const sessions = workspace.sessions.map((id) => SESSIONS.find((s) => s.id === id))
+    const busy = sessions.reduce((n, s) => n + s.agents.filter((a) => a.state === 'running').length, 0)
+    const head = document.createElement('div')
+    head.className = 'wsHead'
+    head.innerHTML = `<i class="dot" style="background:${busy > 0 ? COLOR.running : COLOR.idle}"></i>`
+      + `<span class="wsName">${workspace.name}</span>`
+      + `<span class="wsMeta">${sessions.length} 个会话 · 在岗 ${busy}</span>`
+    const row = document.createElement('div')
+    row.className = 'roomRow'
+    for (const session of sessions) {
+      const card = document.createElement('div')
+      card.className = 'roomCard'
+      const name = document.createElement('div')
+      name.className = 'name'
+      const sessionBusy = session.agents.filter((a) => a.state === 'running').length
+      name.innerHTML = `<i class="dot" style="width:6px;height:6px;border-radius:1px;background:${sessionBusy > 0 ? COLOR.running : COLOR.idle}"></i>${session.title}`
+      const meta = document.createElement('div')
+      meta.className = 'meta'
+      meta.textContent = `${session.agents.length} 个子智能体 · 在岗 ${sessionBusy}`
+      const canvas = document.createElement('canvas')
+      card.append(name, canvas, meta)
+      card.addEventListener('click', () => enterRoom(session, workspace))
+      row.append(card)
+      drawThumb(canvas, session)
+    }
+    block.append(head, row)
+    roomsEl.append(block)
+  }
+  stage.classList.remove('on')
+}
+
+function enterRoom(session, workspace) {
+  scope = 'room'
+  activeRoom = session
+  activeWorkspace = workspace ?? null
+  roomsEl.innerHTML = ''
+  stage.classList.add('on')
+  const room = paintRoom(10, 7, true)
+  const width = rail.clientWidth - 20
+  const scale = Math.max(1, Math.floor(width / room.width))
+  scene.width = room.width; scene.height = room.height
+  scene.style.width = `${room.width * scale}px`
+  scene.style.height = `${room.height * scale}px`
+  // the frame is the canvas box exactly, so absolute cards map 1:1 to it
+  frameEl.style.width = scene.style.width
+  frameEl.style.height = scene.style.height
+  scene.dataset.width = String(room.width)
+  const crumb = activeWorkspace === null ? '' : `${activeWorkspace.name} › `
+  scopeEl.textContent = `${crumb}会话「${session.title}」· ${session.agents.length} 个子智能体`
+  dirty = true
+  renderRoomDom()
+}
+
+/** Debug overlay (?debug=1): the grid, each workstation's footprint and the
+ *  seat point. Placement is checked against these lines instead of guessed. */
+function drawDebugOverlay(g, room, placed) {
+  const p = room.project
+  g.save()
+  g.strokeStyle = 'rgba(126,231,135,0.35)'
+  g.lineWidth = 1
+  for (let gy = 0; gy <= 6; gy += 1) {
+    const a = p(0, gy), b = p(8, gy)
+    g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke()
+  }
+  for (let gx = 0; gx <= 8; gx += 1) {
+    const a = p(gx, 0), b = p(gx, 6)
+    g.beginPath(); g.moveTo(a[0], a[1]); g.lineTo(b[0], b[1]); g.stroke()
+  }
+  g.strokeStyle = 'rgba(255,123,114,0.9)'
+  for (const item of placed) {
+    const [x, y] = p(item.gx, item.gy)
+    g.strokeRect(Math.round(x) - 17, Math.round(y) - 6, 34, 12)   // footprint
+    g.fillStyle = '#7ee787'
+    g.fillRect(Math.round(x) - 1, Math.round(y) - 6, 2, 2)        // seat mark
+  }
+  g.restore()
+}
+
+function drawRoom() {
+  const room = paintRoom(10, 7, true)
+  const g = scene.getContext('2d')
+  g.imageSmoothingEnabled = false
+  g.clearRect(0, 0, room.width, room.height)
+  g.drawImage(room.canvas, 0, 0)
+  // Two staggered rows from the room plan: back row gy=1, front row gy=2.6 with a
+  // half-tile x offset, which is what keeps an isometric grid from hiding the
+  // front row behind the back one.
+  // Centred on the room, not counted from the left edge: 3 in the back row and 2
+  // in front, offset by half a pitch. Pitch is 2.5 tiles = 60px at TW=48.
+  const slots = [[2.5, 1.2], [5, 1.2], [7.5, 1.2], [3.75, 2.9], [6.25, 2.9]]
+  const working = activeRoom.agents.filter((a) => a.state !== 'idle')
+  const resting = activeRoom.agents.filter((a) => a.state === 'idle')
+  const placed = working.slice(0, slots.length).map((role, i) => ({ role, gx: slots[i][0], gy: slots[i][1] }))
+    .sort((a, b) => (a.gx + a.gy) - (b.gx + b.gy))
+  for (const item of placed) {
+    const [x, y] = room.project(item.gx, item.gy)
+    const anchor = drawWorkstation(g, item.role, x, y, frame)
+    item.role.__anchor = anchor.anchor
+    item.role.__bubble = anchor.bubble
+  }
+  resting.slice(0, 3).forEach((role, i) => {
+    const [x, y] = room.project(1.2 + i * 0.9, 4.6)
+    g.fillStyle = 'rgba(0,0,0,0.3)'
+    g.beginPath(); g.ellipse(x, y + 2, 10, 4, 0, 0, Math.PI * 2); g.fill()
+    g.drawImage(spriteFor(role, 'stand'), x - ART_W / 2, y - ART_H)
+    role.__anchor = [x, y + 6]
+  })
+  if (new URLSearchParams(location.search).get('debug') === '1') drawDebugOverlay(g, room, placed)
+  const t = performance.now() - startedAt
+  const line = `房间 ${room.width}×${room.height} · 工位 ${placed.length} · 单帧 ${t.toFixed(2)}ms · 只渲当前房间`
+  if (stats.dataset.v !== line) { stats.dataset.v = line; stats.textContent = line }
+  dirty = false
+}
+
+// DOM chips + one bubble, positioned over the room canvas
+function renderRoomDom() {
+  stage.querySelectorAll('.chip2, .bubble').forEach((n) => n.remove())
+  for (const role of activeRoom.agents) {
+    const chip = document.createElement('div')
+    chip.className = 'chip2'
+    chip.innerHTML = `<i class="dot" style="background:${COLOR[role.state]}"></i><span>${role.name}</span>`
+    chip.addEventListener('click', () => { scopeEl.textContent = `→ 打开子会话 ${role.id}（原型回显）` })
+    frameEl.append(chip)
+    role.__chip = chip
+  }
+  const speaker = activeRoom.agents.find((a) => a.state === 'stalled')
+    ?? activeRoom.agents.find((a) => a.state === 'running' && a.note !== undefined)
+  if (speaker !== undefined) {
+    const bubble = document.createElement('div')
+    bubble.className = 'bubble'
+    bubble.innerHTML = `<b>${speaker.name} · ${speaker.state === 'stalled' ? '等待超时' : '正在处理'}</b>${speaker.note}`
+    frameEl.append(bubble)
+    speaker.__bubbleNode = bubble
+  }
+  positionDom()
+}
+
+function positionDom() {
+  const k = parseFloat(scene.style.width) / Number(scene.dataset.width)
+  for (const role of activeRoom.agents) {
+    if (role.__chip !== undefined && role.__anchor !== undefined) {
+      role.__chip.style.left = `${role.__anchor[0] * k}px`
+      role.__chip.style.top = `${(role.__anchor[1] + 8) * k}px`
+    }
+    if (role.__bubbleNode !== undefined && role.__bubble !== undefined) {
+      role.__bubbleNode.style.left = `${role.__bubble[0] * k}px`
+      role.__bubbleNode.style.top = `${role.__bubble[1] * k}px`
+    }
+  }
+}
+
+let startedAt = performance.now()
+function tick(now) {
+  const animating = scope === 'room'
+    && activeRoom.agents.some((a) => a.state === 'running' || a.state === 'stalled')
+  if (animating && document.visibilityState === 'visible') {
+    if (now - last > 96) { frame += 1; last = now; dirty = true }
+  }
+  if (dirty && scope === 'room') { startedAt = performance.now(); drawRoom(); positionDom() }
+  requestAnimationFrame(tick)
+}
+
+document.getElementById('btn-scope').addEventListener('click', () => {
+  scope = 'global'; activeRoom = null
+  renderGlobal()
+})
+document.getElementById('btn-run').addEventListener('click', () => {
+  SESSIONS.forEach((s) => s.agents.forEach((a) => { a.state = 'running' }))
+  if (scope === 'room') { dirty = true; renderRoomDom() } else renderGlobal()
+})
+document.getElementById('btn-idle').addEventListener('click', () => {
+  SESSIONS.forEach((s) => s.agents.forEach((a) => { a.state = 'idle' }))
+  if (scope === 'room') { dirty = true; renderRoomDom() } else renderGlobal()
+})
+
+// ---------------------------------------------------------------------------
+// Template preview (?template=1): ONE workstation at 3x with the anchor
+// crosshair, so placement is tuned in numbers instead of by nudging a room.
+// ---------------------------------------------------------------------------
+function renderTemplate() {
+  const room = paintRoom(6, 5, false)
+  const W = 360, H = 330
+  scene.width = W; scene.height = H
+  scene.style.width = `${W * 3}px`; scene.style.height = `${H * 3}px`
+  frameEl.style.width = scene.style.width
+  frameEl.style.height = scene.style.height
+  stage.classList.add('on')
+  roomsEl.innerHTML = ''
+  scopeEl.textContent = '模板：单个工位（锚点 = 桌面地面中心）'
+  const g = scene.getContext('2d')
+  g.imageSmoothingEnabled = false
+  g.fillStyle = '#0c0f13'; g.fillRect(0, 0, W, H)
+  const p = room.project
+  // floor patch around the anchor so the footprint is readable
+  for (let gy = 0; gy < 5; gy += 1) {
+    for (let gx = 0; gx < 6; gx += 1) {
+      const [x, y] = p(gx, gy)
+      g.beginPath()
+      g.moveTo(x, y); g.lineTo(x + TW / 2, y + TH / 2); g.lineTo(x, y + TH); g.lineTo(x - TW / 2, y + TH / 2)
+      g.closePath()
+      g.fillStyle = (gx + gy) % 2 === 0 ? PAL.floor[0] : PAL.floor[1]
+      g.fill()
+    }
+  }
+  const ax = 180, ay = 190
+  // draw the workstation translated so its anchor lands on (ax, ay)
+  g.save(); g.translate(ax - 180, ay - 190)
+  const role = { id: 'template', name: '模板', state: 'running', shirt: '#5b8def', hair: '#2b2118', prop: 1 }
+  drawWorkstation(g, role, 180, 190, 0)
+  g.restore()
+  // anchor crosshair + footprint box
+  g.strokeStyle = 'rgba(126,231,135,0.85)'; g.lineWidth = 1
+  g.beginPath(); g.moveTo(ax - 26, ay); g.lineTo(ax + 26, ay); g.stroke()
+  g.beginPath(); g.moveTo(ax, ay - 20); g.lineTo(ax, ay + 20); g.stroke()
+  g.strokeStyle = 'rgba(255,123,114,0.85)'
+  g.strokeRect(ax - 20, ay - 7, 40, 14)
+  let pre = document.getElementById('templateJson')
+  if (pre === null) {
+    pre = document.createElement('pre')
+    pre.id = 'templateJson'
+    pre.style.cssText = 'margin-top:8px;font-size:10.5px;line-height:1.5;color:#8b96a5;white-space:pre-wrap'
+    stage.after(pre)
+  }
+  pre.textContent = `WS = ${JSON.stringify(WS, null, 2)}`
+}
+
+new ResizeObserver(() => {
+  if (scope === 'room' && activeRoom !== null) enterRoom(activeRoom, activeWorkspace)
+}).observe(rail)
+window.__dbg = { WORKSPACES, SESSIONS, enterRoom, WS }
+if (new URLSearchParams(location.search).get('template') === '1') renderTemplate()
+else renderGlobal()
+requestAnimationFrame(tick)
+</script>
+</body>
+</html>

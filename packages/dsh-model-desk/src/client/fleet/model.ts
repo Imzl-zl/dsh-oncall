@@ -82,8 +82,8 @@ export interface FleetAgent {
   readonly addressable: boolean
 }
 
-/** The handoff receipt kinds the projection folds; `settled` is declared by the wire type. */
-export type FleetActivityKind = 'delegate' | 'finish' | 'newSession' | 'facts' | 'settled'
+/** The handoff receipt kinds the projection actually folds (the fold writes no other kind). */
+export type FleetActivityKind = 'delegate' | 'finish' | 'newSession' | 'facts'
 
 /**
  * One row of the activity stream: what the model declared, when.
@@ -242,7 +242,7 @@ function projectionOf(list: SessionListState, sessionId: string): SessionProject
   return snapshot.values as SessionProjectionMap
 }
 
-const ACTIVITY_KINDS: ReadonlySet<string> = new Set(['delegate', 'finish', 'newSession', 'facts', 'settled'])
+const ACTIVITY_KINDS: ReadonlySet<string> = new Set(['delegate', 'finish', 'newSession', 'facts'])
 
 function isActivityKind(value: unknown): value is FleetActivityKind {
   return typeof value === 'string' && ACTIVITY_KINDS.has(value)

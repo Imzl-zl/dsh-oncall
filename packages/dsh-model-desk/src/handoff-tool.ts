@@ -47,7 +47,7 @@ import {
 } from './handoff-wire.ts'
 import type { SessionBindings } from './bindings.ts'
 import type { HandoffLedger } from './handoff.ts'
-import { handoffRelayNotice } from './notice.ts'
+import { handoffReceiptNotice, handoffRelayNotice } from './notice.ts'
 
 /** A goal as this module reads it (`@deepseek-ai/dsh-goal`). */
 export interface GoalLike {
@@ -65,6 +65,17 @@ export interface TodoLike {
   status: 'pending' | 'in_progress' | 'completed'
 }
 
+/** `SessionController`'s public face (`dsh-api-session-controller/lib/types/index.d.ts:101,107`). */
+export interface SessionControllerFace {
+  create(request: { cwd: string; reusable: (sessionId: unknown) => boolean }): Promise<{ sessionId: unknown }>
+  selectModel(request: { sessionId: unknown; provider: string; model: string; reasoningEffort?: string }): Promise<unknown>
+}
+
+/** `AgentRegistry`'s lookup (`dsh-agent/lib/types/index.d.ts:343`). */
+export interface AgentRegistryFace {
+  get(id: unknown): Agent | undefined
+}
+
 /** The optional services this module reaches through `ctx.get` (packages/AGENTS.md: optional services). */
 export interface HandoffFaces {
   tools: { register(definition: unknown): unknown }
@@ -74,18 +85,41 @@ export interface HandoffFaces {
       result: Promise<{ structured?: unknown }>
       dispose(): Promise<void>
     }>
-    listProviders?(): readonly { name?: string; id?: string }[]
+    /**
+     * The registered backend names — `SubagentRuntime.list()` in rc.3
+     * (`dsh-subagent/lib/types/index.d.ts:299`). Optional because the face is
+     * structural: a composition that answers without it still delegates.
+     */
+    list?(): readonly string[]
   }
   goals?: {
     get(agent: Agent): GoalLike | undefined
     create(agent: Agent, request: { objective: string; maxGoalRounds?: number }): unknown
     clear(agent: Agent, ref: { id: string; revision: number }): unknown
   }
-  sessionController?: {
-    createSession(request: { cwd: string; reusable: (sessionId: unknown) => boolean }): Promise<{ agent: Agent }>
-    selectionFor(agent: Agent): { current?: ModelSelection } | undefined
-    selectForNextRequest(agent: Agent, selection: ModelSelection): void
-  }
+  /**
+   * The PUBLIC SessionController face, and only that — resolved at CALL time.
+   *
+   * `create` / `selectModel` are the service's own methods
+   * (`dsh-api-session-controller/lib/types/index.d.ts:101,107`). The three
+   * methods this face used to declare — `createSession`, `selectionFor`,
+   * `selectForNextRequest` — live on the private `ApiSessionAgentController`
+   * (`agent.d.ts:92`), are not reachable through `ctx`, and calling them threw
+   * `TypeError: controller.selectionFor is not a function` at runtime while the
+   * `as` cast kept TypeScript quiet.
+   *
+   * A getter rather than the service: in a composition that mounts this package
+   * later than the tool (the web profile does), a captured reference is
+   * permanently `undefined` and every `newSession` refuses with
+   * "this composition does not provide both" while the service is right there.
+   */
+  sessionController?: () => SessionControllerFace | undefined
+  /**
+   * The live-agent registry (`ctx.agents`), because `create` answers an id.
+   *
+   * `AgentRegistry.get(id)` — `dsh-agent/lib/types/index.d.ts:343`.
+   */
+  agents?: () => AgentRegistryFace | undefined
   projections?: {
     stateOf(session: Session, key: string): unknown
     snapshot(session: Session, keys?: readonly string[]): { values: Record<string, unknown> }
@@ -107,11 +141,17 @@ export type DelegateReceipt = {
   attached: string[]
 }
 
-/** What `finish` returned. */
+/**
+ * What `finish` returned.
+ *
+ * `report` is echoed back because the model wrote it for the user ("what I did,
+ * what is left") — without it the receipt answered only where the turn ended.
+ */
 export type FinishReceipt = {
   action: 'finish'
   recorded: true
   outcome: string
+  report?: string
   newSessionId?: string
 }
 
@@ -121,15 +161,21 @@ export type NewSessionReceipt = {
   newSession: string
 }
 
-/** What `facts` returned: countable facts only, never a judgment. */
+/**
+ * What `facts` returned: countable facts only, never a judgment.
+ *
+ * Every count is `null` when this composition has no `router/handoff` projection
+ * — an unknown number, not a measured zero. `todos` already worked that way;
+ * the counters used to answer `0`, which reads as "nothing was ever delegated".
+ */
 export type FactsReceipt = {
   action: 'facts'
-  compactions: number
-  turns: number
-  toolFailures: number
+  compactions: number | null
+  turns: number | null
+  toolFailures: number | null
   goal: { objective: string; phase: string; roundsStarted: number } | null
   todos: { pending: number; inProgress: number; open: string[] } | null
-  delegations: { total: number; perRole: Record<string, number> }
+  delegations: { total: number; perRole: Record<string, number> } | null
 }
 
 export type HandoffReceipt = DelegateReceipt | FinishReceipt | NewSessionReceipt | FactsReceipt
@@ -364,14 +410,21 @@ export class HandoffRuntime {
       ...args.reviewId === undefined ? {} : { reviewId: args.reviewId },
       ...args.reviewOverride === undefined ? {} : { reviewOverride: args.reviewOverride },
     })
+    // 模型的收工说明：回执里原样带回，接力简报再引一句（见 relay / briefing），
+    // 并留一条中文通知——否则"做了什么、还剩什么"只活在折叠的工具结果里。
+    const report = (args.report ?? '').trim()
+    if (report !== '') {
+      agent.session.append('user/message', handoffReceiptNotice(outcome, report), { surfaceOp: 'append' })
+    }
     const relay = (config.newSession.onFinish as readonly string[]).includes(outcome)
     if (!relay) {
-      return Promise.resolve({ action: 'finish', recorded: true, outcome })
+      return Promise.resolve({ action: 'finish', recorded: true, outcome, ...report === '' ? {} : { report } })
     }
-    return this.relay(agent, config, gate, `finish:${outcome}`, args.handoffNote ?? '').then(newSessionId => ({
+    return this.relay(agent, config, gate, `finish:${outcome}`, args.handoffNote ?? '', report).then(newSessionId => ({
       action: 'finish',
       recorded: true as const,
       outcome,
+      ...report === '' ? {} : { report },
       newSessionId,
     }))
   }
@@ -388,6 +441,9 @@ export class HandoffRuntime {
   /**
    * The relay, in the proposal's six steps (§4.6).
    *
+   * Note: 为何只走 SessionController 的公开面、为何 agents.get 补那一步 ——
+   * 见 .agents/notes/implemented/2026-10-26-recheck-driven-fixes.md
+   *
    * The first message is a `user`-role message this plugin sourced
    * (`model-desk-handoff`): the model must treat it as the task, and the
    * projection must not mistake it for a human speaking — otherwise the carried
@@ -399,11 +455,16 @@ export class HandoffRuntime {
     gate: GateInput,
     reason: string,
     handoffNote: string,
+    report = '',
   ): Promise<string> {
-    const controller = this.faces.sessionController
-    if (controller === undefined) {
+    // Resolved here, not at registration: the web composition mounts these two
+    // services later than this tool, and a captured `undefined` would refuse
+    // every relay for the life of the process.
+    const controller = this.faces.sessionController?.()
+    const registry = this.faces.agents?.()
+    if (controller === undefined || registry === undefined) {
       gateRefusal(
-        'newSession needs the session controller, which this composition does not provide.',
+        'newSession needs the session controller and the live-agent registry, and this composition does not provide both.',
         'HANDOFF_RELAY_UNAVAILABLE',
       )
     }
@@ -415,16 +476,29 @@ export class HandoffRuntime {
         'HANDOFF_RELAY_UNAVAILABLE',
       )
     }
-    // 1. the old session's own selection (falls back to nothing: the new
-    //    session then follows the user's current choice).
-    const selection = selectionOf(controller.selectionFor(agent))
-    // 2. a top-level session, not a child.
-    const created = await controller.createSession({ cwd, reusable: () => false })
-    const newAgent = created.agent
-    const newId = newAgent.session.id
+    // 1. the old session's own selection, off its own last request header
+    //    (falls back to nothing: the new session then follows the user's
+    //    current choice).
+    const selection = selectionOf(agent.session.requestHeader()?.config)
+    // 2. a top-level session, not a child. `create` answers an id; the Agent
+    //    comes from the registry the same creation published into.
+    const created = await controller.create({ cwd, reusable: () => false })
+    const newId = String(created.sessionId)
+    const newAgent = registry.get(created.sessionId)
+    if (newAgent === undefined) {
+      gateRefusal(
+        `newSession created session ${newId} but no live agent answers for it; the relay needs the agent to wake it.`,
+        'HANDOFF_RELAY_UNAVAILABLE',
+      )
+    }
     // 3. first hop = the model the old session was on.
     if (config.newSession.carrySelection && selection !== undefined) {
-      controller.selectForNextRequest(newAgent, selection)
+      await controller.selectModel({
+        sessionId: created.sessionId,
+        provider: selection.provider,
+        model: selection.model,
+        ...(selection.reasoningEffort === undefined ? {} : { reasoningEffort: selection.reasoningEffort }),
+      })
     }
     // 4. the chain binding and the budget counters follow the task.
     if (config.newSession.carryChainBinding) {
@@ -446,7 +520,7 @@ export class HandoffRuntime {
       ? carried.goal
       : undefined
     // 6. the briefing, then wake the new session with it.
-    newAgent.followup(handoffMessage(this.briefing(agent, config, reason, handoffNote, fallbackGoal)))
+    newAgent.followup(handoffMessage(this.briefing(agent, config, reason, handoffNote, report, fallbackGoal)))
     // 7. retire the old goal, then say where the task went.
     this.retireGoal(agent, carried?.goal)
     agent.session.append('user/message', handoffRelayNotice(newId, reason), { surfaceOp: 'append' })
@@ -459,6 +533,7 @@ export class HandoffRuntime {
     config: HandoffConfig,
     reason: string,
     handoffNote: string,
+    report: string,
     fallbackGoal?: GoalLike,
   ): string {
     const parts: string[] = [
@@ -470,6 +545,8 @@ export class HandoffRuntime {
             : '复核完再接着干'),
       `【交接说明】${handoffNote.trim() === '' ? '(未填写)' : handoffNote.trim()}`,
     ]
+    // 模型的收工说明原样带过去：新会话要接的是它还没做完的那件事。
+    if (report.trim() !== '') parts.push(`【收工说明】${report.trim()}`)
     const artifacts = this.briefingArtifacts(agent, config)
     // A goal that could not be rebuilt must survive in the briefing the model
     // reads as its task; otherwise `keepGoal` failing silently drops the
@@ -579,9 +656,10 @@ export class HandoffRuntime {
     const open = todos?.filter(todo => todo.status !== 'completed') ?? []
     return {
       action: 'facts',
-      compactions: state?.stats.compactions ?? 0,
-      turns: state?.stats.turns ?? 0,
-      toolFailures: state?.stats.toolFailures ?? 0,
+      // 没有投影 = 没数过，不是数出 0。闸门要的是 0（它只拒绝），回执要的是真话。
+      compactions: state === undefined ? null : state.stats.compactions,
+      turns: state === undefined ? null : state.stats.turns,
+      toolFailures: state === undefined ? null : state.stats.toolFailures,
       goal: goal === undefined
         ? null
         : { objective: goal.objective, phase: goal.phase, roundsStarted: goal.roundsStarted },
@@ -592,7 +670,7 @@ export class HandoffRuntime {
             inProgress: todos.filter(todo => todo.status === 'in_progress').length,
             open: open.map(todo => todo.content),
           },
-      delegations: { total: counters.delegations, perRole: counters.perRole },
+      delegations: state === undefined ? null : { total: counters.delegations, perRole: counters.perRole },
     }
   }
 

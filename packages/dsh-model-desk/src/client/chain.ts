@@ -11,6 +11,7 @@
  * Note: 分区顺序与"没有第二层卡片"的依据 —— 见 docs/design/ui-layout-redesign.md
  */
 
+import { chainDisplayName } from './format.ts'
 import { h } from './dom.ts'
 import { Button, Input } from '@deepseek-ai/dsh-client-ui-primitives'
 import { Icon, ICON_PLUS } from './icons.ts'
@@ -34,7 +35,7 @@ export function ChainsSection(props) {
   var rows = chains.map(function (chain) {
     var editing = chain.id === props.editingId
     var isDefault = chain.id === props.defaultChainId
-    var label = chain.name !== '' ? chain.name : t('chainDefaultName')
+    var label = chainDisplayName(t, chain)
     var pick = h('button', {
       type: 'button',
       className: 'dsh-router-chain-pick',
@@ -116,8 +117,10 @@ export function ChainView(props) {
       t: t,
       maxRetries: chain.firstHopMaxRetries,
       strategy: chain.strategy,
+      primaryNeeds: chain.primaryNeeds,
       disabled: props.disabled,
       onMaxRetries: props.onFirstHopMaxRetries,
+      onPrimaryNeeds: props.onPrimaryNeeds,
     }),
     h(CandidatesSection, {
       t: t,

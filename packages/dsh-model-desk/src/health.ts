@@ -105,6 +105,9 @@ export function classifyHealth(code: string): ChannelHealthStatus | undefined {
     case 'RATE_LIMIT': return 'degraded'
     case 'AUTH':
     case 'QUOTA':
+    // deepseek-account 把 QUOTA 改写成它：同一件事（这份额度用完了），
+    // 只是可去账单页充值。漏掉它，余额耗尽的渠道会一直亮绿灯。
+    case 'ACCOUNT_QUOTA':
     case 'SERVER':
     case 'TIMEOUT':
     case 'TRANSPORT': return 'unhealthy'

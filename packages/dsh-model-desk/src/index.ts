@@ -52,11 +52,12 @@ import { DEFAULT_PROBE_PROMPT, DEFAULT_PROBE_TIMEOUT_SECONDS } from './defaults.
 import { RouterState, candidateConfig, type StepCandidate, type StepChain, type StepConditions, type TurnCarry } from './state.ts'
 import { bindingMissingNotice, conditionSkipNotice, failoverNotice, breakerNotice, skipNotice, routeMissingNotice, adapterDefectNotice, truncationContinueNotice, truncationSwitchNotice, handoffNudgeNotice, handoffUnreceiptedNotice } from './notice.ts'
 import { precheckTierOf, type PrecheckTier } from './precheck.ts'
+import { planSkipNotices } from './skip-plan.ts'
 import { failoverHistoryProjection, failureCodeOfStream, finishKindOfStream } from './lineage.ts'
 import { channelHealthProjection } from './health.ts'
 import { handoffProjection } from './handoff.ts'
 import { HandoffLedger } from './handoff.ts'
-import { HandoffRuntime, type HandoffFaces, type GoalLike, type TodoLike } from './handoff-tool.ts'
+import { HandoffRuntime, type AgentRegistryFace, type HandoffFaces, type SessionControllerFace, type GoalLike, type TodoLike } from './handoff-tool.ts'
 import { CircuitBreaker, type RouteBlock } from './breaker.ts'
 import { waitBeforeRetry } from './backoff.ts'
 import { SessionBindings } from './bindings.ts'
@@ -96,7 +97,7 @@ import type {
  * in ./routes.ts because the browser half lists the same set for its checks —
  * one definition, both halves.
  */
-function configuredRunRoutes(config: { chains: NamedChain[] }): ProbeRoute[] {
+function configuredRunRoutes(config: { chains: readonly NamedChain[] }): ProbeRoute[] {
   return configuredRouteList(config).map((key) => routeParts(key))
 }
 
@@ -144,14 +145,17 @@ export default class ModelDesk extends TypertRemoteService {
   private probeInFlight = 0
   private probeTimerId: ReturnType<typeof setInterval> | undefined
   /**
-   * Nudges already sent per `sessionId:turn`.
+   * Nudges already sent in one agent's current turn.
    *
    * Process memory on purpose: a nudge is a runtime action, not a durable fact,
    * and `maxNudgesPerTurn` bounds it inside one turn. A restart mid-turn can
    * therefore ask once more — the alternative (a durable nudge ledger) would be
    * a second source for something the proposal only ever counts per turn.
+   *
+   * Keyed by the Agent and reset when the turn changes, so it cannot grow: the
+   * previous `sessionId:turn` string map kept one entry per turn forever.
    */
-  private readonly nudges = new Map<string, number>()
+  private readonly nudges = new WeakMap<Agent, { turn: number; used: number }>()
 
   constructor(ctx: Context, config: Config) {
     super(ctx, 'modelDesk', { namespace: 'deskHealth' })
@@ -202,6 +206,7 @@ export default class ModelDesk extends TypertRemoteService {
     // user's own route. This warning is best-effort only — providers registered
     // after this plugin loads are not visible here.
     warnUnregisteredProviders(ctx, initial)
+    warnStaleProbePrompts(ctx, initial)
 
     // The durable failover ledger and the channel-health fold, both registered
     // through `ctx.get` (the optional-service rule): a composition without the
@@ -310,15 +315,17 @@ export default class ModelDesk extends TypertRemoteService {
           const effective = readConfig(config, this.raw)
           const bound = bindings.read(agent.session.id)
           const sessionChain = chainForSession(effective, bound?.chain ?? null)
-          if (sessionChain.missing !== undefined
-            && states.shouldNoteSkip(agent, turn, `binding:${sessionChain.missing}`)) {
+          const missingBinding = sessionChain.missing
+          if (missingBinding !== undefined
+            && !states.turnNoticeKeys(agent, turn).has(`binding:${missingBinding}`)) {
             // 绑定的链被删了：按默认链路由，但必须说出来。会话保留原来的绑定 id，
             // 用户重建同名链就能恢复——静默改成"没绑定"会把一次删除变成一次改道。
             agent.session.append(
               'user/message',
-              bindingMissingNotice(sessionChain.missing, chainLabel(sessionChain.chain)),
+              bindingMissingNotice(missingBinding, chainLabel(sessionChain.chain)),
               { surfaceOp: 'append' },
             )
+            states.recordTurnNoticeKeys(agent, turn, [`binding:${missingBinding}`])
           }
           const chain = resolveChain(resolved, sessionChain.chain, bound?.retries ?? {})
           if (chain === undefined) return resolved
@@ -360,12 +367,14 @@ export default class ModelDesk extends TypertRemoteService {
 
         // Walk forward from the planned index, skipping candidates this exact
         // request cannot be served by: an unmet `needs` condition first, then a
-        // capability rejection. Conditions apply to EVERY candidate — including
-        // the user's own route: an explicit `needs` is the user's stated intent,
-        // and skipping a candidate that fails it honors the configuration instead
-        // of silently ignoring it. What the user's own route stays exempt from
-        // is the automatic machinery: breaker cooldowns and capability
-        // pre-validation, which DSH already settled when the selection was made.
+        // capability rejection. Conditions apply to EVERY candidate — the first
+        // hop included, through the chain's `primaryNeeds` (its only way to carry
+        // one: a candidate naming the selected route is dropped by `resolveChain`).
+        // An explicit condition is the user's stated intent, and skipping a
+        // candidate that fails it honors the configuration instead of silently
+        // ignoring it. What the user's own route stays exempt from is the
+        // automatic machinery: breaker cooldowns and capability pre-validation,
+        // which DSH already settled when the selection was made.
         let index = plan.state.index
         const skipped: { candidate: StepCandidate; tier: PrecheckTier | undefined; code: string | undefined }[] = []
         const conditionSkipped: { candidate: StepCandidate; reason: string }[] = []
@@ -418,29 +427,35 @@ export default class ModelDesk extends TypertRemoteService {
           }
         }
         // 跳过通知在"落回用户原路由"之前发：那条路径上没有任何切换 Notice，
-        // 而"为什么链上没人能接这一击"恰恰是用户最需要看到的。三类跳过都按
-        // (turn, 跳过组) 去重——工具循环轮次每步都重决一遍，同样的跳过发一次就够；
-        // 这些 notice 是 durable 的 user 消息且进模型上下文，重复发就是重复花钱。
-        if (conditionSkipped.length > 0 && states.shouldNoteSkip(agent, turn, `condition:${conditionSkipKey(conditionSkipped)}`)) {
-          for (const entry of conditionSkipped) {
-            agent.session.append('user/message', conditionSkipNotice(entry.candidate, entry.reason), { surfaceOp: 'append' })
-          }
-        }
-        for (const entry of skipped) {
-          if (!states.shouldNoteSkip(agent, turn, `capability:${routeKeyOf(entry.candidate.provider, entry.candidate.model)}`)) continue
+        // 而"为什么链上没人能接这一击"恰恰是用户最需要看到的。
+        //
+        // 报哪几条是 ./skip-plan.ts 的裁决（纯函数：三类跳过、落回不报第一跳、
+        // 同一轮内逐路由只报一次），这里只当解释器：按计划 append。分开的原因
+        // 是"这一轮里跳过集合变大"这个触发面在组合 harness 里到不了（一次 boot
+        // 只有一个 step），而它是错发重复 durable 消息的唯一形态。
+        const skipPlan = planSkipNotices({
+          conditionSkipped,
+          capabilitySkipped: skipped,
+          blocked,
+          fellBackToOwnRoute: outgoing === undefined,
+          resolved,
+          alreadyNoted: states.turnNoticeKeys(agent, turn),
+        })
+        for (const notice of skipPlan.notices) {
           // 档二/档三各有自己的文案与指向（./precheck.ts 的三档）；同一档内
           // 每轮每路由只发一次，去重键与档一共用——那是同一次"调用前跳过"事件。
-          const built = entry.tier === 'route-missing' && entry.code !== undefined
-            ? routeMissingNotice(entry.candidate, entry.code)
-            : entry.tier === 'adapter-defect' && entry.code !== undefined
-              ? adapterDefectNotice(entry.candidate, entry.code)
-              : skipNotice(entry.candidate)
+          const built = notice.kind === 'condition'
+            ? conditionSkipNotice(notice.candidate, notice.reason)
+            : notice.kind === 'breaker'
+              ? breakerNotice(notice.candidate, notice.block)
+              : notice.tier === 'route-missing' && notice.code !== undefined
+                ? routeMissingNotice(notice.candidate, notice.code)
+                : notice.tier === 'adapter-defect' && notice.code !== undefined
+                  ? adapterDefectNotice(notice.candidate, notice.code)
+                  : skipNotice(notice.candidate)
           agent.session.append('user/message', built, { surfaceOp: 'append' })
         }
-        for (const entry of blocked) {
-          if (!states.shouldNoteSkip(agent, turn, `breaker:${routeKeyOf(entry.candidate.provider, entry.candidate.model)}`)) continue
-          agent.session.append('user/message', breakerNotice(entry.candidate, entry.block), { surfaceOp: 'append' })
-        }
+        states.recordTurnNoticeKeys(agent, turn, skipPlan.keys)
         if (outgoing === undefined) {
           // Nothing in the chain can serve this request. Fall through to the
           // user's own route so the real failure surfaces there instead of a
@@ -668,6 +683,18 @@ export default class ModelDesk extends TypertRemoteService {
         )
         return
       }
+      // `handoff.subagentBackend` 是一个名字，不是路由：拼错时保存成功、界面无事，
+      // 直到模型第一次 delegate 才在 `startActivation` 里炸。这里只说一句——不拒绝，
+      // 因为后端注册是环境事实（与候选 provider 同一条裁定，见 rules.ts 的注），
+      // 而 warn 已经让"为什么派不出去"出现在同一个日志里。
+      const backend = configOf().subagentBackend
+      const backends = typeof subagents.list === 'function' ? subagents.list() : undefined
+      if (backends !== undefined && !backends.includes(backend)) {
+        child.logger.warn(
+          `model-desk: handoff.subagentBackend '${backend}' is not a registered subagent backend `
+          + `(registered: ${backends.length > 0 ? backends.join(', ') : '(none)'}); every delegate will fail until it is fixed`,
+        )
+      }
       const ledger = new HandoffLedger(child)
       // The browser's budget read needs the same ledger the gates use; it is
       // created here because it rides the child fiber that owns the tool.
@@ -676,7 +703,12 @@ export default class ModelDesk extends TypertRemoteService {
         tools,
         subagents,
         goals: child.get('goals') as HandoffFaces['goals'],
-        sessionController: child.get('sessionController') as HandoffFaces['sessionController'],
+        // Resolved at call time (getters, not captured references): a composition
+        // may mount these two after this tool registers.
+        sessionController: () => child.get('sessionController') as SessionControllerFace | undefined,
+        // `create` answers an id, not the Agent (`SessionCreateValue`): the live
+        // agent registry is what turns one into the other.
+        agents: () => child.get('agents') as AgentRegistryFace | undefined,
         projections: projections as unknown as HandoffFaces['projections'],
         logger: child.logger,
       }, configOf, ledger, this.bindings)
@@ -706,10 +738,12 @@ export default class ModelDesk extends TypertRemoteService {
     const receipt = runtime.receiptState(agent, turn)
     if (receipt === undefined || receipt.calledThisTurn || receipt.goalActive) return
     if (receipt.pendingTodos === 0) return
-    const key = `${agent.session.id}:${turn}`
-    const used = this.nudges.get(key) ?? 0
+    // 计数按 agent（WeakMap，随 agent 消亡）并在换轮时归零：旧实现是
+    // `sessionId:turn` 字符串 Map，永不清理，长会话里只增不减。
+    const sent = this.nudges.get(agent)
+    const used = sent !== undefined && sent.turn === turn ? sent.used : 0
     if (config.limits.nudgeWhenUnreceipted && used < config.limits.maxNudgesPerTurn) {
-      this.nudges.set(key, used + 1)
+      this.nudges.set(agent, { turn, used: used + 1 })
       agent.steer(handoffNudgeNotice(receipt.pendingTodos))
       return
     }
@@ -994,11 +1028,6 @@ function rawConfigOf(ctx: Context): unknown {
   return (ctx.fiber as unknown as { _config?: unknown })._config
 }
 
-/** Stable identity of one turn's condition-skip set, for the once-per-turn notice. */
-function conditionSkipKey(skipped: readonly { candidate: StepCandidate; reason: string }[]): string {
-  return skipped.map(entry => `${routeKeyOf(entry.candidate.provider, entry.candidate.model)}:${entry.reason}`).join('|')
-}
-
 /**
  * Whether the next fire may move to the next candidate. The failure behind the
  * retry must be `switchOn`-eligible; an unrecorded code (a first attempt, or a
@@ -1059,6 +1088,25 @@ function warnUnregisteredProviders(ctx: Context, config: { chains: readonly Name
       )
     }
   })
+}
+
+/**
+ * 一个写错路由的探测覆盖永远不会生效：`probePromptFor`（`probe.ts`）按
+ * `provider/model` 精确匹配，匹配不上就静默回落到全局默认内容。配错是环境事实
+ * （渠道可能稍后才注册），所以只 warn，与 `warnUnregisteredProviders` 同一条裁定。
+ */
+function warnStaleProbePrompts(ctx: Context, config: { chains: readonly NamedChain[]; health?: HealthConfig }): void {
+  const prompts = config.health?.probe?.prompts ?? []
+  if (prompts.length === 0) return
+  const configured = new Set(configuredRunRoutes(config).map(route => routeKeyOf(route.provider, route.model)))
+  for (const entry of prompts) {
+    if (entry.route !== '' && !configured.has(entry.route)) {
+      ctx.logger.warn(
+        `model-desk: health.probe.prompts names '${entry.route}', which no chain configures; `
+        + 'that per-route prompt will never be used (the global prompt applies instead)',
+      )
+    }
+  }
 }
 
 /** The provider ids the llm service has registered so far. */

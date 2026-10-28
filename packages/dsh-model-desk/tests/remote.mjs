@@ -32,6 +32,11 @@ import {
 import { provideCmdline } from '@deepseek-ai/dsh-cmdline'
 import { Peer } from '@deepseek-ai/dsh-client-connection'
 import { validateTypertManifest } from '@deepseek-ai/dsh-typert-loader'
+import * as zod from 'zod'
+import { assertFreshBuild } from './freshness.mjs'
+
+// 这条组合加载的是 `lib/index.js` 与生成的 `lib/typert.host.js`。
+assertFreshBuild()
 
 const HERE = fileURLToPath(new URL('.', import.meta.url))
 const ROOT = fileURLToPath(new URL('../../..', import.meta.url))
@@ -70,7 +75,10 @@ function test(name, body) {
 // The stub consumes one script entry per real (non-auxiliary) call, so the
 // probe's own generation is what these outcomes answer: one route answers, the
 // other refuses.
-writeFileSync(`${HERE}stub-script.json`, JSON.stringify({
+// 自己的脚本文件：与 `run.mjs` 共用一份时，并行跑会互相读对方的 outcomes。
+const SCRIPT = `${HERE}stub-script-remote.json`
+process.env.STUB_SCRIPT = SCRIPT
+writeFileSync(SCRIPT, JSON.stringify({
   policy: { retryableCodes: ['RATE_LIMIT'], maxRetries: 0 },
   'stub-primary': { outcomes: ['ok'] },
   'stub-third': { outcomes: ['fail:RATE_LIMIT'] },
@@ -245,7 +253,9 @@ test('the generated strict codec refuses a malformed probe request', async () =>
   assert.equal(codec.mode, 'strict')
   assert.equal(probeAll.parameters[0].source, 'json')
   const schema = codec.create()
-  assert.throws(() => schema.parse({ routes: 'not-an-array' }))
+  // 钉住"是校验拒绝"，不是"随手抛了个东西"：裸 `assert.throws` 连一个 TypeError
+  // 也算通过。
+  assert.throws(() => schema.parse({ routes: 'not-an-array' }), zod.ZodError)
   assert.deepEqual(schema.parse({ routes: [{ provider: 'p', model: 'm' }] }),
     { routes: [{ provider: 'p', model: 'm' }] })
 })
@@ -258,8 +268,10 @@ test('the generated strict codec refuses a malformed session-binding write', asy
     .find(entry => entry.method === 'setSessionBinding')
   assert.notEqual(descriptor, undefined, 'the remote client carries a setSessionBinding descriptor')
   const schema = descriptor.parameters[0].codec.create()
-  assert.throws(() => schema.parse({ sessionId: 's', chain: null, retries: 'not-an-object' }))
-  assert.throws(() => schema.parse({ sessionId: 's', retries: {} }), 'a missing chain is not a binding')
+  assert.throws(() => schema.parse({ sessionId: 's', chain: null, retries: 'not-an-object' }), zod.ZodError)
+  // 缺 `chain` 不是一个绑定（"跟随默认链"必须写成 `chain: null`）——断的是这条规则，
+  // 不是随便一次抛出：字符串第二参数在 Node 里只是失败提示语，不是匹配器。
+  assert.throws(() => schema.parse({ sessionId: 's', retries: {} }), zod.ZodError)
   assert.deepEqual(schema.parse({ sessionId: 's', chain: null, retries: { 'p/m': 5 } }),
     { sessionId: 's', chain: null, retries: { 'p/m': 5 } })
   assert.deepEqual(schema.parse({ sessionId: 's', chain: 'coding', retries: {} }),

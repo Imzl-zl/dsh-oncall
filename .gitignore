@@ -40,15 +40,20 @@ packages/dsh-model-desk/tests/.dshhome-real/
 packages/dsh-model-desk/tests/.dshhome-real-web/
 packages/dsh-model-desk/tests/.dshhome-view/
 packages/dsh-model-desk/tests/.dshhome-remote/
+packages/dsh-model-desk/tests/.dshhome-relay/
+packages/dsh-model-desk/tests/.dshhome-save/
+packages/dsh-model-desk/tests/.dshhome-office/
 packages/dsh-model-desk/tests/*.log
 packages/dsh-model-desk/tests/.sessions/
+packages/dsh-model-desk/tests/.sessions-relay/
 packages/dsh-model-desk/tests/overlay.yml
 packages/dsh-model-desk/tests/overlay-real.yml
 packages/dsh-model-desk/tests/remote-overlay.yml
+packages/dsh-model-desk/tests/handoff-overlay.yml
 packages/dsh-model-desk/tests/web-real.overlay.yml
 packages/dsh-model-desk/tests/web-view.overlay.yml
 packages/dsh-model-desk/tests/web-save.overlay.yml
-packages/dsh-model-desk/tests/stub-script.json
+packages/dsh-model-desk/tests/stub-script*.json
 packages/dsh-model-desk/tests/.binding-observed.json
 packages/dsh-model-desk/tests/vision-test.png
 

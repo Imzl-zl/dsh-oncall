@@ -71,7 +71,7 @@ npm run bundle --prefix packages/dsh-model-desk
 dsh plugin --profile web add packages/dsh-model-desk
 ```
 
-打开侧栏面板列表里的 **模型路由** 配置链。
+打开侧栏面板列表里的 **模型工作台** 配置链。
 
 ## 更新
 

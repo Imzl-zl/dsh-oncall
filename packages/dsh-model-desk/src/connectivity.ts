@@ -12,7 +12,7 @@
  * `code` (packages/llm/llm/src/error.ts — "route on this, never by parsing
  * `message`"), but `remoteDiscoverModels` wraps every failure in
  * `RemoteError('llm/model-discovery-rejected', message)`
- * (packages/llm/llm/src/index.ts:639-647). The wrapper's `details` carry only
+ * (packages/llm/llm/src/index.ts). The wrapper's `details` carry only
  * `settingsNs` and `baseURL`, and `cause` survives in-process only — so by the
  * time the refusal reaches the browser the code is gone and nothing there can
  * tell "DSH has no discovery registered for this namespace" (`NO_DISCOVERY`)
@@ -66,14 +66,14 @@ export interface ConnectivitySettings {
  * DSH failure codes that mean the llm runtime never invoked a discovery at all.
  *
  * Both are guards `LlmRuntime.discoverModels` applies **before** handing the
- * request to any registered discovery
- * (packages/llm/llm/src/index.ts:594-602), so no request ever exists:
+ * request to any registered discovery (packages/llm/llm/src/index.ts), so no
+ * request ever exists:
  *
  * - `NO_DISCOVERY`: no discovery is registered for the settings namespace.
  *   This is the whole DeepSeek family — `registerDeepSeekProvider` only calls
- *   `registerAdapter` (packages/llm/llm-deepseek/src/host.ts:55) and never
- *   `registerModelDiscovery`; only `llm-pi-ai` does
- *   (packages/llm/llm-pi-ai/src/index.ts:275). The provider is configurable
+ *   `registerAdapter` (`packages/llm/llm-deepseek/src/host.ts`) and never
+ *   `registerModelDiscovery`; only `llm-pi-ai` does, in its `apply`
+ *   (`packages/llm/llm-pi-ai/src/index.ts`). The provider is configurable
  *   and fully usable, and a connectivity check is still structurally
  *   impossible for it.
  * - `INVALID_DISCOVERY`: the request named neither a provider route nor a

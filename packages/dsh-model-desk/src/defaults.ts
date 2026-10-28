@@ -96,6 +96,20 @@ export const DEFAULT_PROBE_TIMEOUT_SECONDS = 8
 export const DEFAULT_BREAKER_COOLDOWN_SECONDS = 300
 
 /**
+ * The health tiers' numeric bounds, in seconds.
+ *
+ * One source for two readers: the host schema (`config.ts`) and the browser's
+ * clamps (`client/validate.ts`, `client/modals.ts`). Two hand-written copies
+ * drifted, and the drift was silent in the worst way — the form let through a
+ * value the Host refused, so saving failed forever with no field named.
+ */
+export const HEALTH_INTERVAL_MAX_SECONDS = 86400
+export const PROBE_TIMEOUT_MIN_SECONDS = 2
+export const PROBE_TIMEOUT_MAX_SECONDS = 60
+export const BREAKER_COOLDOWN_MIN_SECONDS = 1
+export const BREAKER_COOLDOWN_MAX_SECONDS = 86400
+
+/**
  * One timeline bar's width, in seconds. Re-exported from ./timeline.ts, which
  * owns the window rule both halves read; the default lives here with every
  * other config default so the schema and the browser draft cannot drift.
@@ -261,14 +275,31 @@ export const DEFAULT_IMMEDIATE_SWITCH: readonly SwitchOnKey[] = ['auth', 'quota'
 export type SwitchOnCode = (typeof SWITCH_ON_CODES)[number]['code']
 
 /**
+ * 同一个 `switchOn` 键的第二个失败码：同一件事，上游给了两个码。
+ *
+ * 只能放这里、不能进 {@link SWITCH_ON_CODES}：那张表是界面的网格，一个键一行，
+ * 加第二行会让界面上出现两个「额度用尽」的勾选框，两个都在写同一个键。
+ *
+ * - `ACCOUNT_QUOTA`：`llm/src/error.ts` 的 `ACCOUNT_QUOTA_EXCEEDED_CODE`，
+ *   deepseek-account 渠道把 `QUOTA` 改写而来（`llm-deepseek-account/src/index.ts:88`）。
+ *   它和 `QUOTA` 是同一件事（这份额度用完了、换渠道能继续），只是可去账单页充值。
+ */
+const CODE_ALIASES: Readonly<Record<string, SwitchOnKey>> = {
+  ACCOUNT_QUOTA: 'quota',
+}
+
+/**
  * Map a normalized `LlmFailure.code` to its `switchOn` key.
  *
  * 表里没有的码返回 `undefined`，调用方用 {@link OTHER_SWITCH_KEY} 兜底——这是
  * 2026-10-22 的结构修正：此前 `undefined` 被当作"路由器永远不管"，于是每一个
- * 枚举外的码都是死区。
+ * 枚举外的码都是死区。别名（{@link CODE_ALIASES}）在兜底之前查：它们是同一件事
+ * 的第二个码，不是一个"未分类"的码。
  */
 export function switchOnKeyOf(code: string): SwitchOnKey | undefined {
-  return SWITCH_ON_CODES.find(entry => entry.code === code)?.key
+  const key = SWITCH_ON_CODES.find(entry => entry.code === code)?.key
+  if (key !== undefined) return key
+  return Object.hasOwn(CODE_ALIASES, code) ? CODE_ALIASES[code] : undefined
 }
 
 // ---- handoff (delegation roster) ----
@@ -308,7 +339,6 @@ export const DEFAULT_HANDOFF_LIMITS = {
   maxDelegationsPerUserMessage: 8,
   maxReviewsPerUserMessage: 1,
   maxNewSessionsPerUserMessage: 2,
-  maxDelegationsPerDay: 24,
   nudgeWhenUnreceipted: false,
   maxNudgesPerTurn: 1,
 } as const
