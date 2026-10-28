@@ -30,3 +30,4 @@ Status: implemented
 
 - 收益：三种用法都成立（逐角色 / 全局一份 / 完全跟随），且没有第二处"授权清单"；`handoff` 段的字段仍是唯一来源，界面与 host schema 同源。
 - 代价：`handoff` 段多一组四个字段（schema、类型、浏览器归一化、结构校验、界面各一处）；"角色写了路由"与"用了全局默认"在回执里看不出区别——模型和用户都无法从回执反推这次用的是哪一档，只能读配置。真实使用中这一档差异不影响判断（都是用户配的），所以没有为它加一个额外的回执字段。
+- 真渠道复核（同日晚）：`tests/real-handoff.mjs` 加 `DSH_E2E_DEFAULTS=provider/model` 后跑两遍，各 0 失败——不带默认时留空角色落到父会话 `real-a/glm-5.2`；带默认 `real-a/deepseek-flash` 时钉死角色仍是 `step-5-preview`、留空角色改用 `deepseek-flash`、接力会话仍是父会话那条。三条互不相同，验的是顺序。

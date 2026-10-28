@@ -37,6 +37,27 @@ const WORK = process.env.DSH_E2E_WORK ?? `${HERE}.workspace-real-handoff`
 const HOME = `${HERE}.dshhome-real-handoff`
 const OVERLAY = `${HERE}real-handoff.overlay.yml`
 
+/**
+ * The section's global delegation default, as `provider/model`, or nothing.
+ *
+ * With it set, a roster entry that names no route must use it — and the pinned
+ * entry must keep winning, which is what makes the run prove the *order*
+ * (role → section default → parent) instead of only one tier at a time. Pick a
+ * model distinct from both the pinned role's and the parent's, or the three
+ * tiers look identical in the logs.
+ */
+const rawDefaults = (process.env.DSH_E2E_DEFAULTS ?? '').trim()
+const DEFAULTS = rawDefaults === ''
+  ? undefined
+  : (() => {
+    const [provider, model] = rawDefaults.split('/')
+    if (provider === undefined || model === undefined || provider === '' || model === '') {
+      console.error('DSH_E2E_DEFAULTS must be "provider/model"')
+      process.exit(2)
+    }
+    return { provider, model }
+  })()
+
 const creds = JSON.parse(readFileSync(`${PKG}/tests/real-providers.local.json`, 'utf8'))
 const channelA = creds.channels.find(c => c.id === 'real-a')
 const channelC = creds.channels.find(c => c.id === 'real-c')
@@ -99,7 +120,10 @@ ${models(channelC)}
             candidates: []
         handoff:
           enabled: true
-          roster:
+${DEFAULTS === undefined ? '' : `          delegateDefaults:
+            provider: '${DEFAULTS.provider}'
+            model: '${DEFAULTS.model}'
+`}          roster:
             - id: worker
               name: worker
               role: work
@@ -110,7 +134,7 @@ ${models(channelC)}
             - id: inherit
               name: inherit
               role: work
-              purpose: 跟随父会话的模型
+              purpose: 没写模型，跟随全局默认或父会话
               instructions: 只回一句话，不要用工具
           limits:
             maxNewSessionsPerUserMessage: 5
@@ -285,8 +309,16 @@ const inheritEvents = await waitFor(() => {
   const events = eventsOf(inheritChild)
   return answerOf(events) === '' ? undefined : events
 }, 'the inheriting child turn')
-check('a blank roster route inherits the parent route', routeOf(inheritEvents ?? []) === 'real-a/glm-5.2',
-  JSON.stringify({ route: routeOf(inheritEvents ?? []), answer: answerOf(inheritEvents ?? []) }))
+// The blank-route tier: the section default when one is configured, otherwise
+// the parent's own route. The pinned check above already proves the first tier
+// wins over this one, so a run with DSH_E2E_DEFAULTS set measures the order.
+const blankExpected = DEFAULTS === undefined
+  ? 'real-a/glm-5.2'
+  : `${DEFAULTS.provider}/${DEFAULTS.model}`
+check(DEFAULTS === undefined
+  ? 'a blank roster route inherits the parent route'
+  : 'a blank roster route uses the section default', routeOf(inheritEvents ?? []) === blankExpected,
+  JSON.stringify({ route: routeOf(inheritEvents ?? []), expected: blankExpected, answer: answerOf(inheritEvents ?? []) }))
 check('the inheriting child produced a real answer', answerOf(inheritEvents ?? []) !== '',
   JSON.stringify(answerOf(inheritEvents ?? [])))
 
