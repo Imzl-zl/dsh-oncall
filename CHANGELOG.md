@@ -7,7 +7,7 @@
 `1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围（当前 `^0.2.1-rc.3`）
 随之移动。
 
-## [Unreleased]
+## [0.6.0] — 2026-11-11
 
 插件改名为 `dsh-oncall`（中文「值班台」）。这是**破坏性改名**：包名、bundle 行 id / 配置 ns（`model-desk` → `oncall`）、Cordis service key（`modelDesk` → `oncall`）、Typert ns（`deskHealth` → `oncallHealth`）、CSS 前缀（`dsh-router-*` → `dsh-oncall-*`）、持久化标识（`model_router_sessions` → `oncall_sessions`，`router/*` → `oncall/*`）全部改了。
 
