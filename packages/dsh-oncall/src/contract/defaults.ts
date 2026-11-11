@@ -17,15 +17,6 @@ import type { AcceptMode } from './policy.ts'
 export const DEFAULT_ACCEPT_MODE: AcceptMode = 'off'
 
 /**
- * How many steps one Case may run before it closes itself as `stopped`.
- *
- * A Case is one request; a request that needs forty worker turns is a design
- * problem, not a longer budget. The cap exists so a looping worker cannot burn a
- * night of tokens unattended.
- */
-export const MAX_STEPS_PER_CASE = 40
-
-/**
  * How much of one request a Case carries as its brief.
  *
  * A bound on the ledger, not on the model: the worker reads the original thread, so

@@ -32,9 +32,9 @@
 
 import { briefOf } from '../core/brief.ts'
 import { inputIdOf } from '../core/case-id.ts'
-import { budgetOf, planStep } from '../core/plan-step.ts'
+import { planStep } from '../core/plan-step.ts'
 import { planReply, type ReplyPlan } from '../core/reply-plan.ts'
-import { MAX_SESSION_TITLE_CHARS, MAX_STEPS_PER_CASE, RECOVERY_NOTE, TRANSIENT_RETRIES, TRANSIENT_RETRY_BASE_MS } from '../contract/defaults.ts'
+import { MAX_SESSION_TITLE_CHARS, RECOVERY_NOTE, TRANSIENT_RETRIES, TRANSIENT_RETRY_BASE_MS } from '../contract/defaults.ts'
 import type {
   AuditEvent,
   CaseId,
@@ -236,7 +236,11 @@ export function reportOfTurn(reason: TurnEnd, lastText: string, at: number): Sta
     case 'error':
       return { state: 'failed', summary: reason.message, code: reason.code, at }
     case 'blocked':
-      return { state: 'failed', summary: lastText, code: 'BLOCKED', at }
+      // `turn/end{blocked}` means a pre-step guard rejected the step
+      // (`agent-loop/src/agent.ts:349`): no model call happened, nothing failed. The
+      // reference reacts to `agent/status` idle, not to `turn/end`, so a rejected turn
+      // reads as "no report" → waiting (and keeps the previous summary when silent).
+      return { state: 'waiting', summary: lastText, at }
     case 'interrupted':
     case 'max-tokens':
     case 'aborted':
@@ -300,6 +304,11 @@ export class Executor implements FollowUpPort {
         await this.recover(theCase, last)
         continue
       }
+      // A concluded assignment does not restart on its own: the reference launches only
+      // a pending assignment (`executor/dsh.ts:535`) and otherwise waits for an input.
+      if (last !== undefined) continue
+      // No assignment at all: the Case was opened but never started (a crash between
+      // the pass's commit and the delivery). That is the one case the scan starts.
       await this.startStepAndDeliver(theCase, theCase.brief)
     }
   }
@@ -396,16 +405,13 @@ export class Executor implements FollowUpPort {
    */
   private async startStep(theCase: CaseRecord, brief: string): Promise<{ step: StepRecord; sessionId: string } | undefined> {
     const steps = this.ledger.stepsOf(theCase.id)
-    const budget = budgetOf(steps.length, MAX_STEPS_PER_CASE)
 
     if (theCase.closed !== null) {
-      if (budget.stepsSpent >= budget.maxSteps) {
-        await this.closeCase(theCase.id, 'stopped')
-        return undefined
-      }
+      // A person's message resumes an ended Case with no new accept and no step
+      // allowance (`docs/002-authorization.md:125`).
       await this.ledger.reopenCase(theCase.id)
     } else {
-      const plan = planStep({ theCase, steps, budget, brief })
+      const plan = planStep({ theCase, steps, brief })
       if (plan.kind === 'close') {
         await this.closeCase(theCase.id, plan.reason)
         return undefined
@@ -549,12 +555,7 @@ export class Executor implements FollowUpPort {
     this.retries.delete(caseId)
 
     const settled: StepRecord = { ...last, report }
-    const plan = planStep({
-      theCase,
-      steps: [...steps.slice(0, -1), settled],
-      budget: budgetOf(steps.length, MAX_STEPS_PER_CASE),
-      brief: '',
-    })
+    const plan = planStep({ theCase, steps: [...steps.slice(0, -1), settled], brief: '' })
     const closing = plan.kind === 'close' ? plan.reason : undefined
     const audit: AuditEvent = {
       kind: 'step.settled',
@@ -607,7 +608,6 @@ export class Executor implements FollowUpPort {
     const plan = planStep({
       theCase,
       steps: [...steps.slice(0, -1), { ...last, report }],
-      budget: budgetOf(steps.length, MAX_STEPS_PER_CASE),
       brief: last.brief,
     })
     const closing = plan.kind === 'close' ? plan.reason : undefined

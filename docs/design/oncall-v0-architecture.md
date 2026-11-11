@@ -58,7 +58,7 @@ last_updated: "2026-11-11"
 
 ```
 L1 contract/   types.ts（CaseRecord / StepRecord / ReplyRecord / Outcome）
-               defaults.ts（MAX_STEPS_PER_CASE / RECOVERY_NOTE / 退避秒表 / 回执上限）
+               defaults.ts（RECOVERY_NOTE / 瞬态重试次数与起点 / 回执重试表 / 标题上限）
 L2 core/       thread-owner.ts   给定 threads 订阅与 case 列表 → 这条 trigger 归谁（纯）
                stage.ts         扩：assignment 级（照参考 stage.ts 的七行）
                plan-step.ts     扩：从「无 step / 已结算」推下一条 step（纯）
@@ -208,6 +208,16 @@ follow-up 投递：该 case 有 running step 且会话活着 → 直接 followup
 ### 4. outbox
 
 同一次 commit 写 `replies{pending}` + 审计；发送 `POST /repos/{o}/{r}/issues/{n}/comments`；结算 `sent` / `gone`（404/410 不可再发）/ `failed`（重试上限后）。重启时 `pending` 重试、`sent` 跳过。正文末尾带 `<!-- oncall:caseId#seq -->` 仅供人读，不参与判重。
+
+### 没有步数上限（2026-11-11 删除一条自造的保护）
+
+上一版有 `MAX_STEPS_PER_CASE = 40`：第 40 个派工之后关成 `stopped`。**参考实现没有这个数**，它也不需要：
+
+- worker 不能给自己开回合——回合只由一条输入触发；我们的输入来自 pass（人/@/CI）或重启扫描。
+- 瞬态失败最多重试 3 次（`executor/dsh.ts:26,548-576`），后台工作 30 分钟封顶。
+- `blocked`/`failed` 之后自动输入被扣住，直到有人说话（`core/model.ts:349` `waitsForPerson`）。
+
+所以"一个 Case 无限滚"在这套状态机里不成立，那个 40 只会在第 40 次"卡住了/问人"时把 Case 关掉——第一个 bug 就是这么来的。已删：`contract/defaults.ts` 的常量、`plan-step.ts` 的 `Budget`/`budgetOf`/预算分支、executor 里两处预算判断。`stopped` 这个关闭原因保留（人停、重新校验失败），只是不再由计数产生。
 
 ## 五、三处与参考实现不同的地方（都写清代价）
 

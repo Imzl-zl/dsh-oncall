@@ -23,7 +23,7 @@ import { inputIdOf } from '../src/core/case-id.ts'
 import { memoryLedger } from '../src/runtime/ledger.ts'
 import { Outbox } from '../src/runtime/outbox.ts'
 import { planReply, replyMarker } from '../src/core/reply-plan.ts'
-import { MAX_STEPS_PER_CASE, RECOVERY_NOTE } from '../src/contract/defaults.ts'
+import { RECOVERY_NOTE } from '../src/contract/defaults.ts'
 
 const NOW = Date.parse('2026-11-12T09:00:00.000Z')
 const SRC = 'github:acme/widgets#issues'
@@ -247,6 +247,26 @@ await test('启动扫描：报告之后有消息送进会话 → 带 recovery no
   executor.stop()
 })
 
+await test('启动扫描不重开"已经结束的派工"：只有一条输入才能开下一轮', async () => {
+  const ledger = memoryLedger()
+  await ledger.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    inputs: [],
+    audit: [],
+  })
+  await ledger.writeSteps([stepOf({ state: 'ended', endedAt: NOW, report: { state: 'waiting', summary: '等着', at: NOW } })])
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+
+  eq(ledger.stepsOf(CASE).length, 1, '不凭空开第二轮')
+  eq(fake.state.followups, [])
+  executor.stop()
+})
+
 await test('启动扫描不碰已关闭的 Case', async () => {
   const ledger = memoryLedger()
   await ledger.commit({
@@ -298,6 +318,25 @@ await test('回合正常结束且没有报告 → waiting（不冒充完成）�
   eq(step.report, { state: 'waiting', summary: '补好了', at: NOW })
   eq(ledger.cases[0].closed, null, '模型没说 done，Case 不关')
   eq(ledger.audit.filter(event => event.kind === 'step.settled').map(event => [event.seq, event.state]), [[1, 'waiting']])
+  executor.stop()
+})
+
+await test('回合被 pre-step 拒绝（turn/end blocked）→ 当成"没有报告"，不是失败', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { replier })
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-blocked` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  fake.say(sessionId, { kind: 'turn-end', turn: 2, reason: { kind: 'blocked' } })
+  fake.idle(sessionId)
+  await settle()
+
+  eq(ledger.stepsOf(CASE)[0].report, { state: 'waiting', summary: '先看看', at: NOW })
+  eq(replier.queued, [], '不该说"卡住了"：这一轮根本没跑模型')
   executor.stop()
 })
 
@@ -546,7 +585,7 @@ await test('已完成的 Case 被追问 → 重开 + 新派工，brief 是这一
   executor.stop()
 })
 
-await test('步数用尽 → 关 stopped，不再派工也不再投递', async () => {
+await test('没有步数上限：第 41 次追问照样派工（参考实现没有这个数）', async () => {
   const ledger = memoryLedger()
   await ledger.commit({
     sourceId: SRC,
@@ -556,22 +595,22 @@ await test('步数用尽 → 关 stopped，不再派工也不再投递', async (
     inputs: [],
     audit: [],
   })
-  const spent = Array.from({ length: MAX_STEPS_PER_CASE }, (_, index) => stepOf({
+  await ledger.writeSteps(Array.from({ length: 41 }, (_, index) => stepOf({
     seq: index + 1,
     state: 'ended',
     report: { state: 'waiting', summary: '继续', at: NOW },
     endedAt: NOW,
-  }))
-  await ledger.writeSteps(spent)
+  })))
   const fake = fakeHost()
   const executor = await executorOf(ledger, fake)
   await executor.start()
 
-  executor.deliver({ caseId: CASE, text: '再做一点', trigger: `${SRC}:comment-9` })
+  executor.deliver({ caseId: CASE, text: '再做一点', trigger: `${SRC}:comment-many` })
   await settle()
 
-  eq(ledger.cases[0].closed, { reason: 'stopped', at: NOW })
-  eq(fake.state.followups, [])
+  eq(ledger.cases[0].closed, null)
+  eq(ledger.stepsOf(CASE).map(step => step.seq).at(-1), 42)
+  eq(fake.state.followups.map(call => call.messageId), [`oncall:${CASE}:${SRC}:comment-many`])
   executor.stop()
 })
 
@@ -802,60 +841,6 @@ await test('outbox：重启后只补 pending，sent/gone/failed 不再动', asyn
   eq([1, 2, 3].map(seq => ledger.replyOf(CASE, seq).state), ['sent', 'sent', 'gone'])
 })
 
-await test('第 40 个派工上报 blocked：Case 留开，不被预算关成 stopped', async () => {
-  const ledger = memoryLedger()
-  await ledger.commit({
-    sourceId: SRC,
-    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
-    cases: [caseOf()],
-    threads: [],
-    inputs: [],
-    audit: [],
-  })
-  const spent = Array.from({ length: MAX_STEPS_PER_CASE - 1 }, (_, index) => stepOf({
-    seq: index + 1,
-    state: 'ended',
-    report: { state: 'waiting', summary: '继续', at: NOW },
-    endedAt: NOW,
-  }))
-  await ledger.writeSteps([...spent, stepOf({ seq: MAX_STEPS_PER_CASE })])
-  const executor = await executorOf(ledger, fakeHost())
-
-  const verdict = await executor.submitReport({
-    sessionId: caseSessionId(CASE),
-    report: { state: 'blocked', summary: '卡住了', question: '继续吗？' },
-  })
-
-  eq(verdict.ok, true)
-  eq(ledger.cases[0].closed, null, '一句 blocked 不该触发"预算用尽"')
-  eq(ledger.stepsOf(CASE).at(-1).report.state, 'blocked')
-  executor.stop()
-})
-
-await test('第 40 个派工上报 ready：仍然关 completed（ready 先于预算判）', async () => {
-  const ledger = memoryLedger()
-  await ledger.commit({
-    sourceId: SRC,
-    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
-    cases: [caseOf()],
-    threads: [],
-    inputs: [],
-    audit: [],
-  })
-  const spent = Array.from({ length: MAX_STEPS_PER_CASE - 1 }, (_, index) => stepOf({
-    seq: index + 1,
-    state: 'ended',
-    report: { state: 'waiting', summary: '继续', at: NOW },
-    endedAt: NOW,
-  }))
-  await ledger.writeSteps([...spent, stepOf({ seq: MAX_STEPS_PER_CASE })])
-  const executor = await executorOf(ledger, fakeHost())
-
-  await executor.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'ready', summary: '做完了' } })
-
-  eq(ledger.cases[0].closed.reason, 'completed')
-  executor.stop()
-})
 
 await test('消息已在会话里（重读）→ 输入行也要盖 deliveredAt', async () => {
   const ledger = await openWithWaitingStep()

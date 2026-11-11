@@ -197,37 +197,41 @@ test('progress → 还在干（progress 不是状态变化）', () => {
 // ── 下一步 ──────────────────────────────────────────────────────
 test('全新 Case → 派一次工，brief 由调用方给', () => {
   eq(
-    planStep({ theCase: theCase(), steps: [], budget: { stepsSpent: 0, maxSteps: 40 }, brief: 'fix the flaky test' }),
+    planStep({ theCase: theCase(), steps: [], brief: 'fix the flaky test' }),
     { kind: 'work', brief: 'fix the flaky test' },
   )
 })
 test('已有 running step → idle，不给第二个工', () => {
   eq(
-    planStep({ theCase: theCase(), steps: [openStep()], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'again' }),
+    planStep({ theCase: theCase(), steps: [openStep()], brief: 'again' }),
     { kind: 'idle' },
   )
 })
 test('ready → 收工 completed', () => {
   eq(
-    planStep({ theCase: theCase(), steps: [{ ...openStep(), state: 'ended', report: report() }], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'x' }),
+    planStep({ theCase: theCase(), steps: [{ ...openStep(), state: 'ended', report: report() }], brief: 'x' }),
     { kind: 'close', reason: 'completed' },
   )
 })
 test('dropped → 收工 dropped', () => {
   eq(
-    planStep({ theCase: theCase(), steps: [{ ...openStep(), report: report({ state: 'dropped' }) }], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'x' }),
+    planStep({ theCase: theCase(), steps: [{ ...openStep(), report: report({ state: 'dropped' }) }], brief: 'x' }),
     { kind: 'close', reason: 'dropped' },
   )
 })
-test('步数耗尽 → 强制收工，理由 stopped', () => {
-  eq(
-    planStep({ theCase: theCase(), steps: [{ ...openStep(), state: 'ended', endedAt: 3_000, report: report({ state: 'waiting' }) }], budget: { stepsSpent: 40, maxSteps: 40 }, brief: 'x' }),
-    { kind: 'close', reason: 'stopped' },
-  )
+test('没有步数上限：第 41 个派工照样 work（参考实现也没有）', () => {
+  const many = Array.from({ length: 41 }, (_, index) => ({
+    ...openStep(),
+    seq: index + 1,
+    state: 'ended',
+    endedAt: 3_000,
+    report: report({ state: 'waiting' }),
+  }))
+  eq(planStep({ theCase: theCase(), steps: many, brief: 'x' }), { kind: 'work', brief: 'x' })
 })
 test('已关闭的 Case 再来问 → 仍答收工，且沿用原原因', () => {
   eq(
-    planStep({ theCase: theCase({ closed: { reason: 'stopped', at: 9_000 } }), steps: [], budget: { stepsSpent: 0, maxSteps: 40 }, brief: 'x' }),
+    planStep({ theCase: theCase({ closed: { reason: 'stopped', at: 9_000 } }), steps: [], brief: 'x' }),
     { kind: 'close', reason: 'stopped' },
   )
 })
