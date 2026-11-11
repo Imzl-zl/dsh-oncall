@@ -605,6 +605,40 @@ await test('outbox：一条回执只发一次，重放不重发', async () => {
   eq(ledger.audit.filter(event => event.kind === 'reply.settled').map(event => [event.intent, event.state]), [['result', 'sent']])
 })
 
+await test('outbox：回执行先写 pending 再发（崩在中间也有据可查）', async () => {
+  let stateAtSend
+  const { ledger, outbox } = await outboxOf({
+    async send() {
+      stateAtSend = ledger.replyOf(CASE, 1).state
+      return 'sent'
+    },
+  })
+
+  outbox.queue(receipt())
+  await outbox.settled()
+
+  eq(stateAtSend, 'pending')
+  eq(ledger.replyOf(CASE, 1).state, 'sent')
+})
+
+await test('outbox：同一个 Case 的回执按顺序发，后一条不超车', async () => {
+  const order = []
+  const { outbox } = await outboxOf({
+    async send(request) {
+      // 按"贴上 issue 的顺序"记：第一条故意慢，第二条若超车就会先落。
+      if (request.text === '## 一') await new Promise(resolve => setTimeout(resolve, 20))
+      order.push(request.text)
+      return 'sent'
+    },
+  })
+
+  outbox.queue(receipt({ seq: 1, text: '## 一' }))
+  outbox.queue(receipt({ seq: 2, text: '## 二' }))
+  await outbox.settled()
+
+  eq(order, ['## 一', '## 二'])
+})
+
 await test('outbox：gone（issue 没了）不再试，直接结账', async () => {
   const calls = []
   const { ledger, outbox } = await outboxOf({ async send() { calls.push(1); return 'gone' } })
@@ -644,7 +678,7 @@ await test('outbox：重启后只补 pending，sent/gone/failed 不再动', asyn
   await ledger.writeReply({ caseId: CASE, seq: 2, intent: 'result', text: '发过了', state: 'sent', at: NOW })
   await ledger.writeReply({ caseId: CASE, seq: 3, intent: 'failed', text: '没了', state: 'gone', at: NOW })
 
-  await outbox.resume()
+  outbox.resume()
   await outbox.settled()
 
   eq(sent, ['旧的'])

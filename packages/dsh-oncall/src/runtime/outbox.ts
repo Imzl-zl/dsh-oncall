@@ -1,14 +1,23 @@
 /**
- * Receipts: one comment per settled assignment, at most once.
+ * Receipts: one comment per settled assignment, at most once, in order.
  *
- * ### One row per `caseId#seq`, never a GitHub search
+ * ### The row is written before the POST
  *
- * The `replies` table is the idempotency key. Before sending, the outbox checks
- * whether a row exists; the row is written before the comment goes out, and its
- * state says what happened (`pending` → `sent` / `gone` / `failed`). Searching GitHub
- * for the marker would race its own eventual consistency and, after an edit, find a
- * comment that no longer says what it said — the reference implementation keeps a row
- * for exactly the same reason (`app/outbox.ts`).
+ * `pending` lands first; the comment goes out; the row settles `sent` / `gone` /
+ * `failed`. A crash between the write and the POST therefore leaves an owed receipt
+ * that the next start resumes, and the row itself is the idempotency check — one row
+ * per `caseId#seq`, never a GitHub search (a search races its own eventual
+ * consistency and, after an edit, finds a comment that no longer says what it said).
+ * The reference keeps a receipt row for exactly this reason (`app/store.ts`:
+ * `receipts.add` inserts `pending`, `settle` only moves a `pending` row).
+ *
+ * ### One conversation, one lane
+ *
+ * Two receipts for the same Case must not overtake each other: assignment 2 settling
+ * while assignment 1's comment is still retrying would put the newer answer above the
+ * older one on the issue. Sends are therefore chained per `caseId` — the reference's
+ * `receipts.behind()` enforces the same order between a ticket's pending messages.
+ * A failed send does not block the next one: the failure is already recorded.
  *
  * ### What each state means
  *
@@ -17,16 +26,16 @@
  *   reach it, and a pending row would stay pending for the life of the deployment.
  * - `failed` — every in-process attempt failed. The row stays for the audit; a
  *   restart does not resurrect it, because the failure was already reported.
- * - `pending` — owed. A restart resumes these (`resume()`), which is the only path
- *   that recovers a receipt interrupted between the ledger write and the POST.
+ * - `pending` — owed. A restart resumes these (`resume()`).
  *
  * ### Why the queue is fire-and-forget
  *
  * A sender is a network call, and its caller is a settle loop that must not wait on
- * GitHub to finish a turn. `queue` returns immediately; the attempts run in the
- * background with their own timers, which `stop()` clears when the fiber unloads.
+ * GitHub to finish a turn. `queue` returns immediately; the lane runs in the
+ * background with its own timers, which `stop()` clears when the fiber unloads.
  *
- * Note: 为何不扫 GitHub、为何 gone 不重试 —— 见 docs/design/oncall-v0-architecture.md 四节 4。
+ * Note: 为何不扫 GitHub、为何 gone 不重试、为何要按会话串行 —— 见
+ * docs/design/oncall-v0-architecture.md 四节 4 与参考实现 `app/outbox.ts` / `app/store.ts`。
  */
 
 import type { CaseId, ReplyIntent, ReplyRecord, ThreadKey } from '../contract/types.ts'
@@ -57,7 +66,10 @@ export interface OutboxOptions {
 export class Outbox {
   private readonly options: OutboxOptions
   private readonly timers = new Set<ReturnType<typeof setTimeout>>()
-  private readonly inFlight = new Map<string, Promise<void>>()
+  /** Receipts this process already owes, keyed by `caseId#seq` (the row is written later in the lane). */
+  private readonly owed = new Set<string>()
+  /** One lane per Case: the tail of its receipt chain. */
+  private readonly lanes = new Map<string, Promise<void>>()
   private stopped = false
 
   constructor(options: OutboxOptions) {
@@ -70,7 +82,8 @@ export class Outbox {
   queue(input: OutboxInput): void {
     if (this.stopped) return
     const key = `${input.caseId}#${input.seq}`
-    if (this.ledger.replyOf(input.caseId, input.seq) !== undefined || this.inFlight.has(key)) return
+    if (this.owed.has(key) || this.ledger.replyOf(input.caseId, input.seq) !== undefined) return
+    this.owed.add(key)
     const record: ReplyRecord = {
       caseId: input.caseId,
       seq: input.seq,
@@ -79,7 +92,12 @@ export class Outbox {
       state: 'pending',
       at: this.options.now(),
     }
-    this.inFlight.set(key, this.send(record, input.thread, 0).finally(() => { this.inFlight.delete(key) }))
+    this.lane(input.caseId, async () => {
+      // The row lands before the POST: a crash in between leaves `pending`, which a
+      // restart resumes, and the row is what makes a second `queue` a no-op.
+      if (this.ledger.replyOf(record.caseId, record.seq) === undefined) await this.ledger.writeReply(record)
+      await this.send(record, input.thread, 0)
+    })
   }
 
   /**
@@ -89,30 +107,44 @@ export class Outbox {
    * decided. The thread comes from the Case, because a receipt row stores what to say,
    * not where — the Case is the one owner of "which conversation is this".
    */
-  async resume(): Promise<void> {
-    for (const record of this.ledger.pendingReplies()) {
+  resume(): void {
+    const pending = [...this.ledger.pendingReplies()].sort((left, right) => left.at - right.at)
+    for (const record of pending) {
+      const key = `${record.caseId}#${record.seq}`
+      if (this.owed.has(key)) continue
       const theCase = this.ledger.caseOf(record.caseId)
       const thread = theCase?.mandate.scope[0]
       if (thread === undefined) {
-        this.options.logger.warn(`oncall: receipt ${record.caseId}#${record.seq} has no thread to land on; leaving it pending`)
+        this.options.logger.warn(`oncall: receipt ${key} has no thread to land on; leaving it pending`)
         continue
       }
-      const key = `${record.caseId}#${record.seq}`
-      if (this.inFlight.has(key)) continue
-      this.inFlight.set(key, this.send(record, thread, 0).finally(() => { this.inFlight.delete(key) }))
+      this.owed.add(key)
+      this.lane(record.caseId, () => this.send(record, thread, 0))
     }
   }
 
-  /** Stop sending; timers are cleared, in-flight attempts finish unobserved. Idempotent. */
+  /** Stop sending; timers are cleared, a lane in flight finishes unobserved. Idempotent. */
   stop(): void {
     this.stopped = true
     for (const timer of this.timers) clearTimeout(timer)
     this.timers.clear()
   }
 
-  /** Resolves when every attempt currently owed has settled. For tests and shutdown. */
+  /** Resolves when every lane currently running has settled. For tests and shutdown. */
   async settled(): Promise<void> {
-    await Promise.allSettled([...this.inFlight.values()])
+    await Promise.allSettled([...this.lanes.values()])
+  }
+
+  /** Append one receipt to its Case's lane; a failure of the previous one does not block this one. */
+  private lane(caseId: string, run: () => Promise<void>): void {
+    const tail = this.lanes.get(caseId) ?? Promise.resolve()
+    const next = tail
+      .then(run)
+      .catch(error => { this.options.logger.error(`oncall: receipt for ${caseId} failed to record: ${String(error)}`) })
+    this.lanes.set(caseId, next)
+    void next.then(() => {
+      if (this.lanes.get(caseId) === next) this.lanes.delete(caseId)
+    })
   }
 
   private async send(record: ReplyRecord, thread: ThreadKey, attempt: number): Promise<void> {
@@ -141,16 +173,10 @@ export class Outbox {
   }
 
   private async settle(record: ReplyRecord, state: 'sent' | 'gone' | 'failed'): Promise<void> {
+    const at = this.options.now()
     await this.ledger.writeReply(
-      { ...record, state, at: this.options.now() },
-      [{
-        kind: 'reply.settled',
-        at: this.options.now(),
-        caseId: record.caseId,
-        seq: record.seq,
-        intent: record.intent,
-        state,
-      }],
+      { ...record, state, at },
+      [{ kind: 'reply.settled', at, caseId: record.caseId, seq: record.seq, intent: record.intent, state }],
     )
   }
 }

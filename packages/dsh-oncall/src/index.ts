@@ -869,8 +869,9 @@ export default class OnCallDesk extends TypertRemoteService {
         // recovery one before new work arrives on the same Case.
         await worker.start()
         // ...and before it, the receipts a crash interrupted between the ledger write
-        // and the POST (one row per caseId#seq makes this safe to repeat).
-        await outbox.resume()
+        // and the POST (one row per caseId#seq makes this safe to repeat). Not awaited:
+        // a slow comment must not hold the ingress's first poll.
+        outbox.resume()
         if (stopped) return
         handle = startIngressLoop({
           sources: [source],
