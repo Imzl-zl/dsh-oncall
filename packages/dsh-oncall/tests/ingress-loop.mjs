@@ -322,6 +322,8 @@ const sourceOf = (calls, result = { triggers: [], cursor: 'c1' }) => ({
 const ledgerOf = () => ({
   readProgress: () => ({ cursor: null, lastError: null, lastPolledAt: null }),
   hasCase: () => false,
+  allCases: () => [],
+  threadOf: () => undefined,
   commit: async () => {},
 })
 

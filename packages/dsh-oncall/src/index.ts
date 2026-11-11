@@ -749,9 +749,10 @@ export default class OnCallDesk extends TypertRemoteService {
         // Quiet by default: a pass that changed nothing says nothing.
         onPass: report => {
           for (const item of report.sources) {
-            if (item.opened + item.observed + item.refused === 0) continue
+            if (item.opened + item.observed + item.refused + item.delivered === 0) continue
             ctx.logger.info(
-              `oncall: ingress ${item.sourceId}: ${item.opened} opened, ${item.observed} observed, ${item.refused} refused`,
+              `oncall: ingress ${item.sourceId}: ${item.opened} opened, ${item.observed} observed, `
+              + `${item.refused} refused, ${item.delivered} followed up`,
             )
           }
         },
