@@ -4,7 +4,7 @@
   "type": "module",
   "description": "Dev workspace for the dsh-oncall plugin: installs the DSH CLI so the plugin's @deepseek-ai/dsh-* imports resolve to the same module instances the running host uses.",
   "scripts": {
-    "test": "node packages/dsh-oncall/tests/layers.mjs && node packages/dsh-oncall/tests/ingress.mjs && node packages/dsh-oncall/tests/github-issue.mjs && node packages/dsh-oncall/tests/pass.mjs && node packages/dsh-oncall/tests/github-http.mjs && node packages/dsh-oncall/tests/ingress-loop.mjs && node packages/dsh-oncall/tests/unit.mjs && node packages/dsh-oncall/tests/client-controller.mjs && node packages/dsh-oncall/tests/remote.mjs && node packages/dsh-oncall/tests/handoff-relay.mjs && node packages/dsh-oncall/tests/run.mjs"
+    "test": "node packages/dsh-oncall/tests/layers.mjs && node packages/dsh-oncall/tests/ingress.mjs && node packages/dsh-oncall/tests/github-issue.mjs && node packages/dsh-oncall/tests/pass.mjs && node packages/dsh-oncall/tests/github-http.mjs && node packages/dsh-oncall/tests/ingress-loop.mjs && node packages/dsh-oncall/tests/executor.mjs && node packages/dsh-oncall/tests/unit.mjs && node packages/dsh-oncall/tests/client-controller.mjs && node packages/dsh-oncall/tests/remote.mjs && node packages/dsh-oncall/tests/handoff-relay.mjs && node packages/dsh-oncall/tests/oncall-loop.mjs && node packages/dsh-oncall/tests/run.mjs"
   },
   "devDependencies": {
     "@deepseek-ai/dsh": "0.2.1-rc.3",

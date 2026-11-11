@@ -82,11 +82,13 @@ export interface FollowUpDelivery {
 }
 
 /**
- * Where a follow-up lands.
+ * Where a message for a Case goes — the trigger that opened it as well as a follow-up.
  *
- * The executor implements this (`runtime/executor.ts`); the pass only knows that a
- * message has to reach a Case. `deliver` must not block: a model turn takes minutes,
- * and a pass that awaited one would stop reading the repository.
+ * For the trigger that opened the Case the executor sees "nothing is running yet"
+ * and starts the first assignment from the Case's own brief; for a later one it
+ * delivers into the live session. One port, one idempotency rule (the message id).
+ * `deliver` must not block: a model turn takes minutes, and a pass that awaited one
+ * would stop reading the repository.
  */
 export interface FollowUpPort {
   deliver(input: FollowUpDelivery): void
@@ -157,6 +159,8 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
    * What this pass has already changed, so a second trigger on the same thread sees
    * the first one's effects without an intermediate commit.
    */
+  /** Hand-offs are made after the commit: the executor reads the Case from the ledger. */
+  const deliveries: FollowUpDelivery[] = []
   const known = new Map<string, CaseRecord>()
   for (const record of ledger.allCases()) known.set(record.id, record)
   const threadRows = new Map<string, ThreadRecord>()
@@ -197,7 +201,7 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
       // The subscription list never shrinks (a person's next message resumes the
       // Case), so only the observation time moves.
       threadRows.set(trigger.thread, { key: trigger.thread, subscriptions: [...thread.subscriptions], lastAt: now })
-      input.executor.deliver({ caseId: owner.id, text: trigger.text.trim(), trigger: trigger.key })
+      deliveries.push({ caseId: owner.id, text: trigger.text.trim(), trigger: trigger.key })
       continue
     }
 
@@ -231,6 +235,10 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
       lastAt: now,
     })
     audit.push({ kind: 'case.opened', at: now, caseId, trigger: trigger.key, strength: verdict.strength })
+    // A new Case is work: the executor hears about it the same way a follow-up
+    // arrives. Without this the Case would sit unworked until the next restart scan
+    // saw it — a whole poll interval of silence for work already authorized.
+    deliveries.push({ caseId, text: trigger.text.trim(), trigger: trigger.key })
   }
 
   const commit: Commit = {
@@ -241,6 +249,10 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
     audit,
   }
   await ledger.commit(commit)
+  // Deliberately after the commit: the executor looks the Case up in the ledger, and
+  // a new Case exists there only once the commit landed. A delivery that fails here
+  // is the executor's own error to record; the pass has already recorded the fact.
+  for (const delivery of deliveries) input.executor?.deliver(delivery)
 
   return { sourceId: source.id, opened, observed, refused, delivered, skipped, error: null }
 }

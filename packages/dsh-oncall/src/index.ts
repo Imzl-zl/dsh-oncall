@@ -31,10 +31,24 @@
  * .agents/notes/implemented/2026-10-15-plugin-remote-probe.md
  */
 
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    /**
+     * A message this plugin queued into a worker session.
+     *
+     * A `user`-role message the model treats as a task, attributed to this plugin so
+     * the console can tell "a person spoke" from "the ingress relayed a comment".
+     * Distinct from `oncall` (this plugin's own notices) on purpose: a notice is
+     * addressed to the person reading the session, this one is addressed to the worker.
+     */
+    'oncall-worker': { readonly kind: 'oncall-worker'; readonly form: 'relay' }
+  }
+}
+
 import type { Context, Fiber } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { LlmCallConfig } from '@deepseek-ai/dsh-llm'
-import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
+import { freezeMessage, MessageId, type LlmCallConfig } from '@deepseek-ai/dsh-llm'
+import type { Session, SessionEvent, SessionId, TurnEndReason } from '@deepseek-ai/dsh-session'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import {
   Config,
@@ -45,7 +59,7 @@ import {
   type NamedChain,
   type RouterOptions,
 } from './config.ts'
-import { decideAfterInner, decideBeforeInner, hasImageContent, isSwitchOnEligible, jumpTo, planFire, resolveChain, resolveStartIndex, skipTo, startStep, toolResultHasImage, unmetCondition } from './router.ts'
+import { decideAfterInner, decideBeforeInner, hasImageContent, isSwitchOnEligible, jumpTo, planFire, resolveChain, resolveStartIndex, skipTo, startStep, switchesImmediately, toolResultHasImage, unmetCondition } from './router.ts'
 import type { AfterInnerRuling, BeforeInnerRuling } from './router.ts'
 import { configuredRouteList, routeKeyOf, routeParts } from './routes.ts'
 import { DEFAULT_PROBE_PROMPT, DEFAULT_PROBE_TIMEOUT_SECONDS } from './defaults.ts'
@@ -69,6 +83,7 @@ import { RELEASE_VERSION } from './release.generated.ts'
 import { DEFAULT_INGRESS_POLL_SECONDS, INGRESS_POLICY_VERSION, INGRESS_TOKEN_ENV } from './contract/defaults.ts'
 import type { Policy } from './contract/policy.ts'
 import { DurableLedger } from './runtime/durable-ledger.ts'
+import { Executor, type TurnEnd, type TurnFact, type TurnHost } from './runtime/executor.ts'
 import { startIngressLoop, type IngressLoopHandle } from './faces/ingress.ts'
 import { envOf } from './faces/env.ts'
 import { githubIssueSource, githubIssueSourceId, parseRepository } from './sources/github-issue.ts'
@@ -106,6 +121,74 @@ import type {
  */
 function configuredRunRoutes(config: { chains: readonly NamedChain[] }): ProbeRoute[] {
   return configuredRouteList(config).map((key) => routeParts(key))
+}
+
+/** The slice of the session controller the executor drives. Structural: the real service is wider. */
+interface SessionControllerService {
+  resolveAgent(sessionId: SessionId): Promise<{ agent?: Agent; error?: { code?: string } }>
+  create(request: { sessionId: SessionId; cwd?: string }): Promise<unknown>
+  rename(request: { sessionId: SessionId; title: string }): Promise<unknown>
+}
+
+/** The live-agent registry: the only way from a session id to the agent driving it. */
+interface AgentRegistryService {
+  get(sessionId: SessionId): Agent | undefined
+}
+
+/** What the executor needs from session persistence: one durable checkpoint. */
+interface SessionPersistenceService {
+  flush(): Promise<void>
+}
+
+/**
+ * DSH's turn-end vocabulary projected onto the executor's.
+ *
+ * An unknown reason settles nothing (`interrupted`): the reason map is
+ * merge-extensible, and a reason this build does not understand is not evidence
+ * that the work finished.
+ */
+function turnEndOf(reason: TurnEndReason): TurnEnd {
+  switch (reason.kind) {
+    case 'completed':
+      return { kind: 'completed' }
+    case 'max-tokens':
+      return { kind: 'max-tokens' }
+    case 'interrupted':
+      return { kind: 'interrupted' }
+    case 'forked':
+      return { kind: 'forked' }
+    case 'blocked':
+      return { kind: 'blocked' }
+    case 'aborted':
+      return { kind: 'aborted', reason: String(reason.reason?.kind ?? 'aborted') }
+    case 'error':
+      return {
+        kind: 'error',
+        code: reason.error.code,
+        message: reason.error.message,
+        retryAfterMs: reason.error.providerRetryAfterMs,
+      }
+    default:
+      return { kind: 'interrupted' }
+  }
+}
+
+/** The visible text of one assistant message, without reasoning or tool blocks. */
+function textOfMessage(message: { readonly content: readonly { readonly type: string; readonly text?: string }[] }): string {
+  return message.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('')
+}
+
+/**
+ * The process's working directory.
+ *
+ * Read off `globalThis` rather than `process` so the plugin type-checks under the
+ * documented `npx tsc …` (no `@types/node`), the same reason `crypto.randomUUID` is
+ * reached through `globalThis` in `runtime/durable-ledger.ts`. The host is Node; a
+ * composition without it has no worker sessions either.
+ */
+function hostCwd(): string {
+  const host = globalThis as unknown as { process?: { cwd?: () => string } }
+  return host.process?.cwd?.() ?? '.'
 }
 
 export default class OnCallDesk extends TypertRemoteService {
@@ -693,6 +776,7 @@ export default class OnCallDesk extends TypertRemoteService {
     const ingress = this.config.ingress.get() as {
       enabled: boolean
       repository: string
+      baseUrl: string
       agentLogin: string
       allowed: string[]
       bots: string[]
@@ -716,7 +800,9 @@ export default class OnCallDesk extends TypertRemoteService {
 
     const sourceId = githubIssueSourceId(parsed.owner, parsed.repo)
     const source = githubIssueSource({
-      face: githubHttpFace({ token }),
+      // Empty means api.github.com; the setting exists for GitHub Enterprise and for
+      // a test that must not reach the network.
+      face: githubHttpFace({ token, baseUrl: ingress.baseUrl === '' ? undefined : ingress.baseUrl }),
       owner: parsed.owner,
       repo: parsed.repo,
       login: ingress.agentLogin,
@@ -731,35 +817,158 @@ export default class OnCallDesk extends TypertRemoteService {
     })
 
     let handle: IngressLoopHandle | undefined
+    let executor: Executor | undefined
     let stopped = false
-    ctx.effect(() => () => { stopped = true; handle?.stop() }, 'oncall ingress')
+    ctx.effect(() => () => { stopped = true; executor?.stop(); handle?.stop() }, 'oncall ingress')
 
-    void ledger.ready.then(() => {
-      if (stopped) return
-      if (!ledger.persistent) {
-        ctx.logger.error('oncall: the ingress needs durable storage and this composition has none; the loop stays off')
+    // The executor needs the Session services, which this composition mounts later
+    // than the plugin (measured in the web profile: `sessionController` lives in the
+    // web app's own patch). `ctx.inject` is the sanctioned wait; the child fiber
+    // dies with this one, so a config save re-registers exactly once.
+    ctx.inject(['sessionController', 'agents', 'sessionPersistence'], (child: Context) => {
+      const controller = child.get('sessionController') as SessionControllerService | undefined
+      const agents = child.get('agents') as AgentRegistryService | undefined
+      const persistence = child.get('sessionPersistence') as SessionPersistenceService | undefined
+      if (controller === undefined || agents === undefined || persistence === undefined) {
+        child.logger.error(
+          'oncall: the ingress needs sessionController, agents and sessionPersistence; the loop stays off',
+        )
         return
       }
-      handle = startIngressLoop({
-        sources: [source],
+      const worker = new Executor({
         ledger,
-        policy,
-        intervalMs: Math.max(5, ingress.pollSeconds ?? DEFAULT_INGRESS_POLL_SECONDS) * 1_000,
+        host: this.turnHost({ child, controller, agents, persistence, logger: child.logger }),
+        // V0: worker sessions run in the host process's directory; `ingress.workdir`
+        // becomes the setting that overrides it.
+        workdir: hostCwd(),
         now: () => Date.now(),
-        // Quiet by default: a pass that changed nothing says nothing.
-        onPass: report => {
-          for (const item of report.sources) {
-            if (item.opened + item.observed + item.refused + item.delivered === 0) continue
-            ctx.logger.info(
-              `oncall: ingress ${item.sourceId}: ${item.opened} opened, ${item.observed} observed, `
-              + `${item.refused} refused, ${item.delivered} followed up`,
-            )
-          }
-        },
-        onError: error => { ctx.logger.error(`oncall: ingress pass failed: ${String(error)}`) },
+        logger: child.logger,
       })
-      ctx.logger.info(`oncall: ingress watching ${parsed.owner}/${parsed.repo} for @${ingress.agentLogin}`)
+      executor = worker
+
+      void (async () => {
+        await ledger.ready
+        if (stopped) return
+        if (!ledger.persistent) {
+          ctx.logger.error('oncall: the ingress needs durable storage and this composition has none; the loop stays off')
+          return
+        }
+        // Before the first pass: a restart must turn an orphaned assignment into a
+        // recovery one before new work arrives on the same Case.
+        await worker.start()
+        if (stopped) return
+        handle = startIngressLoop({
+          sources: [source],
+          ledger,
+          policy,
+          executor: worker,
+          intervalMs: Math.max(5, ingress.pollSeconds ?? DEFAULT_INGRESS_POLL_SECONDS) * 1_000,
+          now: () => Date.now(),
+          // Quiet by default: a pass that changed nothing says nothing.
+          onPass: report => {
+            for (const item of report.sources) {
+              if (item.opened + item.observed + item.refused + item.delivered === 0) continue
+              ctx.logger.info(
+                `oncall: ingress ${item.sourceId}: ${item.opened} opened, ${item.observed} observed, `
+                + `${item.refused} refused, ${item.delivered} followed up`,
+              )
+            }
+          },
+          onError: error => { ctx.logger.error(`oncall: ingress pass failed: ${String(error)}`) },
+        })
+        ctx.logger.info(`oncall: ingress watching ${parsed.owner}/${parsed.repo} for @${ingress.agentLogin}`)
+      })()
     })
+  }
+
+  /**
+   * The session side of the executor, built from the services of one composition.
+   *
+   * Everything that knows about providers, models or DSH event shapes lives here:
+   * the executor sees `TurnFact`s and a `exhausted` verdict, never a session event
+   * or a candidate. `exhausted` asks the ROUTER's own per-step state and the chain's
+   * own `switchOn`/`immediateSwitch` rules (`router.ts`), so layer B cannot develop
+   * its own opinion about which failures are worth retrying.
+   */
+  private turnHost(services: {
+    readonly child: Context
+    readonly controller: SessionControllerService
+    readonly agents: AgentRegistryService
+    readonly persistence: SessionPersistenceService
+    readonly logger: { warn(message: string): void }
+  }): TurnHost {
+    const { child, controller, agents, persistence, logger } = services
+    const states = this.states
+    const agentOf = (sessionId: string): Agent | undefined => agents.get(sessionId as SessionId)
+
+    return {
+      async resolveAgent(sessionId) {
+        const resolved = await controller.resolveAgent(sessionId as SessionId)
+        return resolved.agent !== undefined
+      },
+      async create({ sessionId, cwd, title }) {
+        await controller.create({ sessionId: sessionId as SessionId, cwd })
+        await controller.rename({ sessionId: sessionId as SessionId, title })
+      },
+      followup({ sessionId, messageId, text }) {
+        const agent = agentOf(sessionId)
+        if (agent === undefined) {
+          logger.warn(`oncall: no live agent for ${sessionId}; the message was not delivered`)
+          return
+        }
+        agent.followup(freezeMessage({
+          id: MessageId(messageId),
+          role: 'user' as const,
+          content: [{ type: 'text', text }],
+          source: { kind: 'oncall-worker', form: 'relay' },
+        }))
+      },
+      holds(sessionId, messageId) {
+        const agent = agentOf(sessionId)
+        if (agent === undefined) return false
+        const pending = [...agent.inbox.nextTurn, ...agent.inbox.nextStep]
+        if (pending.some(message => String(message.id) === messageId)) return true
+        return agent.session.snapshotEvents().some(event =>
+          event.type === 'user/message' && String(event.data.id) === messageId)
+      },
+      async whenIdle(sessionId) {
+        const agent = agentOf(sessionId)
+        if (agent === undefined) return
+        await agent.whenIdle()
+      },
+      log(sessionId): readonly TurnFact[] {
+        const agent = agentOf(sessionId)
+        if (agent === undefined) return []
+        const facts: TurnFact[] = []
+        for (const event of agent.session.snapshotEvents()) {
+          if (event.type === 'turn/end') {
+            facts.push({ kind: 'turn-end', turn: event.data.turn, reason: turnEndOf(event.data.reason) })
+          } else if (event.type === 'assistant/message') {
+            facts.push({ kind: 'assistant', turn: event.data.turn, text: textOfMessage(event.data.message) })
+          }
+        }
+        return facts
+      },
+      async flush() { await persistence.flush() },
+      onIdle(listener) {
+        // Registered on the child fiber, not on the agent: the disposer runs when
+        // this plugin fiber unloads, and a reload must not leave a listener holding
+        // the previous instance (the per-agent seam lesson, tools.md).
+        const dispose = child.on('agent/status', ({ agent, status }: { agent: Agent; status: string }) => {
+          if (status === 'idle') listener(agent.session.id)
+        })
+        return () => { dispose() }
+      },
+      exhausted(sessionId, turn, code) {
+        const agent = agentOf(sessionId)
+        if (agent === undefined) return undefined
+        const state = states.latestOfTurn(agent, turn)
+        if (state === undefined || !state.exhausted) return undefined
+        return isSwitchOnEligible(state.chain, code) && !switchesImmediately(state.chain, code)
+          ? 'transient'
+          : 'terminal'
+      },
+    }
   }
 
   /**

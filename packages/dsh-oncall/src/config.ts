@@ -380,6 +380,8 @@ export const handoffSchema = z.object({
 const ingressSchema = z.object({
   enabled: z.boolean().default(false),
   repository: z.string().default(''),
+  baseUrl: z.string().default('')
+    .description('GitHub API 根地址。空 = api.github.com；填本机地址是为了企业版与测试，不改变读什么'),
   agentLogin: z.string().default(''),
   allowed: z.array(z.string()).default([]),
   bots: z.array(z.string()).default([]),
@@ -665,6 +667,8 @@ export interface IngressConfig {
   enabled: boolean
   /** `owner/name`。空 = 没配置。 */
   repository: string
+  /** GitHub API 根地址。空 = `https://api.github.com`。 */
+  baseUrl: string
   /** agent 自己的 GitHub 登录名；只认提到它的消息，以及指派给它的 issue。 */
   agentLogin: string
   /** 可以派活的人，按 GitHub 登录名。 */

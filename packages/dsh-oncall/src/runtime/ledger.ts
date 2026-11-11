@@ -67,6 +67,8 @@ export interface Ledger {
   readProgress(sourceId: SourceId): Progress
   /** Whether this Case already exists — the dedupe that makes repeats harmless. */
   hasCase(id: CaseId): boolean
+  /** One Case's record, or `undefined` when the id is unknown. */
+  caseOf(id: CaseId): CaseRecord | undefined
   /** One thread's subscriptions, or `undefined` when no Case was ever opened on it. */
   threadOf(key: ThreadKey): ThreadRecord | undefined
   /** Every Case, oldest first — the executor's startup scan. */
@@ -83,13 +85,16 @@ export interface Ledger {
   /** The outbox's write: one receipt, plus its audit fact. */
   writeReply(record: ReplyRecord, audit?: readonly AuditEvent[]): Promise<void>
   /**
-   * The one fact the executor writes on a `cases` row.
+   * The facts the executor writes on a `cases` row.
    *
    * Closing is a read-modify-write so no caller has to hold the whole record; an
    * unknown id throws, because "closed a Case that does not exist" is a bug in the
-   * caller, not a fact to absorb.
+   * caller, not a fact to absorb. `reopenCase` is the resume path: a message on a
+   * thread whose Case ended (anything but `stopped`) brings that Case back to
+   * `closed: null` — the subscription never went away, so neither may the Case.
    */
   closeCase(id: CaseId, reason: ClosedReason, at: number, audit?: readonly AuditEvent[]): Promise<void>
+  reopenCase(id: CaseId, audit?: readonly AuditEvent[]): Promise<void>
   /** Append audit facts on their own, for a writer with nothing else to record. */
   record(events: readonly AuditEvent[]): Promise<void>
 }
@@ -134,6 +139,8 @@ export function memoryLedger(): MemoryLedger {
 
     hasCase(id) { return cases.has(id) },
 
+    caseOf(id) { return cases.get(id) },
+
     threadOf(key) { return threads.get(key) },
 
     allCases() { return [...cases.values()].sort((left, right) => left.openedAt - right.openedAt) },
@@ -169,6 +176,13 @@ export function memoryLedger(): MemoryLedger {
       const existing = cases.get(id)
       if (existing === undefined) throw new Error(`oncall: refusing to close ${id}: no such Case`)
       cases.set(id, { ...existing, closed: { reason, at } })
+      appendAudit(events)
+    },
+
+    async reopenCase(id, events) {
+      const existing = cases.get(id)
+      if (existing === undefined) throw new Error(`oncall: refusing to reopen ${id}: no such Case`)
+      cases.set(id, { ...existing, closed: null })
       appendAudit(events)
     },
 

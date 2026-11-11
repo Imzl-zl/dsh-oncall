@@ -212,6 +212,11 @@ export class DurableLedger implements Ledger {
     return this.caseTable?.get(id) !== undefined
   }
 
+  caseOf(id: CaseId): CaseRecord | undefined {
+    const stored = this.caseTable?.get(id)
+    return stored === undefined ? undefined : fromStoredCase(stored)
+  }
+
   threadOf(key: ThreadKey): ThreadRecord | undefined {
     const stored = this.threadTable?.get(key)
     return stored === undefined ? undefined : fromStoredThread(stored)
@@ -263,6 +268,14 @@ export class DurableLedger implements Ledger {
     const stored = open.cases.get(id)
     if (stored === undefined) throw new Error(`oncall: refusing to close ${id}: no such Case`)
     await open.cases.put(id, { ...stored, closed: { reason, at } })
+    for (const event of audit) await open.audit.put(globalThis.crypto.randomUUID(), toStoredAudit(event))
+  }
+
+  async reopenCase(id: CaseId, audit: readonly AuditEvent[] = []): Promise<void> {
+    const open = await this.opened()
+    const stored = open.cases.get(id)
+    if (stored === undefined) throw new Error(`oncall: refusing to reopen ${id}: no such Case`)
+    await open.cases.put(id, { ...stored, closed: null })
     for (const event of audit) await open.audit.put(globalThis.crypto.randomUUID(), toStoredAudit(event))
   }
 

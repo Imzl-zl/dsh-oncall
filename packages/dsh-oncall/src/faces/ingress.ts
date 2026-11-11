@@ -26,6 +26,7 @@
 import type { Policy } from '../contract/policy.ts'
 import type { Source } from '../sources/source.ts'
 import type { Ledger } from '../runtime/ledger.ts'
+import type { FollowUpPort } from '../runtime/pass.ts'
 import { runPass, type PassReport } from '../runtime/pass.ts'
 
 /** The timer surface, injected so a test can drive ticks without waiting. */
@@ -39,6 +40,14 @@ export interface IngressLoopInput {
   readonly ledger: Ledger
   /** Read on every pass, so a settings save takes effect without a restart. */
   readonly policy: () => Policy
+  /**
+   * Where a message for an already-owned thread goes.
+   *
+   * Optional so the loop can be driven without an executor (the pass's own unit
+   * tests); a composition that omits it counts owned messages as `skipped` instead
+   * of auditing a delivery it cannot make.
+   */
+  readonly executor?: FollowUpPort
   readonly intervalMs: number
   readonly now: () => number
   readonly onPass: (report: PassReport) => void
@@ -81,6 +90,7 @@ export function startIngressLoop(input: IngressLoopInput): IngressLoopHandle {
           policy: input.policy(),
           now: at,
           signal: controller.signal,
+          executor: input.executor,
         })
         input.onPass(report)
       } catch (error) {

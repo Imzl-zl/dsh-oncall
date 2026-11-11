@@ -47,6 +47,7 @@ packages/dsh-oncall/tests/.dshhome-real-handoff/
 packages/dsh-oncall/tests/.dshhome-oncall-a/
 packages/dsh-oncall/tests/.dshhome-oncall-b/
 packages/dsh-oncall/tests/.dshhome-probe/
+packages/dsh-oncall/tests/.dshhome-oncall-loop/
 packages/dsh-oncall/tests/.probe-work/
 packages/dsh-oncall/tests/.workspace-real-handoff/
 packages/dsh-oncall/tests/real-handoff.overlay.yml
@@ -54,12 +55,14 @@ packages/dsh-oncall/tests/*.log
 packages/dsh-oncall/tests/.sessions/
 packages/dsh-oncall/tests/.sessions-relay/
 packages/dsh-oncall/tests/.sessions-probe/
+packages/dsh-oncall/tests/.sessions-oncall-loop/
 packages/dsh-oncall/tests/.probe-*.json
 packages/dsh-oncall/tests/probe-overlay.yml
 packages/dsh-oncall/tests/overlay.yml
 packages/dsh-oncall/tests/overlay-real.yml
 packages/dsh-oncall/tests/remote-overlay.yml
 packages/dsh-oncall/tests/handoff-overlay.yml
+packages/dsh-oncall/tests/oncall-loop-overlay.yml
 packages/dsh-oncall/tests/web-real.overlay.yml
 packages/dsh-oncall/tests/web-view.overlay.yml
 packages/dsh-oncall/tests/web-save.overlay.yml

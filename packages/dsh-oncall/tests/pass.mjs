@@ -123,6 +123,7 @@ await test('同 thread 第二条评论不开新 Case：投给已有 Case，审�
   const executor = executorOf()
   const second = trigger({ key: `${SRC}:comment-2`, text: '  还有一处 flaky  ' })
   await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger, executor })
+  executor.calls.length = 0
   const report = await run({
     sources: [sourceOf({ triggers: [trigger(), second], cursor: 'c1' })],
     ledger,
@@ -151,7 +152,7 @@ await test('人停掉的不复活：不往 stopped 的 Case 投递，新要求�
   const report = await run({ sources: [sourceOf({ triggers: [next], cursor: 'c2' })], ledger, executor, now: NOW + 20_000 })
 
   eq(report.sources[0].opened, 1)
-  eq(executor.calls, [], '被停掉的 Case 一条消息也不接')
+  eq(executor.calls.map(call => call.caseId), [caseIdOf(next.key)], '被停掉的 Case 一条消息也不接；新 Case 正常派工')
   eq(ledger.cases.length, 2)
   eq(ledger.cases.find(record => record.id === first).closed, { reason: 'stopped', at: NOW + 1_000 })
   eq(ledger.threads[0].subscriptions, [first, caseIdOf(next.key)])
@@ -163,6 +164,7 @@ await test('已完成的 Case 被追问时是恢复：投给同一个 Case，不
   const first = caseIdOf(trigger().key)
   await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
   await ledger.closeCase(first, 'completed', NOW + 1_000)
+  executor.calls.length = 0
 
   const again = trigger({ key: `${SRC}:comment-4`, text: '再补一个测试' })
   await run({ sources: [sourceOf({ triggers: [again], cursor: 'c2' })], ledger, executor, now: NOW + 20_000 })
@@ -194,7 +196,7 @@ await test('同一批里同一 thread 两条被授权的新消息：只开一个
   eq(report.sources[0].delivered, 1)
   eq(ledger.cases.length, 1)
   eq(ledger.threads, [{ key: trigger().thread, subscriptions: [caseIdOf(trigger().key)], lastAt: NOW }])
-  eq(executor.calls.map(call => call.caseId), [caseIdOf(trigger().key)])
+  eq(executor.calls.map(call => call.text), ['please fix the flaky test', '顺便修下文档'], '开 Case 与第二条消息都交给 executor，顺序不变')
 })
 
 await test('没有 executor 的装配：有主的消息计 skipped，一个字也不审计', async () => {
@@ -213,12 +215,13 @@ await test('新 issue 正常开：另一个 thread 不受已有 Case 影响', as
   const ledger = memoryLedger()
   const executor = executorOf()
   await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
+  executor.calls.length = 0
 
   const otherThread = trigger({ key: `${SRC}:issue-77`, thread: `${SRC}:issue-77`, text: '@agent 新活' })
   const report = await run({ sources: [sourceOf({ triggers: [otherThread], cursor: 'c2' })], ledger, executor })
 
   eq(report.sources[0].opened, 1)
-  eq(executor.calls, [])
+  eq(executor.calls.map(call => call.caseId), [caseIdOf(otherThread.key)], '新 issue 开新 Case 并派工，别的 thread 不受影响')
   eq(ledger.cases.map(record => record.origin), [trigger().key, otherThread.key])
   eq(ledger.threads.map(row => row.subscriptions.length), [1, 1])
 })
