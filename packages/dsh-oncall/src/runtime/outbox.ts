@@ -38,13 +38,17 @@
  * docs/design/oncall-v0-architecture.md 四节 4 与参考实现 `app/outbox.ts` / `app/store.ts`。
  */
 
+import { REPLY_RETRY_DELAYS_MS } from '../contract/defaults.ts'
 import type { CaseId, ReplyIntent, ReplyRecord, ThreadKey } from '../contract/types.ts'
 import type { Ledger } from './ledger.ts'
 import type { ReplySender } from '../sources/github-reply.ts'
 
-/** The default attempts per receipt inside one process, and the waits between them. */
-const ATTEMPTS = 3
-const DELAYS_MS: readonly number[] = [1_000, 2_000]
+/**
+ * The default attempts per receipt inside one process, and the waits between them:
+ * one attempt plus one per wait in `REPLY_RETRY_DELAYS_MS` (5s doubling to 300s).
+ */
+const DELAYS_MS = REPLY_RETRY_DELAYS_MS
+const ATTEMPTS = DELAYS_MS.length + 1
 
 export interface OutboxInput {
   readonly caseId: CaseId

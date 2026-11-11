@@ -33,6 +33,8 @@ Status: implemented
 | 会话 id 是 Case 的纯函数 | `executor/dsh.ts:24`：`worker-<ticketId>` + `ticketOfSession` 前缀反解 | `oncall-case-<净化尾巴>-<fnv1a>` | **有意收窄**：ticket id 是生成的短 id，我们的 Case id 来自 trigger key（含 `:`/`#`），必须净化；代价是反解改成扫描（只在 `submitReport` 用） |
 | 输入表 `inputs`/`undelivered`：重读的吸收、"没读到"的退回 | `core/tickets.ts` `addInput`、`inputsRead`、`untaken` | 没有（设计 §五 2 明确 V0 不做） | **有意收窄**：代价是同一句追问在 60 秒窗口里每轮会多一条 `case.followed-up` 审计；投递本身仍幂等 |
 | 层 B：瞬态正则 + 3 次 + 15s | `executor/dsh.ts` `transient()` / `TRANSIENT_TRIES=3` / 15s | 层 A `exhausted` + 链的 `switchOn`/`immediateSwitch`，30/60s ≤2 | **有意收窄**（设计 §五 3：判据换成"层 A 报 exhausted"，避免与路由层两套码表） |
+| **已结束的 Case 只有人的消息能醒**，且醒之前要按当前 Policy 重新校验 Mandate | `docs/001-domain.md:37`、`docs/002-authorization.md:127`（"Bots and CI do not wake ended Tickets"）、`002:131`（"Revalidation before resume"）、`core/tickets.ts` `wake()` | `core/thread-owner.ts` 的 `mayWake` + `pass` | **先漏了**：第一版任何 trigger 都能复活已关闭的 Case；补上后人/机器人/名单外四条用例在 `pass.mjs`（21 → 25），并做了红抽样（去掉 `mayWake` 立刻红） |
+| 渠道投递重试从 5 秒起、逐次翻倍 | `docs/003-execution.md`（"Channel failure"） | `contract/defaults.ts` 的 `REPLY_RETRY_DELAYS_MS`（5s→300s，次数用尽后 `failed`） | 参数对齐；参考是无限重试，我们保留上限（V0 没有"系统问题"面板，行必须能到终态） |
 | 回执门禁 `result` 只给 ready/completed/merged/dropped | `core/replies.ts` `answer()` | `core/reply-plan.ts` | 照抄 + 设计裁定的一处偏离：终局失败也发（我们的读者在 GitHub） |
 
 ## Alternatives considered

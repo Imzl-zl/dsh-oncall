@@ -40,7 +40,7 @@
 import { admit } from '../core/admission.ts'
 import { briefOf } from '../core/brief.ts'
 import { caseIdOf } from '../core/case-id.ts'
-import { threadOwner } from '../core/thread-owner.ts'
+import { mayWake, threadOwner } from '../core/thread-owner.ts'
 import type { Policy } from '../contract/policy.ts'
 import type {
   AuditEvent,
@@ -189,9 +189,14 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
     }
 
     // 1. Someone already owns this thread: this message belongs to that Case.
+    //
+    // A live Case takes anything that reaches it; an ended one needs a person whose
+    // Mandate still holds (`mayWake`). A message that may not wake it falls through to
+    // the gate as if it had reached no Case at all — the reference's "treated as
+    // having reached no Ticket" (`docs/002-authorization.md:127`).
     const thread = threadRow(trigger.thread)
     const owner = threadOwner({ thread, caseOf: id => known.get(id) })
-    if (owner !== undefined && thread !== undefined) {
+    if (owner !== undefined && thread !== undefined && mayWake({ theCase: owner, trigger, policy }).ok) {
       if (input.executor === undefined) {
         skipped += 1
         continue

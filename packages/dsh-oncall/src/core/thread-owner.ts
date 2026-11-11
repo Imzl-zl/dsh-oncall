@@ -26,7 +26,9 @@
  * docs/design/oncall-v0-architecture.md 三/四节与 open-questions §14.2 第 1、5 条。
  */
 
-import type { CaseId, CaseRecord, ThreadRecord } from '../contract/types.ts'
+import { admit } from './admission.ts'
+import type { Policy } from '../contract/policy.ts'
+import type { CaseId, CaseRecord, RefusalReason, ThreadRecord, Trigger } from '../contract/types.ts'
 
 export interface ThreadOwnership {
   /** The thread's row, or `undefined` when no Case was ever opened on it. */
@@ -53,4 +55,43 @@ export function threadOwner(input: ThreadOwnership): CaseRecord | undefined {
   if (owner === undefined) return undefined
   if (owner.closed?.reason === 'stopped') return undefined
   return owner
+}
+
+/**
+ * Whether a message may wake the Case that owns its thread.
+ *
+ * A **live** Case is woken by anything that reaches its thread — "with no check of
+ * who sent it" (`docs/001-domain.md:37`): a bot's CI result is context its worker
+ * needs, and a subscription grants no new authority either way.
+ *
+ * An **ended** Case is different, and both rules are the reference's, not ours:
+ *
+ * 1. **Only a person wakes it.** "Bots and CI do not wake ended Tickets"
+ *    (`docs/002-authorization.md:127`). A bot message is treated as having reached
+ *    no Ticket at all — the caller falls through to the gate, which is our V0 stand-in
+ *    for the evaluation layer.
+ * 2. **The Mandate is revalidated under today's Policy before it resumes**
+ *    (`docs/001-domain.md:34`, `docs/002-authorization.md:131`). A person removed from
+ *    the allowed list must not keep a Case alive by commenting on it; the message then
+ *    reaches no Ticket and is judged as an ordinary request.
+ *
+ * `stopped` never reaches here (`threadOwner` answers "no owner"), so a stopped Case
+ * cannot be woken by anybody — "A Ticket a person stopped receives nothing."
+ */
+export function mayWake(input: {
+  readonly theCase: CaseRecord
+  readonly trigger: Trigger
+  readonly policy: Policy
+}): { readonly ok: true } | { readonly ok: false; readonly reason: RefusalReason } {
+  const { theCase, trigger, policy } = input
+  if (theCase.closed === null) return { ok: true }
+  if (theCase.closed.reason === 'stopped') return { ok: false, reason: 'follow-up-owned' }
+  if (trigger.actor.kind !== 'human') return { ok: false, reason: 'bot-not-allowed' }
+  const verdict = admit({ trigger, policy })
+  // Any admitted explicit request carries the Mandate; an inferred one does not,
+  // because resuming is acting and an inferred candidate is not authorized to act
+  // by itself in `observe`/`off`.
+  if (!verdict.admitted) return { ok: false, reason: verdict.reason }
+  if (verdict.strength !== 'explicit') return { ok: false, reason: 'inferred-mode-off' }
+  return { ok: true }
 }

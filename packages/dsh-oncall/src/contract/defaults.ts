@@ -70,6 +70,17 @@ export const RECOVERY_NOTE =
  */
 export const LAYER_B_DELAYS_MS: readonly number[] = [30_000, 60_000]
 
+/**
+ * How long the outbox waits between attempts to post one receipt.
+ *
+ * The reference retries stored channel messages from 5 seconds, doubling up to 300
+ * (`docs/003-execution.md`, "Channel failure"), and holds a Ticket's later messages
+ * behind an earlier one that has not gone out. We keep the shape and stop once the
+ * list is spent: V0 has no "system problems" surface, so a receipt row has to reach a
+ * terminal state — `failed` is what the audit stream shows, and the row keeps it.
+ */
+export const REPLY_RETRY_DELAYS_MS: readonly number[] = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 300_000]
+
 /** How much of a Case's brief becomes the worker session's title. */
 export const MAX_SESSION_TITLE_CHARS = 60
 

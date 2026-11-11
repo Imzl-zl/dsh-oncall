@@ -149,15 +149,21 @@ L5 faces/      ingress.ts（不变）、index.ts（接线）、reports.ts（onca
 ```
 读 progress → poll → 去重（case:<trigger> 已存在则跳过）
 每个 trigger:
-  owner = core/thread-owner（查 threads.subscriptions，取 live case；ended 且 closed.reason !== 'stopped' 也算 owner）
-  owner 存在 → 审计 case.followed-up{caseId, trigger}；交给 executor.deliver(caseId, text, triggerKey)
-  owner 不存在 → admit()（纯函数）
+  owner = core/thread-owner（查 threads.subscriptions，取最新一条订阅；stopped 的 Case 不算 owner）
+  owner 存在且 mayWake（open 一律，ended 需人 + Mandate 重新校验通过）
+      → 审计 case.followed-up{caseId, trigger}；交给 executor.deliver(caseId, text, triggerKey)
+  否则（无主 / 停掉的 / 醒不来的）→ admit()（纯函数）
        record-only → 审计 case.observed
        work        → 开 Case（case:<trigger>）+ 订阅 threads.subscriptions += caseId + 审计 case.opened
 commit(progress, cases, threads, audit)
 ```
 
 `owner 存在` 时**不过闸门**（参考实现：订阅投递绕过闸门、不授予新权限）；人主动 `stopped` 的 Case 不恢复，保持安静。
+
+**醒一个已结束的 Case 有两条前提，都是参考实现写死的规则**（`docs/001-domain.md:34,37`、`docs/002-authorization.md:127,131`）：
+
+1. **只有人的消息能醒它**——机器人与 CI 的评论"不唤醒已结束的工单"：它们照常投给*活着的* Case（订阅不看发送者），但对已结束的 Case 视为"没归属任何 Case"，交给闸门（V0 里闸门就是评估层的确定性替身）。
+2. **恢复前按当前 Policy 重新校验 Mandate**——把人从名单里移除之后，他不能靠一句评论把旧 Case 续上；校验不通过就当作没归属，旧 Case 保持结束。
 
 ### 2. executor（事件驱动 + 启动扫描）
 

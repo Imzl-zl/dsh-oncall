@@ -173,6 +173,75 @@ await test('已完成的 Case 被追问时是恢复：投给同一个 Case，不
   eq(ledger.cases.length, 1)
 })
 
+await test('已结束的 Case：机器人的消息不复活它（参考 002：bots do not wake ended Tickets）', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  const first = caseIdOf(trigger().key)
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
+  await ledger.closeCase(first, 'completed', NOW + 1_000)
+
+  const ci = trigger({ key: `${SRC}:comment-6`, actor: bot('ci-bot'), text: '@agent 构建失败了' })
+  const report = await run({ sources: [sourceOf({ triggers: [ci], cursor: 'c2' })], ledger, executor, now: NOW + 20_000 })
+
+  eq(executor.calls.map(call => call.caseId).filter(id => id === first), [], '不投给已结束的 Case')
+  eq(report.sources[0].opened, 0)
+  eq(report.sources[0].refused, 1)
+  eq(ledger.audit.filter(event => event.kind === 'trigger.refused').map(event => event.reason), ['bot-not-allowed'])
+})
+
+await test('已结束的 Case：名单外的人不复活它（Mandate 重新校验失败 = 这条消息不属于任何 Case）', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  const first = caseIdOf(trigger().key)
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
+  await ledger.closeCase(first, 'completed', NOW + 1_000)
+
+  const stranger = trigger({ key: `${SRC}:comment-7`, actor: human('mallory'), text: '@agent 再改一下' })
+  const report = await run({ sources: [sourceOf({ triggers: [stranger], cursor: 'c2' })], ledger, executor, now: NOW + 20_000 })
+
+  eq(executor.calls.map(call => call.caseId).filter(id => id === first), [])
+  eq(report.sources[0].refused, 1)
+  eq(ledger.audit.filter(event => event.kind === 'trigger.refused').map(event => event.reason), ['sender-not-allowed'])
+  eq(ledger.cases.length, 1, '也没有开新 Case')
+})
+
+await test('已结束的 Case：名单内的机器人可以作为候选开新 Case，但不复活旧 Case', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  const first = caseIdOf(trigger().key)
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
+  await ledger.closeCase(first, 'completed', NOW + 1_000)
+  executor.calls.length = 0
+
+  const ci = trigger({ key: `${SRC}:comment-8`, actor: bot('ci-bot'), text: '@agent 看看这个失败' })
+  const report = await run({
+    sources: [sourceOf({ triggers: [ci], cursor: 'c2' })],
+    ledger,
+    executor,
+    policy: policy({ bots: [{ source: SRC, id: 'ci-bot' }], acceptMode: 'auto' }),
+    now: NOW + 20_000,
+  })
+
+  eq(report.sources[0].opened, 1, '闸门接管：机器人按候选开新 Case')
+  eq(report.sources[0].delivered, 0)
+  eq(ledger.cases.length, 2)
+  eq(ledger.threads[0].subscriptions, [first, caseIdOf(ci.key)])
+  eq(executor.calls.map(call => call.caseId), [caseIdOf(ci.key)], '派工只落在新 Case 上')
+})
+
+await test('活着的 Case：机器人评论照投（订阅投递不看发送者）', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger })
+  executor.calls.length = 0
+
+  const ci = trigger({ key: `${SRC}:comment-9`, actor: bot('ci-bot'), text: '@agent CI 红了' })
+  const report = await run({ sources: [sourceOf({ triggers: [ci], cursor: 'c2' })], ledger, executor })
+
+  eq(report.sources[0].delivered, 1)
+  eq(executor.calls.map(call => call.caseId), [caseIdOf(trigger().key)])
+})
+
 await test('订阅投递绕过闸门：名单外的人在自己 Case 的 thread 上说话也能抵达', async () => {
   const ledger = memoryLedger()
   const executor = executorOf()
