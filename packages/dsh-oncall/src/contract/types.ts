@@ -92,6 +92,24 @@ export interface CaseRecord {
 }
 
 /**
+ * One external conversation's subscriptions.
+ *
+ * `subscriptions` is the authoritative answer to "whose messages belong to
+ * which Case": it is written in the same commit that opens the Case and never
+ * loses an entry (closing a Case does not unsubscribe — a person's next message
+ * on that thread resumes it, `docs/design/open-questions.md` §14.2 item 5).
+ * `mandate.scope` is the authorization range and deliberately not read here;
+ * deriving ownership from it would answer a different question twice.
+ */
+export interface ThreadRecord {
+  readonly key: ThreadKey
+  /** Every Case ever opened on this thread, oldest first. */
+  readonly subscriptions: readonly CaseId[]
+  /** When this thread was last seen, for ordering and the panel. */
+  readonly lastAt: number
+}
+
+/**
  * What a worker's step reported.
  *
  * The vocabulary is `dsh-superagent`'s `ReportState` verbatim (`src/core/model.ts`):
@@ -204,5 +222,16 @@ export type AuditEvent =
       readonly strength: 'explicit' | 'inferred'
     }
   | { readonly kind: 'case.observed'; readonly at: number; readonly trigger: TriggerKey; readonly brief: string }
+  | { readonly kind: 'case.followed-up'; readonly at: number; readonly caseId: CaseId; readonly trigger: TriggerKey }
+  | {
+      readonly kind: 'step.settled'
+      readonly at: number
+      readonly caseId: CaseId
+      readonly seq: number
+      readonly state: ReportState
+      /** The failure code a `failed` report carries. */
+      readonly code?: string
+    }
+  | { readonly kind: 'step.interrupted'; readonly at: number; readonly caseId: CaseId; readonly seq: number }
   | { readonly kind: 'trigger.refused'; readonly at: number; readonly trigger: TriggerKey; readonly reason: RefusalReason }
   | { readonly kind: 'poll.failed'; readonly at: number; readonly source: SourceId; readonly message: string }

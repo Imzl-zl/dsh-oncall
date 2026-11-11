@@ -91,6 +91,7 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
       sourceId: source.id,
       progress: { cursor: progress.cursor, lastError: message, lastPolledAt: now },
       cases: [],
+      threads: [],
       audit: [{ kind: 'poll.failed', at: now, source: source.id, message }],
     })
     return { sourceId: source.id, opened: 0, observed: 0, refused: 0, skipped: 0, error: message }
@@ -145,6 +146,7 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
     sourceId: source.id,
     progress: { cursor: polled.cursor, lastError: null, lastPolledAt: now },
     cases,
+    threads: [],
     audit,
   }
   await ledger.commit(commit)
