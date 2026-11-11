@@ -96,7 +96,7 @@ export class Outbox {
       state: 'pending',
       at: this.options.now(),
     }
-    this.lane(input.caseId, async () => {
+    this.lane(input.caseId, key, async () => {
       // The row lands before the POST: a crash in between leaves `pending`, which a
       // restart resumes, and the row is what makes a second `queue` a no-op.
       if (this.ledger.replyOf(record.caseId, record.seq) === undefined) await this.ledger.writeReply(record)
@@ -123,7 +123,7 @@ export class Outbox {
         continue
       }
       this.owed.add(key)
-      this.lane(record.caseId, () => this.send(record, thread, 0))
+      this.lane(record.caseId, key, () => this.send(record, thread, 0))
     }
   }
 
@@ -139,12 +139,22 @@ export class Outbox {
     await Promise.allSettled([...this.lanes.values()])
   }
 
-  /** Append one receipt to its Case's lane; a failure of the previous one does not block this one. */
-  private lane(caseId: string, run: () => Promise<void>): void {
+  /**
+   * Append one receipt to its Case's lane; a failure of the previous one does not
+   * block this one.
+   *
+   * A failing lane gives the key back. Otherwise a ledger write that failed once would
+   * leave no `pending` row *and* keep the key in `owed`, so neither a later `queue`
+   * nor `resume()` would ever retry that receipt — the comment would be lost silently.
+   */
+  private lane(caseId: string, key: string, run: () => Promise<void>): void {
     const tail = this.lanes.get(caseId) ?? Promise.resolve()
     const next = tail
       .then(run)
-      .catch(error => { this.options.logger.error(`oncall: receipt for ${caseId} failed to record: ${String(error)}`) })
+      .catch(error => {
+        this.owed.delete(key)
+        this.options.logger.error(`oncall: receipt ${key} failed to record: ${String(error)}`)
+      })
     this.lanes.set(caseId, next)
     void next.then(() => {
       if (this.lanes.get(caseId) === next) this.lanes.delete(caseId)

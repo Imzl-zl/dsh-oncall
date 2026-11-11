@@ -156,17 +156,31 @@ interface Watch {
 export function caseSessionId(caseId: CaseId): string {
   const text = String(caseId).replace(/^case:/, '')
   const tail = text.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(-SESSION_TAIL_CHARS)
-  return `oncall-case-${tail}-${fnv1a36(text)}`
+  return `oncall-case-${tail}-${digest64(text)}`
 }
 
-/** FNV-1a, 32-bit, base 36. Deterministic across processes and platforms. */
-function fnv1a36(text: string): string {
-  let hash = 0x811c9dc5
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index)
-    hash = Math.imul(hash, 0x01000193) >>> 0
+/**
+ * Two FNV-1a passes with different seeds, base 36: 64 bits of digest.
+ *
+ * One 32-bit pass is not enough here. The id it feeds is what keeps two Cases in
+ * separate sessions, so a collision silently puts two pieces of work in one
+ * conversation — and 32 bits collide at about 1% after 10k Cases (birthday bound).
+ * 64 bits move that to the same probability after ~4 billion.
+ */
+function digest64(text: string): string {
+  const pass = (seed: number, salt: string): string => {
+    let hash = seed
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+    for (let index = 0; index < salt.length; index += 1) {
+      hash ^= salt.charCodeAt(index)
+      hash = Math.imul(hash, 0x01000193) >>> 0
+    }
+    return hash.toString(36)
   }
-  return hash.toString(36)
+  return `${pass(0x811c9dc5, '')}${pass(0x9e3779b9, ':oncall')}`
 }
 
 /** The session title: the first line of what was asked. */
@@ -334,7 +348,12 @@ export class Executor implements FollowUpPort {
     // finished Case" is the one duplicate a person would notice.
     if (!opening) {
       const existing = caseSessionId(theCase.id)
-      if (await this.host.resolveAgent(existing) && this.host.holds(existing, followUpMessageId(theCase.id, input.trigger))) return
+      if (await this.host.resolveAgent(existing) && this.host.holds(existing, followUpMessageId(theCase.id, input.trigger))) {
+        // 消息早就在会话里了：输入行也必须盖上，否则它永远停在 deliveredAt:null，
+        // 每一轮 poll 都会重投一次 no-op。
+        await this.markDelivered(theCase.id, input.trigger)
+        return
+      }
     }
 
     const running = steps[steps.length - 1]
@@ -493,7 +512,8 @@ export class Executor implements FollowUpPort {
     const end = lastTurnEnd(facts)
     if (end === undefined) return
     if (end.turn <= (this.settledTurn.get(sessionId) ?? -1)) return
-    this.settledTurn.set(sessionId, end.turn)
+    // 先记后写会吞掉一次写失败：那一轮从此再也不会被结算。所以写在成功之后再记。
+    const settledTurn = end.turn
 
     const now = this.options.now()
     const fromTurn = reportOfTurn(end.reason, lastTextOf(facts, end.turn), now)
@@ -510,6 +530,7 @@ export class Executor implements FollowUpPort {
     }
     if (report === null) {
       // A turn that ended as turns do resets the passing-failure count (`dsh.ts:606`).
+      this.settledTurn.set(sessionId, settledTurn)
       this.retries.delete(caseId)
       return
     }
@@ -518,7 +539,12 @@ export class Executor implements FollowUpPort {
     // (`executor/dsh.ts:548-576`). Only a failure that will not pass, or one whose
     // retries are spent, becomes the assignment's `failed` report.
     if (report.state === 'failed' && this.host.exhausted(sessionId, end.turn, report.code) === 'transient') {
-      if (this.retryTurn(theCase, sessionId, last, report, end.reason, end.turn)) return
+      if (this.retryTurn(theCase, sessionId, last, report, end.reason, end.turn)) {
+        // 这一轮已经处置过（排了重试）：不记下来的话，settle 循环会对着同一个 turn/end
+        // 反复结算，几毫秒内把三次重试全烧掉，然后落一个 failed。
+        this.settledTurn.set(sessionId, settledTurn)
+        return
+      }
     }
     this.retries.delete(caseId)
 
@@ -543,6 +569,8 @@ export class Executor implements FollowUpPort {
       [audit],
     )
     if (closing !== undefined) await this.ledger.closeCase(caseId, closing, now)
+    // 写成功后才认这一轮已经结算；抛错时下一轮 idle 会重试。
+    this.settledTurn.set(sessionId, settledTurn)
 
     this.queueReply(theCase, last.seq, planReply({ caseId, seq: last.seq, report }))
   }
@@ -573,9 +601,12 @@ export class Executor implements FollowUpPort {
 
     const now = this.options.now()
     const report: StampedReport = { ...input.report, at: now } as StampedReport
+    // 不要把这一轮先标成 ended 再问 planStep：那样 `blocked`/`progress` 会掉进预算分支，
+    // 第 40 个派工上的一句"卡住了"会把 Case 关成 stopped。planStep 的 ready/dropped
+    // 检查排在 running 之前，所以保持 running 也能正确关闭。
     const plan = planStep({
       theCase,
-      steps: [...steps.slice(0, -1), { ...last, report, state: 'ended', endedAt: now }],
+      steps: [...steps.slice(0, -1), { ...last, report }],
       budget: budgetOf(steps.length, MAX_STEPS_PER_CASE),
       brief: last.brief,
     })

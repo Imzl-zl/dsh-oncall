@@ -18,7 +18,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { caseSessionId, Executor, titleOf } from '../src/runtime/executor.ts'
+import { caseSessionId, Executor, followUpMessageId, titleOf } from '../src/runtime/executor.ts'
 import { inputIdOf } from '../src/core/case-id.ts'
 import { memoryLedger } from '../src/runtime/ledger.ts'
 import { Outbox } from '../src/runtime/outbox.ts'
@@ -800,6 +800,163 @@ await test('outbox：重启后只补 pending，sent/gone/failed 不再动', asyn
 
   eq(sent, ['旧的'])
   eq([1, 2, 3].map(seq => ledger.replyOf(CASE, seq).state), ['sent', 'sent', 'gone'])
+})
+
+await test('第 40 个派工上报 blocked：Case 留开，不被预算关成 stopped', async () => {
+  const ledger = memoryLedger()
+  await ledger.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    inputs: [],
+    audit: [],
+  })
+  const spent = Array.from({ length: MAX_STEPS_PER_CASE - 1 }, (_, index) => stepOf({
+    seq: index + 1,
+    state: 'ended',
+    report: { state: 'waiting', summary: '继续', at: NOW },
+    endedAt: NOW,
+  }))
+  await ledger.writeSteps([...spent, stepOf({ seq: MAX_STEPS_PER_CASE })])
+  const executor = await executorOf(ledger, fakeHost())
+
+  const verdict = await executor.submitReport({
+    sessionId: caseSessionId(CASE),
+    report: { state: 'blocked', summary: '卡住了', question: '继续吗？' },
+  })
+
+  eq(verdict.ok, true)
+  eq(ledger.cases[0].closed, null, '一句 blocked 不该触发"预算用尽"')
+  eq(ledger.stepsOf(CASE).at(-1).report.state, 'blocked')
+  executor.stop()
+})
+
+await test('第 40 个派工上报 ready：仍然关 completed（ready 先于预算判）', async () => {
+  const ledger = memoryLedger()
+  await ledger.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    inputs: [],
+    audit: [],
+  })
+  const spent = Array.from({ length: MAX_STEPS_PER_CASE - 1 }, (_, index) => stepOf({
+    seq: index + 1,
+    state: 'ended',
+    report: { state: 'waiting', summary: '继续', at: NOW },
+    endedAt: NOW,
+  }))
+  await ledger.writeSteps([...spent, stepOf({ seq: MAX_STEPS_PER_CASE })])
+  const executor = await executorOf(ledger, fakeHost())
+
+  await executor.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'ready', summary: '做完了' } })
+
+  eq(ledger.cases[0].closed.reason, 'completed')
+  executor.stop()
+})
+
+await test('消息已在会话里（重读）→ 输入行也要盖 deliveredAt', async () => {
+  const ledger = await openWithWaitingStep()
+  const trigger = `${SRC}:comment-dup`
+  await ledger.writeInputs([{
+    id: inputIdOf(CASE, trigger),
+    caseId: CASE,
+    trigger,
+    text: '重复的一句',
+    at: NOW,
+    deliveredAt: null,
+  }])
+  const fake = fakeHost()
+  const sessionId = caseSessionId(CASE)
+  await fake.host.create({ sessionId, cwd: '', title: '' })
+  fake.host.followup({ sessionId, messageId: followUpMessageId(CASE, trigger), text: '重复的一句' })
+  fake.state.followups.length = 0
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+
+  executor.deliver({ caseId: CASE, text: '重复的一句', trigger })
+  await settle()
+
+  eq(fake.state.followups, [], '消息已在会话里，不重投')
+  eq(ledger.inputOf(inputIdOf(CASE, trigger)).deliveredAt, NOW, '但输入行必须盖上，否则每轮都重投一次 no-op')
+  executor.stop()
+})
+
+await test('结算写失败不会吞掉这一轮：下一次 idle 会重试', async () => {
+  const base = await openWithWaitingStep()
+  let failures = 1
+  const ledger = {
+    ...base,
+    writeSteps: async (records, audit) => {
+      if (failures > 0) { failures -= 1; throw new Error('disk full') }
+      return base.writeSteps(records, audit)
+    },
+  }
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '再补一个测试', trigger: `${SRC}:comment-write` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  fake.say(sessionId, { kind: 'assistant', turn: 2, text: '补好了' }, { kind: 'turn-end', turn: 2, reason: { kind: 'completed' } })
+  fake.idle(sessionId)
+  await settle()
+  eq(base.stepsOf(CASE)[0].report.summary, '先看看', '这次写失败，报告没落地')
+
+  fake.idle(sessionId)
+  await settle()
+  eq(base.stepsOf(CASE)[0].report.summary, '补好了', '重试之后落地')
+  executor.stop()
+})
+
+await test('outbox：落 pending 失败把回执还回去，之后 queue 还能补', async () => {
+  const base = memoryLedger()
+  await base.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    inputs: [],
+    audit: [],
+  })
+  let breaking = true
+  const ledger = {
+    ...base,
+    writeReply: async (record, audit) => {
+      if (breaking && record.state === 'pending') throw new Error('disk full')
+      return base.writeReply(record, audit)
+    },
+  }
+  const sent = []
+  const errors = []
+  const outbox = new Outbox({
+    ledger,
+    sender: { async send() { sent.push(1); return 'sent' } },
+    now: () => NOW,
+    logger: { warn() {}, error: message => errors.push(message) },
+    delaysMs: [0],
+  })
+
+  outbox.queue(receipt())
+  await outbox.settled()
+
+  eq(sent, [], 'pending 没落就不发')
+  eq(base.replyOf(CASE, 1), undefined, '账本里也没有行')
+  eq(errors.length, 1)
+
+  outbox.resume()
+  await outbox.settled()
+  eq(sent, [], 'resume 只补 pending 行，这里没有行可补')
+
+  breaking = false
+  outbox.queue(receipt())
+  await outbox.settled()
+
+  eq(sent, [1], '回执被还回来了，重新排队就能补上')
+  eq(base.replyOf(CASE, 1).state, 'sent')
 })
 
 // ── 禁止清单 ────────────────────────────────────────────────────
