@@ -1,20 +1,19 @@
 /**
  * What a Case does next.
  *
- * The input type is the interesting part: `lastOutcome` accepts only a settled
- * `done`. A Case that is blocked, failed or waiting needs a person or a trigger,
- * and must never reach here — so the caller cannot pass those states in, and the
- * compiler rejects the attempt instead of trusting a runtime `if` that someone
- * will eventually delete.
+ * The shape follows `dsh-superagent`'s `Tickets`/`Assignments`: a Case that has a
+ * running step is not given a second one (`idle`), a `ready` report closes it, and
+ * the step allowance closes it as `stopped` when a looping worker would otherwise
+ * burn a night of tokens. `close` carries the reason so the caller never invents one.
  *
- * A `blocked` Case that receives a new message is resumed by its own path
- * (`docs/design/super-plugin.md` 7.3), not by pretending its outcome was `done`.
+ * `brief` is the text this step is told to do, not the Case's original request: a
+ * follow-up and a recovery note are different briefs for the same Case.
  *
- * Note: 为何用窄类型而不在函数内判空、为何步数上限是 40 —— 见 docs/design/super-plugin-code.md 2.3。
+ * Note: 为何步数上限是 40、为何用联合类型而不是可选字段 —— 见
+ * docs/design/oncall-v0-architecture.md 与 docs/design/super-plugin-code.md 2.3。
  */
 
-import { MAX_STEPS_PER_CASE } from '../contract/defaults.ts'
-import type { CaseRecord, Outcome, PresetId, Step } from '../contract/types.ts'
+import type { CaseRecord, Step, StepRecord } from '../contract/types.ts'
 
 /** How much of the Case's step allowance is spent. */
 export interface Budget {
@@ -22,32 +21,41 @@ export interface Budget {
   readonly maxSteps: number
 }
 
-/** The only outcomes that can be planned from: one settled success, or none. */
-export type PlannableOutcome = Extract<Outcome, { kind: 'done' }> | undefined
-
 /**
  * The next Step for one Case.
  *
- * Total by construction: every path returns a Step, including the closed case and
- * the exhausted budget. A function that can silently return nothing is how
- * "the Case just stopped moving" bugs happen.
+ * Total by construction: every path returns a Step, including the closed Case, the
+ * exhausted budget and the Case that is still working. A function that can silently
+ * return nothing is how "the Case just stopped moving" bugs happen.
  */
 export function planStep(input: {
   readonly theCase: CaseRecord
-  readonly lastOutcome: PlannableOutcome
+  readonly steps: readonly StepRecord[]
   readonly budget: Budget
-  readonly preset: PresetId
+  /** The text the next step would work on. */
+  readonly brief: string
 }): Step {
-  const { theCase, lastOutcome, budget, preset } = input
+  const { theCase, steps, budget, brief } = input
 
   if (theCase.closed !== null) return { kind: 'close', reason: theCase.closed.reason }
-  if (budget.stepsSpent >= budget.maxSteps) return { kind: 'close', reason: 'stopped' }
-  if (lastOutcome === undefined) return { kind: 'work', brief: theCase.brief, preset }
 
-  return { kind: 'close', reason: 'completed' }
+  const last = steps[steps.length - 1]
+  const report = last?.report ?? null
+  // A terminal report ends the Case even while its step runs: `dsh-superagent`
+  // closes the ticket inside `report()`, whatever the assignment state is.
+  if (report?.state === 'ready') return { kind: 'close', reason: 'completed' }
+  if (report?.state === 'dropped') return { kind: 'close', reason: 'dropped' }
+
+  // A step that is still running is the Case's current work: queueing another
+  // would give one Case two workers.
+  if (last?.state === 'running') return { kind: 'idle' }
+
+  if (budget.stepsSpent >= budget.maxSteps) return { kind: 'close', reason: 'stopped' }
+
+  return { kind: 'work', brief }
 }
 
 /** The default budget for a Case that has spent `stepsSpent` steps. */
-export function budgetOf(stepsSpent: number): Budget {
-  return { stepsSpent, maxSteps: MAX_STEPS_PER_CASE }
+export function budgetOf(stepsSpent: number, maxSteps: number): Budget {
+  return { stepsSpent, maxSteps }
 }

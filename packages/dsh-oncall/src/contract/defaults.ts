@@ -25,9 +25,6 @@ export const DEFAULT_ACCEPT_MODE: AcceptMode = 'off'
  */
 export const MAX_STEPS_PER_CASE = 40
 
-/** Attempts allowed per physical route inside one step, before moving on. */
-export const DEFAULT_RETRIES_PER_ROUTE = 1
-
 /**
  * How much of one request a Case carries as its brief.
  *

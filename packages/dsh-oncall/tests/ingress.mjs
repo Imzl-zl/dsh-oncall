@@ -58,14 +58,24 @@ const theCase = (over = {}) => ({
 })
 
 const openStep = (over = {}) => ({
+  caseId: 'case:1',
   seq: 1,
-  step: { kind: 'work', brief: 'fix the flaky test', preset: 'worker' },
-  startedAt: 1_100,
-  outcome: undefined,
+  state: 'running',
+  brief: 'fix the flaky test',
+  report: null,
+  at: 1_100,
   ...over,
 })
 
-const settled = outcome => ({ theCase: theCase(), lastOutcome: outcome, settledAt: 2_000, openStep: undefined, deliveryFailedAt: undefined })
+const report = (over = {}) => ({ state: 'ready', summary: 'ok', at: 2_000, ...over })
+
+/** One Case's facts, with the steps and delivery failure spelled out. */
+const facts = (over = {}) => ({
+  theCase: theCase(),
+  steps: [],
+  deliveryFailedAt: undefined,
+  ...over,
+})
 
 let checks = 0
 const test = (name, run) => {
@@ -131,65 +141,93 @@ test('候选 + observe → 只记录，不真干', () => {
   eq(admit({ trigger: trigger({ actor: bot('ci-bot') }), policy: p }), { admitted: true, strength: 'inferred', effect: 'record-only' })
 })
 
-// ── 状态派生 ────────────────────────────────────────────────────
+// ── 状态派生（七行表，首行匹配）─────────────────────────────────
 test('已关闭 → done，带原因与时间', () => {
   eq(
-    deriveStage({ ...settled({ kind: 'done', summary: 'ok' }), theCase: theCase({ closed: { reason: 'completed', at: 5_000 } }) }),
+    deriveStage(facts({ theCase: theCase({ closed: { reason: 'completed', at: 5_000 } }), steps: [{ ...openStep(), report: report() }] })),
     { kind: 'done', how: 'completed', at: 5_000 },
   )
 })
 test('投递失败压过一切：人收不到结果就谈不上审核', () => {
   eq(
-    deriveStage({ ...settled({ kind: 'done', summary: 'ok' }), openStep: openStep(), deliveryFailedAt: 4_000 }),
+    deriveStage(facts({ steps: [{ ...openStep(), report: report() }], deliveryFailedAt: 4_000 })),
     { kind: 'needs-person', reason: 'delivery-failed', since: 4_000 },
   )
 })
-test('有在跑的 step → working', () => {
-  eq(deriveStage({ ...settled(undefined), openStep: openStep() }), { kind: 'working', since: 1_100 })
-})
-test('一步都没结算 → queued', () => {
-  eq(deriveStage(settled(undefined)), { kind: 'queued', since: 1_000 })
-})
-test('done → 等人审核', () => {
-  eq(deriveStage(settled({ kind: 'done', summary: 'ok' })), { kind: 'needs-person', reason: 'review', since: 2_000 })
-})
-test('waiting → 等触发', () => {
-  eq(deriveStage(settled({ kind: 'waiting', summary: 'idle' })), { kind: 'waiting', since: 2_000 })
+test('ready → 等人审核', () => {
+  eq(deriveStage(facts({ steps: [{ ...openStep(), report: report() }] })), { kind: 'needs-person', reason: 'review', since: 2_000 })
 })
 test('blocked → 等人答问', () => {
-  eq(deriveStage(settled({ kind: 'blocked', question: 'which branch?' })), { kind: 'needs-person', reason: 'question', since: 2_000 })
+  eq(
+    deriveStage(facts({ steps: [{ ...openStep(), report: report({ state: 'blocked', question: 'which branch?' }) }] })),
+    { kind: 'needs-person', reason: 'question', since: 2_000 },
+  )
 })
 test('failed → 等人处置', () => {
-  eq(deriveStage(settled({ kind: 'failed', code: 'E_PREPARE', message: 'no dir' })), { kind: 'needs-person', reason: 'failed', since: 2_000 })
+  eq(
+    deriveStage(facts({ steps: [{ ...openStep(), report: report({ state: 'failed', code: 'E_PREPARE' }) }] })),
+    { kind: 'needs-person', reason: 'failed', since: 2_000 },
+  )
+})
+test('有在跑的 step（还没报告）→ working', () => {
+  eq(deriveStage(facts({ steps: [openStep()] })), { kind: 'working', since: 1_100 })
+})
+test('一步都没开 → queued', () => {
+  eq(deriveStage(facts()), { kind: 'queued', since: 1_000 })
+})
+test('waiting → 等触发（没人要动手）', () => {
+  eq(
+    deriveStage(facts({ steps: [{ ...openStep(), report: report({ state: 'waiting' }) }] })),
+    { kind: 'waiting', since: 2_000 },
+  )
+})
+test('派工已 ended 且无新报告 → 也是等触发', () => {
+  eq(
+    deriveStage(facts({ steps: [{ ...openStep(), state: 'ended', endedAt: 3_000 }] })),
+    { kind: 'waiting', since: 3_000 },
+  )
+})
+test('progress → 还在干（progress 不是状态变化）', () => {
+  eq(
+    deriveStage(facts({ steps: [{ ...openStep(), report: report({ state: 'progress', at: 2_500 }) }] })),
+    { kind: 'working', since: 2_500 },
+  )
 })
 
 // ── 下一步 ──────────────────────────────────────────────────────
-test('全新 Case → 派一次工，brief 来自 Case 本身', () => {
+test('全新 Case → 派一次工，brief 由调用方给', () => {
   eq(
-    planStep({ theCase: theCase(), lastOutcome: undefined, budget: { stepsSpent: 0, maxSteps: 40 }, preset: 'worker' }),
-    { kind: 'work', brief: 'fix the flaky test', preset: 'worker' },
+    planStep({ theCase: theCase(), steps: [], budget: { stepsSpent: 0, maxSteps: 40 }, brief: 'fix the flaky test' }),
+    { kind: 'work', brief: 'fix the flaky test' },
   )
 })
-test('一次 done → 收工', () => {
+test('已有 running step → idle，不给第二个工', () => {
   eq(
-    planStep({ theCase: theCase(), lastOutcome: { kind: 'done', summary: 'ok' }, budget: { stepsSpent: 1, maxSteps: 40 }, preset: 'worker' }),
+    planStep({ theCase: theCase(), steps: [openStep()], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'again' }),
+    { kind: 'idle' },
+  )
+})
+test('ready → 收工 completed', () => {
+  eq(
+    planStep({ theCase: theCase(), steps: [{ ...openStep(), state: 'ended', report: report() }], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'x' }),
     { kind: 'close', reason: 'completed' },
+  )
+})
+test('dropped → 收工 dropped', () => {
+  eq(
+    planStep({ theCase: theCase(), steps: [{ ...openStep(), report: report({ state: 'dropped' }) }], budget: { stepsSpent: 1, maxSteps: 40 }, brief: 'x' }),
+    { kind: 'close', reason: 'dropped' },
   )
 })
 test('步数耗尽 → 强制收工，理由 stopped', () => {
   eq(
-    planStep({ theCase: theCase(), lastOutcome: undefined, budget: { stepsSpent: 40, maxSteps: 40 }, preset: 'worker' }),
+    planStep({ theCase: theCase(), steps: [{ ...openStep(), state: 'ended', endedAt: 3_000, report: report({ state: 'waiting' }) }], budget: { stepsSpent: 40, maxSteps: 40 }, brief: 'x' }),
     { kind: 'close', reason: 'stopped' },
   )
 })
 test('已关闭的 Case 再来问 → 仍答收工，且沿用原原因', () => {
   eq(
-    planStep({
-      theCase: theCase({ closed: { reason: 'stopped', at: 9_000 } }),
-      lastOutcome: undefined,
-      budget: { stepsSpent: 0, maxSteps: 40 },
-      preset: 'worker',
-    }),
+    planStep({ theCase: theCase({ closed: { reason: 'stopped', at: 9_000 } }), steps: [], budget: { stepsSpent: 0, maxSteps: 40 }, brief: 'x' }),
     { kind: 'close', reason: 'stopped' },
   )
 })

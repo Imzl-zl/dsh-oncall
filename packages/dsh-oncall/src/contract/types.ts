@@ -31,8 +31,6 @@ export type CaseId = string & Brand<'CaseId'>
 export type ThreadKey = string & Brand<'ThreadKey'>
 /** One immutable external event, globally unique through its source. */
 export type TriggerKey = string & Brand<'TriggerKey'>
-/** One agent preset a worker Session runs under. */
-export type PresetId = string & Brand<'PresetId'>
 
 /** Who produced a Trigger, in that Source's own identity system. */
 export interface Actor {
@@ -94,35 +92,65 @@ export interface CaseRecord {
 }
 
 /**
- * What a worker reported when its step settled.
+ * What a worker's step reported.
  *
- * There is no `progress` variant: progress that is not a state change belongs in
- * the audit stream, not in the state machine (`dsh-superagent` reached the same
- * conclusion about "waiting" reports, docs/001-domain.md:60).
+ * The vocabulary is `dsh-superagent`'s `ReportState` verbatim (`src/core/model.ts`):
+ * one set of words means `oncall_report`, the stage derivation and the reply gate
+ * never translate between two vocabularies. `progress` is not a state change, and
+ * `waiting` is what an executor records when a turn ends without a report.
  */
-export type Outcome =
-  | { readonly kind: 'done'; readonly summary: string }
-  | { readonly kind: 'waiting'; readonly summary: string }
-  | { readonly kind: 'blocked'; readonly question: string }
-  | { readonly kind: 'failed'; readonly code: string; readonly message: string }
+export type ReportState = 'progress' | 'ready' | 'blocked' | 'failed' | 'waiting' | 'dropped'
 
-/** One recorded step, settled or in flight. */
+export type Report =
+  | { readonly state: 'progress' | 'waiting' | 'ready' | 'dropped'; readonly summary: string }
+  | { readonly state: 'blocked'; readonly summary: string; readonly question: string }
+  | { readonly state: 'failed'; readonly summary: string; readonly code: string }
+
+/** A report, stamped with when it was recorded. */
+export type StampedReport = Report & { readonly at: number }
+
+/**
+ * One step: `dsh-superagent`'s `Assignment`, minus what V0 does not need.
+ *
+ * `state` is not "this turn is running": a step stays `running` after its turn
+ * ends, because it is still the assignment the Case is working through. It
+ * becomes `ended` when the Case closes or a restart replaces it — the same
+ * lifetime `Assignment` has (`src/core/model.ts`).
+ */
 export interface StepRecord {
+  readonly caseId: CaseId
   readonly seq: number
-  readonly step: Step
-  readonly startedAt: number
-  readonly outcome: Outcome | undefined
+  readonly state: 'running' | 'ended'
+  /** What this step was told to do; a follow-up or a recovery note differs from the Case brief. */
+  readonly brief: string
+  /** The worker's latest report, `null` before one. */
+  readonly report: StampedReport | null
+  /** When the step started. */
+  readonly at: number
+  readonly endedAt?: number
+}
+
+/** Which reply a report earns, by `dsh-superagent`'s purpose gate (`src/core/replies.ts`). */
+export type ReplyIntent = 'result' | 'attention' | 'failed'
+
+/** One external message we owe, keyed by `caseId#seq` so a replay sends nothing twice. */
+export interface ReplyRecord {
+  readonly caseId: CaseId
+  readonly seq: number
+  readonly intent: ReplyIntent
+  readonly text: string
+  readonly state: 'pending' | 'sent' | 'gone' | 'failed'
+  readonly at: number
 }
 
 /**
- * What to do next. A discriminated union rather than one interface with optional
- * fields: every consumer would otherwise have to ask "is `brief` set?", and the
- * wrong answer is a runtime `undefined` — not a compile error.
+ * What to do next. Total by construction: every Case has an answer, including
+ * "nothing yet" — a running step must not be queued a second time.
  */
 export type Step =
-  | { readonly kind: 'work'; readonly brief: string; readonly preset: PresetId }
-  | { readonly kind: 'ask'; readonly question: string }
+  | { readonly kind: 'work'; readonly brief: string }
   | { readonly kind: 'close'; readonly reason: ClosedReason }
+  | { readonly kind: 'idle' }
 
 /**
  * The Case's state, derived from facts on every read.
