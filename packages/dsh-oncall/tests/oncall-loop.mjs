@@ -392,6 +392,13 @@ try {
     const found = ourMessages(secondSession)
     return found.length > 0 ? found[0] : undefined
   })
+  // A question belongs to `blocked` only (reference `core/assignments.ts:96,101`).
+  const contradictory = await ctx.get('tools').get('oncall_report').execute(
+    { state: 'ready', summary: '做完了', question: '要不要合并？' },
+    { agent: ctx.get('agents').get(secondSession), signal: new AbortController().signal },
+  ).then(() => 'accepted', error => String(error?.code ?? error))
+  check('a result carrying a question is refused', contradictory === 'ONCALL_REPORT_QUESTION_WITH_RESULT', contradictory)
+
   github.gone = true
   const blocked = await ctx.get('tools').get('oncall_report').execute(
     { state: 'blocked', summary: '缺一个环境变量', question: 'CI 的 token 用哪个？' },

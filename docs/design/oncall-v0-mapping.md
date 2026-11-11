@@ -122,7 +122,7 @@ DSH rc.3（本项目 `node_modules/@deepseek-ai/`）：`dsh-api-session-controll
 | 没有评估层：同 thread 两件独立的活不分开（架构 §五 1） | `docs/001-domain.md`「Eval」；`docs/002-authorization.md:9-17` 两道闸；`docs/007-architecture.md:209` `MasterAssessor`、`:145` `assessmentOutcome`（每条启用规则一个判断、方向 settled、必须匹配规则与意图证据；非 auto 的推断接受只记 "would accept"） | V1 照抄。评估器就是主会话本身，我们没有那个人读的主会话——**唯一**"前提不同"的收窄 |
 | Input 只保留最小一列：不知道"读没读"、Case 结束不退回未读（架构 §五 2） | `docs/002-authorization.md:28-39`「Handing back and releasing follow-ups」；`core/tickets.ts:330` `requeueUntaken`、`:300` `letGo`；`docs/007-architecture.md:85` 定义"读"（进入 history 且随后有报告或回合结束） | 幂等骨架已抄（`inputs` + `deliveredAt`）；`readAt` 与退回随评估层一起补 |
 | 没有 comet 式检查点（架构 §五 4） | **superagent 也没有**：`docs/003-execution.md:144`「Restart」与我们同法（重开派工 + recovery note） | 不是对 superagent 的偏离（已改正架构文档措辞） |
-| 层 B 判据换成"层 A exhausted"、30/60s ≤2（架构 §五 3） | `docs/003-execution.md:120-134`：瞬态失败先重试三次、退避递增；`executor/dsh.ts` `TRANSIENT_TRIES=3`、15s 起 | 保留我们的判据（避免两套码表），参数待真实渠道数据再对齐 |
+| 层 B | `docs/003-execution.md:120-134`、`executor/dsh.ts:26,548-576,606`：**同一个派工**再收一句"从中断处继续"，≤3 次、15/30/60s，正常收尾清零；不是新派工 | 判据用我们的（层 A 报 exhausted），**形状已照抄**（同一派工 + retry 消息）；渠道给的 `retryAfterMs` 只把等待拉长 |
 | 同 thread 最多一个活 Case（架构 §五 1） | `docs/001-domain.md`「Rejected concepts」明确拒绝这条限制，由评估层去重 | 接评估层时拆掉 |
 | 并发上限（架构 §九） | `docs/003-execution.md:55`「Concurrency」：每工单一个槽，人的消息/状态请求额外一槽 | V1 照抄（含"人不会被新活挤掉"） |
 | handback（架构 §九） | `docs/002-authorization.md:28`、`docs/003-execution.md:108-116`：超出范围交还评估，每条只交还一次 | V1（依赖评估层） |

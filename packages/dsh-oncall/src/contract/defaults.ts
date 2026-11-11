@@ -60,15 +60,17 @@ export const RECOVERY_NOTE =
   + '不要重复已完成的外部动作。完成原任务，然后报告状态。'
 
 /**
- * Layer B: how long to wait before a new assignment after layer A reported
- * `exhausted`, and how many such assignments are allowed.
+ * How a passing (transient) failure is retried: how many times, and the first wait.
  *
- * The chain being spent is a channel fact, not the work's fault, so the same work is
- * tried again — but each retry is a whole new assignment, so the count is small and
- * the waits grow. A provider that named its own delay (`providerRetryAfterMs`, usual
- * on a 429 from a gateway) wins over these constants.
+ * The shape is the reference implementation's (`executor/dsh.ts:26` `TRANSIENT_TRIES=3`,
+ * `:548-576` `retries`/`resumeAfter`): the **same assignment** continues after a
+ * backoff of `15s × 2^(n-1)`, by a message telling the worker to go on from where it
+ * stopped — it is not a report and not a new assignment. A provider that named its own
+ * delay (`turn/end.error.providerRetryAfterMs`, usual on a gateway's 429) wins over the
+ * ladder when it is longer.
  */
-export const LAYER_B_DELAYS_MS: readonly number[] = [30_000, 60_000]
+export const TRANSIENT_RETRIES = 3
+export const TRANSIENT_RETRY_BASE_MS = 15_000
 
 /**
  * How long the outbox waits between attempts to post one receipt.

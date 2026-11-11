@@ -122,6 +122,12 @@ export function registerReportTool(faces: ReportToolFaces, sink: ReportSink): un
         case 'progress':
         case 'ready':
         case 'dropped':
+          // A question belongs to `blocked` only: `assignments.report()` refuses a
+          // question combined with a result (`core/assignments.ts:96,101`), and silently
+          // dropping it here would leave the person with a result and no question.
+          if ((args.question ?? '').trim() !== '') {
+            refuse('a question belongs to state=blocked; a result or a progress note must not carry one.', 'ONCALL_REPORT_QUESTION_WITH_RESULT')
+          }
           report = { state, summary }
           break
       }

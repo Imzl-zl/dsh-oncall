@@ -51,6 +51,6 @@ Status: implemented
 - 行为：worker 会话就是普通路由会话——`oncall-loop` 让 stub 的首跳永远失败，备用候选答上了，durable log 里两条 `request/header`（第二条 `reason: 'change'`）就是 `oncall/failover-history` 折叠的那份事实。`@` 一次只开一个 Case 并真的开始干；追问进同一会话、不再开 Case；`ready` 关 Case 并回一条带 marker 的评论；`blocked` 问一个问题；`failed` 回"卡住了"（层 B 接手时不回）；进程重启后旧派工被顶掉、新派工带 recovery note、会话还是那一个。
 - 已知代价：60 秒重叠窗口内，同一句追问会在每一轮 `pass` 里被"路由一次"并各写一条 `case.followed-up` 审计（投递本身幂等，消息 id 挡住重复）。参考实现用 intake 的输入账本消掉这份噪音，V0 没有输入表。
 - 账本：`threads`/`steps`/`replies` 三张新表加在域版本 **1** 上（`parse()` 对缺表按空表处理，实测 `dsh-storage-json` 的 `parse` 逐表缺省即空）；`DurableLedger` 的写入口收成命名操作（`writeSteps`/`writeReply`/`closeCase`/`reopenCase`），"executor 不会开 Case"因此是类型事实。
-- 测试：新增 `tests/executor.mjs`（27 checks，假 TurnHost + 内存账本，覆盖恢复、不结算、层 B、回执计划与 outbox）与 `tests/oncall-loop.mjs`（40 checks，真实 `web` profile + `--port 0` + 独立 `DSH_HOME` + 本地假 GitHub + stub adapter 两个进程）。`npm test` 13 套全绿；`executor-probe.mjs` 复跑 19 checks 0 失败（四条运行时事实未被这轮破坏）。
+- 测试：新增 `tests/executor.mjs`（27 checks，假 TurnHost + 内存账本，覆盖恢复、不结算、层 B、回执计划与 outbox）与 `tests/oncall-loop.mjs`（41 checks，真实 `web` profile + `--port 0` + 独立 `DSH_HOME` + 本地假 GitHub + stub adapter 两个进程）。`npm test` 13 套全绿；`executor-probe.mjs` 复跑 19 checks 0 失败（四条运行时事实未被这轮破坏）。
 - 一个测试基础设施事实写进了 `tools.md`：`@deepseek-ai/dsh-client-modules` 是进程级注册表，同一个包里两个 file-path 插件条目会在**第二次** boot 时被判"同一包来自两个来源"，所以"重启"必须起第二个进程；而 `boot()` 返回的根 context 只有 `ctx.fiber.dispose()`，`ctx.dispose()` 不存在——不 await 它，进程内的入口会继续轮询并按内存副本整篇重写存储文件，把测试的 fixture 编辑悄悄覆盖掉。
 - 设计位置：`docs/design/oncall-v0-architecture.md` 三/四/五节；边界与禁令见其二之一节。

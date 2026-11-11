@@ -232,6 +232,14 @@ export class DurableLedger implements Ledger {
     return stored === undefined ? undefined : fromStoredInput(stored)
   }
 
+  inputsOf(caseId: CaseId): readonly InputRecord[] {
+    if (this.inputTable === undefined) return []
+    return [...this.inputTable.entries()]
+      .map(([, stored]) => fromStoredInput(stored))
+      .filter(record => record.caseId === caseId)
+      .sort((left, right) => left.at - right.at)
+  }
+
   threadOf(key: ThreadKey): ThreadRecord | undefined {
     const stored = this.threadTable?.get(key)
     return stored === undefined ? undefined : fromStoredThread(stored)

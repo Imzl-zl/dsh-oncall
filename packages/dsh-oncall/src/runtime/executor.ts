@@ -34,7 +34,7 @@ import { briefOf } from '../core/brief.ts'
 import { inputIdOf } from '../core/case-id.ts'
 import { budgetOf, planStep } from '../core/plan-step.ts'
 import { planReply, type ReplyPlan } from '../core/reply-plan.ts'
-import { LAYER_B_DELAYS_MS, MAX_SESSION_TITLE_CHARS, MAX_STEPS_PER_CASE, RECOVERY_NOTE } from '../contract/defaults.ts'
+import { MAX_SESSION_TITLE_CHARS, MAX_STEPS_PER_CASE, RECOVERY_NOTE, TRANSIENT_RETRIES, TRANSIENT_RETRY_BASE_MS } from '../contract/defaults.ts'
 import type {
   AuditEvent,
   CaseId,
@@ -135,8 +135,8 @@ export interface ExecutorOptions {
   readonly workdir: string
   readonly now: () => number
   readonly logger: { warn(message: string): void; error(message: string): void }
-  /** Layer B waits; overridable so a test does not sleep for 90 seconds. */
-  readonly layerBDelaysMs?: readonly number[]
+  /** The first passing-failure wait; overridable so a test does not sleep for 15 seconds. */
+  readonly retryBaseMs?: number
 }
 
 /** One Case's in-flight settle work, so two deliveries cannot settle the same turn twice. */
@@ -279,7 +279,10 @@ export class Executor implements FollowUpPort {
       const steps = this.ledger.stepsOf(theCase.id)
       const last = steps[steps.length - 1]
       if (last?.state === 'running') {
-        if (last.report !== null) continue
+        // A report is only "settled" when nothing reached the worker after it: an input
+        // delivered after a report was lost with the turn that ended, so the assignment
+        // restarts with the recovery note (`core/assignments.ts:83-92`).
+        if (last.report !== null && !this.busyAfter(theCase.id, last.report.at)) continue
         await this.recover(theCase, last)
         continue
       }
@@ -497,13 +500,27 @@ export class Executor implements FollowUpPort {
     if (fromTurn === null) return
     // A silent turn must not erase a claim the worker already made (`progress`,
     // `blocked`, `failed`): those still describe the work. Two silent turns in a row
-    // are the same fact with a newer sentence, so `waiting` may replace `waiting`.
-    const report = fromTurn.state === 'waiting' && last.report !== null && last.report.state !== 'waiting'
-      ? null
-      : fromTurn
-    if (report === null) return
+    // are the same fact with a newer sentence, so `waiting` may replace `waiting`; and
+    // when the worker said nothing at all the report keeps its previous summary
+    // (`executor/dsh.ts:666`: `said || before`).
+    let report: StampedReport | null = fromTurn
+    if (fromTurn.state === 'waiting') {
+      if (last.report !== null && last.report.state !== 'waiting') report = null
+      else if (fromTurn.summary === '') report = { ...fromTurn, summary: last.report?.summary ?? '' }
+    }
+    if (report === null) {
+      // A turn that ended as turns do resets the passing-failure count (`dsh.ts:606`).
+      this.retries.delete(caseId)
+      return
+    }
 
-    const verdict = report.state === 'failed' ? this.host.exhausted(sessionId, end.turn, report.code) : undefined
+    // A passing failure is not a report: the SAME assignment goes on after its backoff
+    // (`executor/dsh.ts:548-576`). Only a failure that will not pass, or one whose
+    // retries are spent, becomes the assignment's `failed` report.
+    if (report.state === 'failed' && this.host.exhausted(sessionId, end.turn, report.code) === 'transient') {
+      if (this.retryTurn(theCase, sessionId, last, report, end.reason, end.turn)) return
+    }
+    this.retries.delete(caseId)
 
     const settled: StepRecord = { ...last, report }
     const plan = planStep({
@@ -527,12 +544,6 @@ export class Executor implements FollowUpPort {
     )
     if (closing !== undefined) await this.ledger.closeCase(caseId, closing, now)
 
-    // A failed assignment speaks on the issue unless layer B is about to try again:
-    // telling a person "卡住了" and then fixing it silently is worse than either.
-    if (report.state === 'failed' && verdict === 'transient') {
-      this.scheduleRetry(theCase, end.reason)
-      return
-    }
     this.queueReply(theCase, last.seq, planReply({ caseId, seq: last.seq, report }))
   }
 
@@ -608,39 +619,64 @@ export class Executor implements FollowUpPort {
   }
 
   /**
-   * Layer B: one more assignment after the chain was spent on a transient failure.
+   * One more turn of the same assignment after a passing failure.
    *
-   * The wait is the provider's own when it named one (a gateway's 429 usually does),
-   * otherwise the constants. Each retry is a whole new assignment, so the count is
-   * small and this loop cannot become the retry budget the router owns.
+   * Not a new assignment and not a report: a message telling the worker to continue is
+   * queued into the same session after a backoff (`executor/dsh.ts:555-576`). The count
+   * is per Case and reset by the next turn that ends normally (`:606`), so a flapping
+   * channel cannot keep one Case awake forever.
+   *
+   * @returns `false` when the retries are spent — the caller writes the `failed` report.
    */
-  private scheduleRetry(theCase: CaseRecord, reason: TurnEnd): void {
-    const delays = this.options.layerBDelaysMs ?? LAYER_B_DELAYS_MS
-    const spent = this.retries.get(theCase.id) ?? 0
-    if (spent >= delays.length) {
-      this.logger.warn(`oncall: ${theCase.id} is out of layer-B assignments; leaving it for a person`)
-      return
+  private retryTurn(
+    theCase: CaseRecord,
+    sessionId: string,
+    last: StepRecord,
+    report: Extract<StampedReport, { state: 'failed' }>,
+    reason: TurnEnd,
+    turn: number,
+  ): boolean {
+    const tries = this.retries.get(theCase.id) ?? 0
+    if (tries >= TRANSIENT_RETRIES) {
+      this.logger.warn(`oncall: ${theCase.id} spent its passing-failure retries; reporting the failure`)
+      return false
     }
-    this.retries.set(theCase.id, spent + 1)
-    const retryAfterMs = reason.kind === 'error' ? reason.retryAfterMs : undefined
-    const delay = retryAfterMs ?? delays[spent]!
+    this.retries.set(theCase.id, tries + 1)
+    const base = this.options.retryBaseMs ?? TRANSIENT_RETRY_BASE_MS
+    const asked = reason.kind === 'error' ? reason.retryAfterMs ?? 0 : 0
+    const delay = Math.max(base * 2 ** tries, asked)
+    const note = `上一回合因为可恢复的原因失败了（${report.summary.slice(0, 200)}）。从中断的地方继续这次派工。`
+    // The failing turn names the message: stable for that turn, and it cannot collide
+    // with a later attempt after the count resets.
     const timer = setTimeout(() => {
       this.timers.delete(timer)
-      void this.retry(theCase.id)
+      void this.retryNow(theCase.id, sessionId, last.seq, turn, note)
     }, Math.max(0, delay))
     this.timers.add(timer)
+    return true
   }
 
-  private async retry(caseId: CaseId): Promise<void> {
+  /** Deliver one retry message into the session the assignment already runs in. */
+  private async retryNow(caseId: CaseId, sessionId: string, seq: number, turn: number, note: string): Promise<void> {
     if (this.stopped) return
     const theCase = this.ledger.caseOf(caseId)
     if (theCase === undefined || theCase.closed !== null) return
-    // The spent assignment is replaced, not reused: a step is one assignment, and a
-    // layer-B retry is the next one (`docs/design/oncall-v0-architecture.md` §四 2).
     const steps = this.ledger.stepsOf(caseId)
     const last = steps[steps.length - 1]
-    if (last !== undefined && last.state === 'running') await this.endStep(last)
-    await this.startStepAndDeliver(theCase, theCase.brief)
+    if (last === undefined || last.seq !== seq || last.state !== 'running') return
+    const messageId = `oncall:${caseId}:retry:${turn}`
+    if (!this.host.holds(sessionId, messageId)) {
+      this.host.followup({ sessionId, messageId, text: note })
+      void this.host.flush().catch(error => {
+        this.logger.warn(`oncall: flushing the worker session failed: ${String(error)}`)
+      })
+    }
+    this.wake(sessionId)
+  }
+
+  /** Whether an input reached the worker after `at` — the last turn that reported was still unprocessed. */
+  private busyAfter(caseId: CaseId, at: number): boolean {
+    return this.ledger.inputsOf(caseId).some(input => input.deliveredAt !== null && input.deliveredAt >= at)
   }
 
   // ---- the session side ----

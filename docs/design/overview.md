@@ -105,7 +105,7 @@ L1  contract  类型、常量、默认值、配置 schema
 
 **接线**：`config.ts` 加 `ingress` 段（含 `baseUrl` / `workdir`），`index.ts` 的 `installIngress()` 装配 source、账本、executor、outbox 与 `oncall_report`。
 
-**测试**：13 套全绿。入口侧 7 套：`layers` 守卫、`ingress` 29、`github-issue` 16、`pass` 27、`github-http` 10、`ingress-loop` 19、`executor` 28；组合两套：`oncall-loop` 40（真实 web profile + 本地假 GitHub：@ 一次只开一个 Case、追问进同一会话、实时工具调用回执、重启带 recovery note）、`handoff-relay`（真实 web 组合的接力）；原有 `unit` 259 / `client-controller` 129 / `remote` 25 / `run` 37 场景不变。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
+**测试**：13 套全绿。入口侧 7 套：`layers` 守卫、`ingress` 29、`github-issue` 16、`pass` 27、`github-http` 10、`ingress-loop` 19、`executor` 32；组合两套：`oncall-loop` 41（真实 web profile + 本地假 GitHub：@ 一次只开一个 Case、追问进同一会话、实时工具调用回执、重启带 recovery note）、`handoff-relay`（真实 web 组合的接力）；原有 `unit` 259 / `client-controller` 129 / `remote` 25 / `run` 37 场景不变。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
 
 ## 五、未实现
 

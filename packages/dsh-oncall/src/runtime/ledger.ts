@@ -75,6 +75,8 @@ export interface Ledger {
   allCases(): readonly CaseRecord[]
   /** One input row, when that message was already routed to that Case. */
   inputOf(id: string): InputRecord | undefined
+  /** One Case's routed messages, oldest first (what "an input was delivered after the report" reads). */
+  inputsOf(caseId: CaseId): readonly InputRecord[]
   /** One Case's steps, oldest first. */
   stepsOf(caseId: CaseId): readonly StepRecord[]
   /** The receipt owed for one step, if one was queued. */
@@ -151,6 +153,12 @@ export function memoryLedger(): MemoryLedger {
     allCases() { return [...cases.values()].sort((left, right) => left.openedAt - right.openedAt) },
 
     inputOf(id) { return inputs.get(id) },
+
+    inputsOf(caseId) {
+      return [...inputs.values()]
+        .filter(record => record.caseId === caseId)
+        .sort((left, right) => left.at - right.at)
+    },
 
     stepsOf(caseId) {
       return [...steps.values()]

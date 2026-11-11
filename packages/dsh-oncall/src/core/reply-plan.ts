@@ -58,8 +58,12 @@ export function planReply(input: { readonly caseId: CaseId; readonly seq: number
         text: `## 需要你决定\n\n${body}\n\n**问题：** ${report.question.trim()}\n\n${marker}`,
       }
     case 'failed':
-      // "什么时候能修好" is the reader's next question; the code is the one fact
-      // that makes it answerable without a log hunt.
-      return { intent: 'failed', text: `## 卡住了\n\n${body}\n\n原因代码：\`${report.code}\`\n\n${marker}` }
+      // "什么时候能修好" is the reader's next question; a provider code is the one fact
+      // that makes it answerable without a log hunt. `REPORTED` means the worker said
+      // it cannot — there is no channel code to look up, so that line is omitted
+      // (the reference's failed report carries no code at all: `core/assignments.ts:96`).
+      return report.code === 'REPORTED'
+        ? { intent: 'failed', text: `## 卡住了\n\n${body}\n\n${marker}` }
+        : { intent: 'failed', text: `## 卡住了\n\n${body}\n\n原因代码：\`${report.code}\`\n\n${marker}` }
   }
 }

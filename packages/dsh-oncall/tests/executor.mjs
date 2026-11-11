@@ -226,6 +226,27 @@ await test('启动扫描：上一刀没有报告 → 结束旧派工、记 step.
   executor.stop()
 })
 
+await test('启动扫描：报告之后有消息送进会话 → 带 recovery note 重开（参考 assignments.ts:83-92）', async () => {
+  const ledger = await openWithWaitingStep()
+  await ledger.writeInputs([{
+    id: inputIdOf(CASE, `${SRC}:comment-late`),
+    caseId: CASE,
+    trigger: `${SRC}:comment-late`,
+    text: '报告之后才到的消息',
+    at: NOW,
+    deliveredAt: NOW + 1,
+  }])
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+
+  const steps = ledger.stepsOf(CASE)
+  eq(steps.map(step => [step.seq, step.state]), [[1, 'ended'], [2, 'running']])
+  eq(steps[1].brief.includes(RECOVERY_NOTE), true, '被打断的不是"在等触发"，而是"有消息没处理完"')
+  eq(ledger.audit.filter(event => event.kind === 'step.interrupted').length, 1)
+  executor.stop()
+})
+
 await test('启动扫描不碰已关闭的 Case', async () => {
   const ledger = memoryLedger()
   await ledger.commit({
@@ -246,7 +267,7 @@ await test('启动扫描不碰已关闭的 Case', async () => {
 })
 
 // ── settle ──────────────────────────────────────────────────────
-const openWithWaitingStep = async () => {
+async function openWithWaitingStep() {
   const ledger = memoryLedger()
   await ledger.commit({
     sourceId: SRC,
@@ -355,36 +376,94 @@ await test('回合失败（没有层 A 结论）→ 发 failed 回执', async ()
   executor.stop()
 })
 
-await test('层 A 耗尽 + 瞬态码 → 开了新派工（层 B），退避优先用渠道自己给的 retryAfterMs', async () => {
+await test('瞬态失败 → 同一派工再投一句继续（不写报告、不开新 step、不发卡住了）', async () => {
   const ledger = await openWithWaitingStep()
   const fake = fakeHost()
-  const verdicts = []
-  fake.state.verdictOf = (sessionId, turn, code) => {
-    verdicts.push([turn, code])
-    return 'transient'
-  }
+  fake.state.verdictOf = () => 'transient'
   const replier = repliesOf()
-  const executor = await executorOf(ledger, fake, { layerBDelaysMs: [60_000], replier })
+  const executor = await executorOf(ledger, fake, { retryBaseMs: 0, replier })
   await executor.start()
-  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-6` })
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-r1` })
   await settle()
 
   const sessionId = caseSessionId(CASE)
-  fake.say(sessionId, {
-    kind: 'turn-end',
-    turn: 2,
-    reason: { kind: 'error', code: 'RATE_LIMIT', message: '429', retryAfterMs: 1 },
-  })
+  fake.say(sessionId, { kind: 'turn-end', turn: 2, reason: { kind: 'error', code: 'RATE_LIMIT', message: '429' } })
+  fake.idle(sessionId)
+  await settle(10)
+
+  eq(ledger.stepsOf(CASE).map(step => step.seq), [1], '不开新派工：参考实现是在同一个派工上再发一句')
+  eq(ledger.stepsOf(CASE)[0].report, { state: 'waiting', summary: '先看看', at: NOW }, '瞬态失败不是报告')
+  eq(fake.state.followups.at(-1).messageId, `oncall:${CASE}:retry:2`, '重试消息按失败的那一轮命名')
+  eq(fake.state.followups.at(-1).text.includes('可恢复'), true)
+  eq(replier.queued, [], '还不该说"卡住了"')
+  executor.stop()
+})
+
+await test('瞬态重试用尽（三次）才写 failed 报告并发回执', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  fake.state.verdictOf = () => 'transient'
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { retryBaseMs: 0, replier })
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-r2` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  for (const turn of [2, 3, 4, 5]) {
+    fake.say(sessionId, { kind: 'turn-end', turn, reason: { kind: 'error', code: 'SERVER', message: '502' } })
+    fake.idle(sessionId)
+    await settle(10)
+  }
+
+  const retries = fake.state.followups.filter(call => call.messageId.includes(':retry:'))
+  eq(retries.map(call => call.messageId), [2, 3, 4].map(turn => `oncall:${CASE}:retry:${turn}`))
+  eq(ledger.stepsOf(CASE).map(step => step.seq), [1], '重试都在同一个派工上')
+  eq(ledger.stepsOf(CASE)[0].report.state, 'failed')
+  eq(replier.queued.map(item => item.intent), ['failed'], '用尽后才发"卡住了"')
+  executor.stop()
+})
+
+await test('正常回合结束会重置瞬态计数（参考 dsh.ts:606）', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  fake.state.verdictOf = () => 'transient'
+  const executor = await executorOf(ledger, fake, { retryBaseMs: 0 })
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-r3` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  fake.say(sessionId, { kind: 'turn-end', turn: 2, reason: { kind: 'error', code: 'SERVER', message: '502' } })
+  fake.idle(sessionId)
+  await settle(10)
+  // 一次正常收尾（无报告）之后，计数归零：下一轮失败仍是"第 1 次重试"，但消息 id 按轮次区分。
+  fake.say(sessionId, { kind: 'assistant', turn: 3, text: '好一点了' }, { kind: 'turn-end', turn: 3, reason: { kind: 'completed' } })
+  fake.idle(sessionId)
+  await settle(10)
+  fake.say(sessionId, { kind: 'turn-end', turn: 4, reason: { kind: 'error', code: 'SERVER', message: '502' } })
+  fake.idle(sessionId)
+  await settle(10)
+
+  const retries = fake.state.followups.filter(call => call.messageId.includes(':retry:')).map(call => call.messageId)
+  eq(retries, [`oncall:${CASE}:retry:2`, `oncall:${CASE}:retry:4`])
+  executor.stop()
+})
+
+await test('waiting 没带新的话时保留上一条 summary（参考 dsh.ts:666 said || before）', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-r4` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  fake.say(sessionId, { kind: 'turn-end', turn: 2, reason: { kind: 'completed' } })
   fake.idle(sessionId)
   await settle()
 
-  eq(verdicts, [[2, 'RATE_LIMIT']])
-  eq(ledger.stepsOf(CASE)[0].report.code, 'RATE_LIMIT')
-  // 层 B 的等待用的是渠道自己给的时间（1ms），不是 60s 的常数。
-  await settle(10)
-  eq(ledger.stepsOf(CASE).map(step => step.seq), [1, 2])
-  eq(ledger.stepsOf(CASE)[1].brief, '修一下 flaky 测试')
-  eq(replier.queued, [], '层 B 接手时不发"卡住了"：静默重试比先报坏消息再修好更诚实')
+  eq(ledger.stepsOf(CASE)[0].report, { state: 'waiting', summary: '先看看', at: NOW })
   executor.stop()
 })
 
@@ -594,6 +673,11 @@ await test('reply-plan：ready/dropped → result，blocked → attention，fail
   const failed = planReply({ caseId: CASE, seq: 3, report: { state: 'failed', summary: '网关挂了', code: 'SERVER' } })
   eq(failed?.intent, 'failed')
   eq(failed.text.includes('SERVER'), true)
+
+  // worker 自己说"做不到"时没有渠道码可查，别硬编一行"原因代码"。
+  const reported = planReply({ caseId: CASE, seq: 3, report: { state: 'failed', summary: '做不了', code: 'REPORTED' } })
+  eq(reported?.intent, 'failed')
+  eq(reported.text.includes('原因代码'), false)
 
   eq(planReply({ caseId: CASE, seq: 3, report: { state: 'progress', summary: '一半' } }), undefined)
   eq(planReply({ caseId: CASE, seq: 3, report: { state: 'waiting', summary: '还没说' } }), undefined)
