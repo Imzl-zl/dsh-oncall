@@ -73,6 +73,57 @@ L5 faces/      ingress.ts（不变）、index.ts（接线）、reports.ts（onca
 
 `core/thread-owner.ts` 是唯一回答"这条消息归谁"的地方；`executor.ts` 不解析 thread key，`thread-key.ts` 仍是唯一构造点。
 
+## 二之一、耦合控制（功能变多时靠这张表不互相踩）
+
+### 1. 三条硬规则（可被守卫/评审机械执行）
+
+1. **依赖只向内**：`faces/` → `runtime/` → `state/` → `core/` → `contract/`。反向零条；`core/` 里出现 `ctx`/`Date.now`/`await` 已由 `tests/layers.mjs` 判失败。
+2. **一个事实一个写者**：每张表的写者在下表里唯一，两个模块不可写同一张表。
+3. **跨模块只经两种缝**：**端口**（同步调用，带接口）或**表**（异步事实）。两个 runtime 模块之间不直接引用对方的导出函数。
+
+### 2. 模块所有权
+
+| 模块 | 它知道 | 它不知道 | 改它会波及 |
+|---|---|---|---|
+| `sources/*` | 某个外部系统的协议 | Case、执行器、账本 | 只有自己的测试与新 Source 实现 |
+| `core/*` | 只读记录（纯函数） | ctx / 时钟 / 网络 / 表 | 只被自己单测与对应调用方用；改语义才需要看调用方 |
+| `runtime/pass.ts` | Source + Ledger + `core/admission` | 会话、DSH 服务 | executor 无感；只写 `progress/cases/threads/audit` |
+| `runtime/executor.ts` | 会话端口（sessionController/agents/persistence）+ Ledger + `core/stage|plan-step` | Source、GitHub、HTTP、provider/model | outbox 与 pass 无感；只写 `steps/audit` |
+| `runtime/outbox.ts` | ReplySender（GitHub 评论）+ Ledger + `core/reply-plan` | 会话、Source 轮询 | executor 只依赖一个 `queue(reply)` 接口 |
+| `faces/ingress.ts` | 调度（timeout 链） | 业务判断 | 只影响入口生命周期 |
+| `faces/reports.ts` | 工具 schema + 会话归属校验 | 表结构 | 只影响模型可调面板 |
+| `index.ts` | 装配（把上面接起来） | 业务规则 | 改装配不影响任何一层的内部 |
+
+### 3. 端口清单（业务逻辑只认接口）
+
+| 端口 | 谁实现 | 测试替身 |
+|---|---|---|
+| `Source` | `sources/github-issue.ts` | 已有假 source |
+| `GithubFace`（read + `createComment`） | `sources/github-http.ts` | 已有假 face（`github-http.mjs`） |
+| `Ledger` | `runtime/durable-ledger.ts` / `memoryLedger` | 内存实现（已有） |
+| `TurnHost`（`resolveAgent/create/selectModel` + `followup` + `whenIdle` + `persistence`） | `index.ts` 传给 executor 的窄接口 | 假对象（单测）；真实组合套件 |
+| `ReplySender` | `sources/github-reply.ts`（新增） | 假 sender 记调用次数 |
+| `Clock` | `() => Date.now()`（仅 L4 注入） | 固定时钟 |
+
+### 4. 新功能加在哪（不碰已有代码）
+
+| 要加的东西 | 落点 | 不动的部分 |
+|---|---|---|
+| 新事件源（飞书/PR/CI） | 新 `sources/*.ts` + `index.ts` 注册一行 + config 一段 | `core/`、`executor`、`outbox` |
+| 新交付面（PR 评论、IM） | 新 `ReplySender` + `core/reply-plan` 加一个 intent 分支（纯函数 + 单测） | `executor`、`pass` |
+| 换执行后端 | 新 `TurnHost` 实现 | `core/`、`pass`、`outbox` |
+| 新面板/任务线 | 读派生（`core/stage`）+ 投影；只读 | 任何表写者 |
+| 新闸门规则 | `core/admission.ts` + `contract/policy.ts` | 其余全部 |
+
+### 5. 禁止清单（比“应该”更好用）
+
+- `core/` 里出现 `ctx` / 时钟 / `await` / 表名；
+- `executor` 里出现 `provider` / `model` / `github` / `fetch`；
+- `pass` 里出现会话或 `sessionController`；
+- 浏览器半包写任何表；
+- 第二个地方回答“这条消息归谁”或“这个 Case 下一步干什么”；
+- 为同一件事新增第二个默认值（本轮的 `DEFAULT_RETRIES_PER_ROUTE` 就是例子）。
+
 ## 三、数据模型
 
 同一个 `oncall_ingress` 域，**版本保持 1**（升版本会 `version-mismatch` 砸现场；`parse()` 对缺失表按空表处理，见 mapping 三节 6）。
