@@ -33,7 +33,9 @@ Status: implemented
 | 会话 id 是 Case 的纯函数 | `executor/dsh.ts:24`：`worker-<ticketId>` + `ticketOfSession` 前缀反解 | `oncall-case-<净化尾巴>-<fnv1a>` | **有意收窄**：ticket id 是生成的短 id，我们的 Case id 来自 trigger key（含 `:`/`#`），必须净化；代价是反解改成扫描（只在 `submitReport` 用） |
 | 输入账本：一条消息一行，重读不再路由 | `core/tickets.ts:231` `addInput`（幂等、`undelivered`）、`app/store.ts` | **取幂等骨架**：`inputs` 表按 `caseId:trigger` 一行、`deliveredAt` 空即欠投；重读不再审计也不再投 | 先漏后补：第一版靠会话消息 id 兜底，代价是每轮多一条 `case.followed-up` 审计（实测 16 条/分钟）；补上后 `oncall-loop` 里整轮只剩 1 条 |
 | "没读到的消息在 Case 结束时退回评估" | `core/tickets.ts:330` `requeueUntaken`、`inputsRead` | 没有（V0 无评估层），`readAt` 也不记 | **有意收窄**：写进设计 §五 2 的代价，V1 接评估层时补 |
-| 层 B：瞬态正则 + 3 次 + 15s | `executor/dsh.ts` `transient()` / `TRANSIENT_TRIES=3` / 15s | 层 A `exhausted` + 链的 `switchOn`/`immediateSwitch`，30/60s ≤2 | **有意收窄**（设计 §五 3：判据换成"层 A 报 exhausted"，避免与路由层两套码表） |
+| 层 B：瞬态正则 + 3 次 + 15s×2^(n-1)，**同一个派工**再收一句"从中断处继续"，正常收尾清零 | `executor/dsh.ts:26,548-576,606` | 判据用层 A 的 `exhausted`，形状已照抄（同派工 + retry 消息 + 三次 + 清零）；`retryAfterMs` 只拉长等待 | **先写错后照抄**：第一版是"新 step + 30/60s ≤2 次 + 先落 failed"，与源码不符 |
+| 重启判定：报告之后有消息送进会话 → 仍算未处理 | `core/assignments.ts:83-92`（`busy` = deliveredAt ≥ report.at） | `executor.busyAfter()` 读输入账本 | **先漏后补** |
+| `waiting` 的 summary = `said \|\| before` | `executor/dsh.ts:666` | 同 | **先漏后补** |
 | **已结束的 Case 只有人的消息能醒**，且醒之前要按当前 Policy 重新校验 Mandate | `docs/001-domain.md:37`、`docs/002-authorization.md:127`（"Bots and CI do not wake ended Tickets"）、`002:131`（"Revalidation before resume"）、`core/tickets.ts` `wake()` | `core/thread-owner.ts` 的 `mayWake` + `pass` | **先漏了**：第一版任何 trigger 都能复活已关闭的 Case；补上后人/机器人/名单外四条用例在 `pass.mjs`（21 → 25），并做了红抽样（去掉 `mayWake` 立刻红） |
 | 渠道投递重试从 5 秒起、逐次翻倍 | `docs/003-execution.md`（"Channel failure"） | `contract/defaults.ts` 的 `REPLY_RETRY_DELAYS_MS`（5s→300s，次数用尽后 `failed`） | 参数对齐；参考是无限重试，我们保留上限（V0 没有"系统问题"面板，行必须能到终态） |
 | 回执门禁 `result` 只给 ready/completed/merged/dropped | `core/replies.ts` `answer()` | `core/reply-plan.ts` | 照抄 + 设计裁定的一处偏离：终局失败也发（我们的读者在 GitHub） |
@@ -51,6 +53,6 @@ Status: implemented
 - 行为：worker 会话就是普通路由会话——`oncall-loop` 让 stub 的首跳永远失败，备用候选答上了，durable log 里两条 `request/header`（第二条 `reason: 'change'`）就是 `oncall/failover-history` 折叠的那份事实。`@` 一次只开一个 Case 并真的开始干；追问进同一会话、不再开 Case；`ready` 关 Case 并回一条带 marker 的评论；`blocked` 问一个问题；`failed` 回"卡住了"（层 B 接手时不回）；进程重启后旧派工被顶掉、新派工带 recovery note、会话还是那一个。
 - 已知代价：60 秒重叠窗口内，同一句追问会在每一轮 `pass` 里被"路由一次"并各写一条 `case.followed-up` 审计（投递本身幂等，消息 id 挡住重复）。参考实现用 intake 的输入账本消掉这份噪音，V0 没有输入表。
 - 账本：`threads`/`steps`/`replies` 三张新表加在域版本 **1** 上（`parse()` 对缺表按空表处理，实测 `dsh-storage-json` 的 `parse` 逐表缺省即空）；`DurableLedger` 的写入口收成命名操作（`writeSteps`/`writeReply`/`closeCase`/`reopenCase`），"executor 不会开 Case"因此是类型事实。
-- 测试：新增 `tests/executor.mjs`（27 checks，假 TurnHost + 内存账本，覆盖恢复、不结算、层 B、回执计划与 outbox）与 `tests/oncall-loop.mjs`（41 checks，真实 `web` profile + `--port 0` + 独立 `DSH_HOME` + 本地假 GitHub + stub adapter 两个进程）。`npm test` 13 套全绿；`executor-probe.mjs` 复跑 19 checks 0 失败（四条运行时事实未被这轮破坏）。
+- 测试：新增 `tests/executor.mjs`（32 checks，假 TurnHost + 内存账本，覆盖恢复（含"报告之后才到的消息"）、不结算、层 B（同一派工再投一句/三次用尽/正常收尾清零）、waiting 保旧 summary、回执计划与 outbox）与 `tests/oncall-loop.mjs`（41 checks，真实 `web` profile + `--port 0` + 独立 `DSH_HOME` + 本地假 GitHub + stub adapter 两个进程）。`npm test` 13 套全绿；`executor-probe.mjs` 复跑 19 checks 0 失败（四条运行时事实未被这轮破坏）。
 - 一个测试基础设施事实写进了 `tools.md`：`@deepseek-ai/dsh-client-modules` 是进程级注册表，同一个包里两个 file-path 插件条目会在**第二次** boot 时被判"同一包来自两个来源"，所以"重启"必须起第二个进程；而 `boot()` 返回的根 context 只有 `ctx.fiber.dispose()`，`ctx.dispose()` 不存在——不 await 它，进程内的入口会继续轮询并按内存副本整篇重写存储文件，把测试的 fixture 编辑悄悄覆盖掉。
 - 设计位置：`docs/design/oncall-v0-architecture.md` 三/四/五节；边界与禁令见其二之一节。
