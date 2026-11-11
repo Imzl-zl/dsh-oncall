@@ -250,9 +250,15 @@ Minor 收尾（同轮）：5.3 三项已修（`nudges` 改 WeakMap + 换轮归�
 
 ### 14.2 待用户确认
 
-| # | 问题 | 我的判断 | 不确认的后果 |
+**2026-11-11 核对结果**：1、2 两问的形状已按两个参考仓库的**全文源码**逐条核对（superagent / comet / DSH rc.3），设计现状见 [`oncall-v0-architecture.md`](oncall-v0-architecture.md)，逐条出处见 [`oncall-v0-mapping.md`](oncall-v0-mapping.md)。3 已**完成**（README 自 112 行起已有入口段），4 已**完成**（仓库与 npm）。下表为最终结论。
+
+| # | 问题 | 结论 | 依据与代价 |
 |---|---|---|---|
-| 1 | `thread` 映射提前到 V0 | 必须提前。幂等键是 trigger 级，同一 issue 的追问会开第二个 Case，两个 Case 抢同一分支 | 产品第一周就踩；补救要迁 Case 表 |
-| 2 | 最小 `step` 表提前到 V0（只存 `caseId + seq + outcome + at`） | 必须提前。executor 写 outcome 时必须有归属，否则 V1 要迁移并重解释历史 | executor 的 outcome 只能塞进 case 或审计流 |
-| 3 | `packages/dsh-oncall/README.md` 补 `ingress` 段（`repository` / `agentLogin` / `allowed` / `acceptMode` / `pollSeconds` + `GITHUB_TOKEN`） | 要做。V0 验收要求「设 token、填仓库、加白名单」，现在只能看 schema 描述 | 用户装完不知道入口存在 |
-| 4 | 仓库侧改名（GitHub `Imzl-zl/dsh-model-desk` → `dsh-oncall`）与首次 npm 发布 | 仓库内改名完成后即可做；发布前先 `dsh plugin remove` 旧包 | 旧仓库名与包名不一致，文档链接会 404 |
+| 1 | thread 关系怎么存 | **建 `threads` 表，存 `subscriptions: caseId[]`** | 照 `core/tickets.ts` 的 `subscribe()` / `dropSubscriptions()`：订阅在开 Case 时建立、存在 Thread 上；`mandate.scope` 只是授权范围。V0 策略上“同 thread 最多一个 live Case”，将来接评估层只改策略不改表 |
+| 2 | 最小 `step` 表 | **`Assignment` 同形**：`state(running/ended)` + `brief` + `report{state,summary,at}` + `at` | 四列版是我上一轮的错：参考的 `Assignment` 有状态与报告，输入带原文。V0 不落 `pending`（follow-up 直接投进活会话） |
+| 3 | `README` 补 ingress 段 | **已完成** | 现有段落已含全部字段与 `GITHUB_TOKEN`；落地后只需把“只建 Case，不执行”翻面 |
+| 4 | 仓库侧改名与 npm 发布 | **已完成** | `Imzl-zl/dsh-oncall`、npm `dsh-oncall@0.6.0` |
+| 5 | follow-up 遇到已关闭 Case | **恢复**（人主动 `stopped` 的除外） | `docs/002-authorization.md`「Subscriptions」+ `tickets.wake()`：留着订阅、人的消息以同一 Mandate 恢复并插一条 `resumed` 输入 |
+| 6 | follow-up 谁判“新活还是补充” | **该 Case 的 worker 判**（处理或 handback），**不进评估** | 同上：`docs/002` “A person's message on a Ticket's own Thread belongs to that Ticket's Executor to decide”；评估卡只在“没人拥有”时才出现 |
+| 7 | V0 要不要评估层 | **不要** | 参考的评估器是**主会话本身**（`app/assessment.ts` 的 `orchestrator_eval_decide`），我们没有那个人在读的主会话；V0 用“thread 有 owner 就投给 owner”确定性替代 |
+| 8 | 终局失败要不要发 comment | **发**（全文唯一主动偏离） | 参考的 `result` 门禁不允许 `failed`；我们的读者在 GitHub，不在 DSH 主会话 |
