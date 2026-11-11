@@ -2,7 +2,7 @@
 /**
  * Mirror the root READMEs into the npm package.
  *
- * npm renders `packages/dsh-model-desk/README.md`, which is a different file
+ * npm renders `packages/dsh-oncall/README.md`, which is a different file
  * from the repository's front page. Keeping two hand-maintained copies is how
  * the package page ended up without the banner, the screenshots, or the Chinese
  * default. The root file is the only authored copy; this script rewrites its
@@ -13,8 +13,8 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-const REPO = 'https://github.com/Imzl-zl/dsh-model-desk'
-const RAW = 'https://raw.githubusercontent.com/Imzl-zl/dsh-model-desk/master'
+const REPO = 'https://github.com/Imzl-zl/dsh-oncall'
+const RAW = 'https://raw.githubusercontent.com/Imzl-zl/dsh-oncall/master'
 
 /**
  * Rewrite one root README for the package page.
@@ -37,7 +37,7 @@ export function mirrorReadme(text, name) {
 const root = new URL('../', import.meta.url)
 for (const name of ['README.md', 'README.en.md']) {
   const text = readFileSync(new URL(name, root), 'utf8')
-  const target = fileURLToPath(new URL(`packages/dsh-model-desk/${name}`, root))
+  const target = fileURLToPath(new URL(`packages/dsh-oncall/${name}`, root))
   writeFileSync(target, mirrorReadme(text, name))
   console.log(`mirrored ${name} into the package`)
 }

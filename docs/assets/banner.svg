@@ -15,7 +15,7 @@
     <circle cx="13.5" cy="33.5" r="3.2" fill="#4A65E8"/>
     <circle cx="34.5" cy="33.5" r="3.2" fill="#06B6D4"/>
   </g>
-  <text x="170" y="78" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="38" font-weight="600" fill="#F8FAFC">dsh-model-desk</text>
+  <text x="170" y="78" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="38" font-weight="600" fill="#F8FAFC">dsh-oncall</text>
   <text x="172" y="110" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="16" fill="#94A3B8">Transparent cross-provider failover for DeepSeek Harness</text>
   <text x="172" y="136" font-family="Segoe UI, system-ui, -apple-system, sans-serif" font-size="12" fill="#64748B">named chains · per-session routing · per-route retries</text>
 </svg>

@@ -1,0 +1,485 @@
+/**
+ * The plugin's injected stylesheet.
+ *
+ * Everything layout-level lives in CSS classes that consume DSH's own tokens;
+ * inline styles are reserved for values that change per render (tone colours,
+ * timeline bar heights). The old 2000-line style-object convention was retired
+ * with the page redesign — it made every component a second source of truth for
+ * spacing and colour.
+ *
+ * Note: 页面壳、行、表单与弹窗的布局契约 —— 见 docs/design/ui-layout-redesign.md；
+ * 为什么列宽只能有一条、固定行不许自带水平 padding —— 见
+ * .agents/notes/implemented/2026-10-20-page-owns-the-column.md；
+ * 弹窗高度链为何用结构选择器够到 DSH 的滚动区 —— 见
+ * .agents/notes/implemented/2026-10-17-modal-height-chain.md
+ */
+
+
+import { FLEET_CSS } from './fleet/styles.ts'
+
+export var ROUTER_CSS = [
+  '/* The plugin accent. DSH ships no plugin-accent token, so the blue lives',
+  '   here once and every pill, badge and gradient reads it. */',
+  ':root {',
+  '  --dsh-oncall-accent: #4A65E8;',
+  '  /* Accent used as TEXT, resolved per theme. The raw accent measures 2.6:1 on',
+  '     dark and 4.28:1 on the tinted surfaces it sits on — under AA for every',
+  '     size these labels use. Mixing towards black on light and towards white on',
+  '     dark keeps the hue and clears 4.5:1; ratios below are measured against',
+  '     the real rendered backgrounds, not assumed.',
+  '     light: 20% black  -> worst 6.06:1   dark: 40% white -> worst 5.38:1 */',
+  '  --dsh-oncall-accent-text: color-mix(in srgb, var(--dsh-oncall-accent) 80%, black);',
+  '}',
+  'body[data-ds-dark-theme] {',
+  '  --dsh-oncall-accent-text: color-mix(in srgb, var(--dsh-oncall-accent) 60%, white);',
+  '}',
+  '/* Semantic tone colours, resolved per theme in exactly one place.',
+  '     No DSH *alias* pair is readable in both themes: `state-success-primary`',
+  '     is mid-tone green-500 on light (2.1:1 on white) and',
+  '     `state-error-secondary` IS `state-error-primary` on dark (1:1 — the text',
+  '     disappears). So the tone colour comes from DSH\'s static palette, dark',
+  '     enough for light theme and light enough for dark theme, and it paints',
+  '     the dot and the border only: badge text stays `label-primary`, which is',
+  '     a matched pair with the surface by construction rather than by luck.',
+  '     Anchors: design-platform.css (static palette, body[data-ds-dark-theme]). */',
+  'body {',
+  '  --dsh-oncall-tone-ok: var(--dsw-static-green-900);',
+  '  --dsh-oncall-tone-warn: var(--dsw-static-amber-900);',
+  '  --dsh-oncall-tone-bad: var(--dsw-static-red-900);',
+  '}',
+  'body[data-ds-dark-theme] {',
+  '  --dsh-oncall-tone-ok: var(--dsw-static-green-400);',
+  '  --dsh-oncall-tone-warn: var(--dsw-static-amber-400);',
+  '  --dsh-oncall-tone-bad: var(--dsw-static-red-400);',
+  '}',
+  '/* Page shell: the contract DSH panel pages use',
+  '   (ui-plugin-manager .page / .page > *, ui-schedule .pageScroll/.pageHeading).',
+  '   The page itself scrolls and owns the horizontal gutter; every direct row is',
+  '   the same 960px column, so the head, the view switch, the content and the save',
+  '   bar share one left edge. A scroller split out of the page (the previous shell)',
+  '   forced each fixed row to repeat the gutter, and the scrollbar narrowed only',
+  '   the scroller — the rows then disagreed by half a scrollbar. */',
+  '.dsh-oncall-page {',
+  '  display: flex;',
+  '  flex-direction: column;',
+  '  box-sizing: border-box;',
+  '  height: 100%;',
+  '  overflow-y: auto;',
+  '  scrollbar-gutter: stable;',
+  '  padding: 0 clamp(24px, 4vw, 48px);',
+  '  background: var(--dsw-alias-bg-base);',
+  '  color: var(--dsw-alias-label-primary);',
+  '  font-size: 14px;',
+  '  line-height: 1.6;',
+  '}',
+  '/* The one column: a direct row is a 960px column centred by the page gutter.',
+  '   No row repeats a horizontal padding — that repetition is what drifted. */',
+  '.dsh-oncall-top, .dsh-oncall-content, .dsh-oncall-footer {',
+  '  box-sizing: border-box;',
+  '  width: 100%;',
+  '  max-width: 960px;',
+  '  margin: 0 auto;',
+  '}',
+  '.dsh-oncall-top {',
+  '  position: sticky;',
+  '  top: 0;',
+  '  z-index: 2;',
+  '  background: var(--dsw-alias-bg-base);',
+  '}',
+  '.dsh-oncall-content { flex: 1 0 auto; padding: 0 0 32px; }',
+  '/* Sticky rows: one wrapper carries the head and the switch, so the pair never',
+  '   needs the head height; the save bar sticks to the bottom of the same',
+  '   scrollport. Both paint the page background, or the content would show through',
+  '   while it scrolls under them. */',
+  '.dsh-oncall-head {',
+  '  display: flex;',
+  '  flex-wrap: wrap;',
+  '  align-items: flex-start;',
+  '  justify-content: space-between;',
+  '  gap: 16px;',
+  '  padding: 28px 0 16px;',
+  '}',
+  '.dsh-oncall-head-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }',
+  '.dsh-oncall-title { margin: 0; font-size: 20px; line-height: 28px; font-weight: 500; }',
+  '.dsh-oncall-status-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }',
+  '.dsh-oncall-head-actions { display: flex; align-items: center; gap: 8px; flex: none; }',
+  '.dsh-oncall-head-switch-label { font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-tabs { padding: 0 0 16px; }',
+  '/* Sections: 32px apart; title row, then content. One surface, no nested cards. */',
+  '.dsh-oncall-view { display: flex; flex-direction: column; gap: 32px; }',
+  '.dsh-oncall-section { display: flex; flex-direction: column; gap: 12px; }',
+  '.dsh-oncall-section-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 10px; }',
+  '.dsh-oncall-section-title { margin: 0; font-size: 14px; line-height: 20px; font-weight: 500; }',
+  '.dsh-oncall-section-count { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-section-hint { margin-left: auto; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); text-align: right; }',
+  '.dsh-oncall-section-spacer { flex: 1; min-width: 8px; }',
+  '/* Rows: the plugin-manager list row (12px 2px, hairline between, 16px gap). */',
+  '.dsh-oncall-list { margin: 0; padding: 0; list-style: none; }',
+  '.dsh-oncall-row { padding: 12px 2px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-row:last-child { border-bottom: 0; }',
+  '.dsh-oncall-row-dragging { opacity: 0.6; }',
+  '.dsh-oncall-row-line { display: flex; align-items: center; gap: 16px; min-width: 0; }',
+  '.dsh-oncall-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }',
+  '.dsh-oncall-row-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 13.5px; line-height: 20px; font-weight: 500; min-width: 0; }',
+  '.dsh-oncall-row-meta { font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; line-height: 16px; color: var(--dsw-alias-label-tertiary); overflow-wrap: anywhere; }',
+  '.dsh-oncall-row-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-row-end { display: flex; align-items: center; gap: 10px; flex: none; flex-wrap: wrap; justify-content: flex-end; }',
+  '.dsh-oncall-row-grip { display: inline-flex; color: var(--dsw-alias-label-tertiary); cursor: grab; flex: none; }',
+  '.dsh-oncall-order { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; flex: none; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-3); font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-icon { display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: none; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-lg); color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-provider { font-size: 13.5px; line-height: 20px; font-weight: 500; }',
+  '.dsh-oncall-muted { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); white-space: nowrap; }',
+  '.dsh-oncall-hint { font-size: 12px; line-height: 1.5; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-empty { margin: 0; padding: 12px 2px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-link-btn { border: 0; background: none; padding: 0; font: inherit; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); cursor: pointer; }',
+  '.dsh-oncall-link-btn:hover:not(:disabled) { color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: var(--dsw-radius-sm); background: none; color: var(--dsw-alias-label-tertiary); cursor: pointer; }',
+  '.dsh-oncall-icon-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-icon-btn:disabled { opacity: 0.4; cursor: default; }',
+  '.dsh-oncall-icon-btn-danger:hover:not(:disabled) { color: var(--dsw-alias-state-error-primary); }',
+  '.dsh-oncall-inline-field { display: inline-flex; align-items: center; gap: 6px; }',
+  '.dsh-oncall-inline-input { width: 44px; height: 26px; padding: 0 6px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary); text-align: center; }',
+  '.dsh-oncall-stepper { display: inline-flex; align-items: center; gap: 4px; }',
+  '.dsh-oncall-stepper-btn { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0.5px solid var(--dsw-alias-border-l3); border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-secondary); cursor: pointer; }',
+  '.dsh-oncall-stepper-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-stepper-btn:disabled { opacity: 0.4; cursor: default; }',
+  '.dsh-oncall-stepper-input { width: 36px; height: 26px; padding: 0 4px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 12px; color: var(--dsw-alias-label-primary); text-align: center; }',
+  '.dsh-oncall-conditions { display: flex; flex-direction: column; gap: 12px; margin: 10px 0 2px 38px; padding: 12px 14px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-lg); background: var(--dsw-alias-bg-layer-2); }',
+  '.dsh-oncall-field { display: flex; flex-direction: column; gap: 6px; }',
+  '/* A compact two-column form: label above control, controls capped at 320px.',
+  '   A label-left/control-far-right row across 960px left a dead gap the width',
+  '   of the page (user-reported). */',
+  '.dsh-oncall-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px 32px; }',
+  '.dsh-oncall-field-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }',
+  '.dsh-oncall-field-col > .dsh-oncall-select { max-width: 320px; }',
+  '.dsh-oncall-field-col > span { width: 100%; max-width: 320px; }',
+  '/* A segmented control is a form control here, not a page tab: it shrink-wraps',
+  '   to its labels and is capped, so a five-option row does not stretch across',
+  '   the page with half-empty cells. */',
+  '.dsh-oncall-field-col > [role="tablist"] { align-self: flex-start; max-width: 420px; }',
+  '.dsh-oncall-tag-btn { border: 0; background: none; padding: 0; cursor: pointer; display: inline-flex; }',
+  '.dsh-oncall-tag-btn:hover { filter: brightness(1.1); }',
+  '.dsh-oncall-formula { display: flex; align-items: flex-start; gap: 8px; padding: 10px 12px; border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-2); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-formula strong { color: var(--dsw-alias-label-primary); font-weight: 500; }',
+  '.dsh-oncall-note { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-label { font-size: 13px; line-height: 20px; font-weight: 500; color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px 16px; }',
+  '.dsh-oncall-check { font-size: 13px; line-height: 20px; }',
+  '.dsh-oncall-immediate { display: flex; flex-direction: column; gap: 10px; margin-top: 2px; padding-top: 14px; border-top: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-immediate-head { display: flex; flex-direction: column; gap: 2px; }',
+  // 同一套 9 个码在页面上出现两次（勾选切换 / 不重试）。第二组压小一档、排成 5 列
+  // 两行，读起来是"对上面那张表的补充"，而不是又一张等重的表。
+  '.dsh-oncall-immediate .dsh-oncall-check { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-immediate .dsh-oncall-check-grid { grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 8px 12px; }',
+  '.dsh-oncall-filter-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }',
+  '.dsh-oncall-search { width: 260px; max-width: 100%; }',
+  '.dsh-oncall-scope-line { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-run-summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; padding: 8px 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); border-top: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-health { display: flex; flex-direction: column; gap: 16px; }',
+  '.dsh-oncall-health-warning { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-channel-row { padding: 14px 2px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-channel-row:last-child { border-bottom: 0; }',
+  '.dsh-oncall-channel-row-focus { background: var(--dsw-alias-interactive-bg-hover); }',
+  '.dsh-oncall-dot, .dsh-oncall-health-warning-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }',
+  '.dsh-oncall-metrics { display: flex; flex-wrap: wrap; gap: 20px 32px; padding: 10px 0 2px; }',
+  '.dsh-oncall-metrics-status { flex: 2 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }',
+  '.dsh-oncall-metrics-header { display: flex; align-items: baseline; gap: 8px; }',
+  '.dsh-oncall-metrics-label { font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-metrics-value { font-size: 13px; line-height: 18px; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-metrics-col { flex: 1 1 140px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }',
+  '.dsh-oncall-metrics-number { font-size: 15px; line-height: 22px; font-weight: 500; color: var(--dsw-alias-label-primary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-timeline { display: flex; align-items: flex-end; gap: 2px; height: 32px; }',
+  '.dsh-oncall-timeline-bar { flex: 1; min-width: 0; border-radius: 2px; }',
+  '.dsh-oncall-notice { margin: 0 0 16px; padding: 10px 12px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-notice-error { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-problem-list { margin: 6px 0 0; padding-left: 18px; }',
+  '.dsh-oncall-footer { position: sticky; bottom: 0; z-index: 2; flex: none; padding: 12px 0; border-top: 0.5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-base); }',
+  '.dsh-oncall-footer-inner { display: flex; align-items: center; gap: 12px; }',
+  '.dsh-oncall-footer-text { flex: 1; min-width: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-footer-actions { display: flex; align-items: center; gap: 8px; flex: none; }',
+  '.dsh-oncall-history { display: flex; flex-direction: column; gap: 20px; }',
+  '.dsh-oncall-history-title { margin: 0 0 6px; font-size: 13px; line-height: 20px; font-weight: 500; }',
+  '.dsh-oncall-history-row { display: flex; align-items: baseline; gap: 10px; padding: 8px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); font-size: 12px; line-height: 18px; }',
+  '.dsh-oncall-history-row:last-child { border-bottom: 0; }',
+  '.dsh-oncall-history-time { flex: none; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-history-text { flex: 1; min-width: 0; color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-history-modal { width: min(640px, 100%); max-height: min(640px, 100%); }',
+  '.dsh-oncall-stepper-btn:not(:disabled):hover {',
+  '  background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.12)) !important;',
+  '  border-color: var(--dsw-alias-border-l4) !important;',
+  '}',
+  '.dsh-timeline-pill:hover {',
+  '  transform: scaleY(1.3) scaleX(1.1) !important;',
+  '  filter: brightness(1.3) !important;',
+  '}',
+  '/* Settings & Candidate Modals: bounded height, comfortable width, internal scroll.',
+  '   Exactly ONE vh constant lives in this sheet per carrier — the dialog root itself,',
+  '   "the carrier is at most 84% of the viewport". Everything below derives its height',
+  '   from that bound through flex + min-height:0. A viewport-minus-header calc stood',
+  '   here until 2026-10-17: its 70px matched neither DSH real header (62px —',
+  '   Modal.module.css:71-77, padding 22 + line 28 + 12) nor the dialog 20px gap nor the',
+  '   footer prop, so every content-box change silently mis-sized the scroll region. */',
+  '/* DSH puts the caller className on the SAME element as its own css.dialog',
+  '   (Modal.tsx:64 clsx(css.dialog, className)), so one selector per carrier is enough;',
+  '   the four hashed-dialog variants were one rule written four times, each guessing at',
+  '   DSH module class name. */',
+  '/* One carrier class for both dialogs: a fixed height keeps the card from',
+  '   jumping when a section is switched or a rule row is added (the old settings',
+  '   dialog changed height by 300px between tabs). 560px is the content height',
+  '   DSH own settings dialogs use; the body scrolls inside it. */',
+  '.dsh-oncall-modal {',
+  '  width: min(560px, 94vw) !important;',
+  '  height: min(560px, 84vh) !important;',
+  '  max-height: 84vh !important;',
+  '  border-radius: var(--dsw-radius-panel, 16px) !important;',
+  '  display: flex !important;',
+  '  flex-direction: column !important;',
+  '  overflow: hidden !important;',
+  '  padding: 0 0 20px !important;',
+  '}',
+  '/* `contentClassName` (Modal.tsx:73) is DSH own hook for the content region: it lands',
+  '   on css.content, and this plugin makes it the first shrinkable link of the chain. */',
+  '.dsh-oncall-modal-content {',
+  '  flex: 1 !important;',
+  '  min-height: 0 !important;',
+  '}',
+  '/* DSH scroll region is the LAST child of that wrapper (Modal.tsx:83 renders header,',
+  '   optional description, then body inside it). Reaching it STRUCTURALLY from this',
+  '   plugin own class — instead of by its hashed body class name — is what makes',
+  '   the height chain survive a DSH rename. Measured in spike/i7-height-chain-variants.html:',
+  '   without this link the body keeps its content height and overflows the content',
+  '   wrapper, so nothing scrolls and the dialog clips. */',
+  '.dsh-oncall-modal-content > div:last-child {',
+  '  flex: 1 !important;',
+  '  min-height: 0 !important;',
+  '  overflow-y: auto !important;',
+  '}',
+  '.dsh-oncall-modal-content > div:last-child::-webkit-scrollbar {',
+  '  width: 6px !important;',
+  '}',
+  '.dsh-oncall-modal-content > div:last-child::-webkit-scrollbar-thumb {',
+  '  background: var(--dsw-alias-border-l4, rgba(255, 255, 255, 0.2)) !important;',
+  '  border-radius: 4px !important;',
+  '}',
+  '.dsh-oncall-modal-content > div:last-child::-webkit-scrollbar-thumb:hover {',
+  '  background: var(--dsh-oncall-accent) !important;',
+  '}',
+  '/* Dialog content: sections stacked inside the one scrolling body. */',
+  '.dsh-oncall-modal-body { display: flex; flex-direction: column; gap: 20px; }',
+  '.dsh-oncall-modal-section { display: flex; flex-direction: column; gap: 8px; padding-bottom: 16px; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-modal-section:last-child { padding-bottom: 0; border-bottom: 0; }',
+  '.dsh-oncall-modal-section-title { margin: 0; font-size: 13px; line-height: 20px; font-weight: 500; }',
+  '.dsh-oncall-modal-section-hint { margin: 0; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-tertiary); }',
+  '/* The embedded CHANGELOG is rendered by DSH MarkdownText; this wrapper only sets the',
+  '   reading scale and lets the modal body own the scrolling. */',
+  '.dsh-oncall-release-notes { padding: 14px 16px; border-radius: 12px; background: var(--dsw-alias-bg-layer-2); font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-secondary); }',
+  '/* 检查更新弹窗：版本对照一行、状态一行、发布页入口一行。 */',
+  '.dsh-oncall-update-versions { display: flex; flex-wrap: wrap; gap: 8px 24px; }',
+  '.dsh-oncall-update-status { margin: 8px 0 0; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-update-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 10px 0 0; }',
+  '.dsh-oncall-update-link { font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-business-primary, var(--dsw-alias-label-primary)); text-decoration: none; }',
+  '.dsh-oncall-update-link:hover { text-decoration: underline; }',
+  '.dsh-oncall-modal-section-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }',
+  '.dsh-oncall-modal-section-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }',
+  '.dsh-oncall-modal-section-switch { flex: none; }',
+  '.dsh-oncall-modal-stack { display: flex; flex-direction: column; gap: 10px; }',
+  '.dsh-oncall-modal-field { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; }',
+  '.dsh-oncall-modal-field-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }',
+  '.dsh-oncall-modal-field-control { flex: none; display: flex; align-items: center; gap: 8px; }',
+  '.dsh-oncall-select { height: 34px; padding: 0 10px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 13px; color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-chip-row { display: flex; flex-wrap: wrap; gap: 6px; }',
+  '.dsh-oncall-breaker-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-oncall-breaker-row:last-child { border-bottom: 0; }',
+  '.dsh-oncall-breaker-row > input:first-child { flex: 1 1 120px; }',
+  '.dsh-oncall-breaker-row > input:nth-child(2) { flex: 2 1 180px; }',
+  '.dsh-oncall-breaker-row > input:nth-child(3) { flex: none; width: 72px; }',
+  '.dsh-oncall-breaker-code { font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }',
+  '.dsh-oncall-catalog-group { display: flex; flex-direction: column; gap: 2px; }',
+  '.dsh-oncall-catalog-group-title { padding: 10px 0 4px; font-size: 12px; line-height: 18px; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-catalog-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; }',
+  '.dsh-oncall-catalog-row code { font-family: var(--dsw-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 11.5px; color: var(--dsw-alias-label-tertiary); }',
+  '/* Keyframes & transitions */',
+  '@keyframes dsh-spin {',
+  '  from { transform: rotate(0deg); }',
+  '  to { transform: rotate(360deg); }',
+  '}',
+
+  '/* ---- the session routing chip (composer tool row) ----',
+  '   Every number is DSH own neighbouring control (ModelSelect.module.css:12-38 /',
+  '   PermissionSelect.module.css:1-44), not invented: 28px tall, 0 4px 0 8px, 4px gap,',
+  '   13/20/400 in label-secondary, --dsw-radius-sm, hover --dsw-alias-interactive-bg-hover,',
+  '   12px caption chevron. The one different cap — min(220px, 40cqw) instead of the model',
+  '   trigger 360px/45cqw — is because routing is secondary to the model: when the row is',
+  '   narrow, this label should give way first. */',
+  '.dsh-oncall-session-chip-root { display: inline-flex; min-width: 0; }',
+  '.dsh-oncall-session-chip {',
+  '  display: inline-flex;',
+  '  align-items: center;',
+  '  gap: 4px;',
+  '  min-width: 0;',
+  '  max-width: min(220px, 40cqw);',
+  '  height: 28px;',
+  '  padding: 0 4px 0 8px;',
+  '  border: none;',
+  '  border-radius: var(--dsw-radius-sm);',
+  '  outline: none;',
+  '  background: transparent;',
+  '  color: var(--dsw-alias-label-secondary);',
+  '  font-size: 13px;',
+  '  line-height: 20px;',
+  '  font-weight: 400;',
+  '  cursor: pointer;',
+  '}',
+  '.dsh-oncall-session-chip:hover { background: var(--dsw-alias-interactive-bg-hover); }',
+  '.dsh-oncall-session-chip:focus-visible { box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); }',
+  '/* inline-flex, not inline: an inline seat reserves baseline descent under the svg',
+  '   and floats the glyph off-centre in the 28px chip (same note as PermissionSelect). */',
+  '.dsh-oncall-session-chip-icon { display: inline-flex; flex: 0 0 auto; }',
+  '.dsh-oncall-session-chip-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-oncall-session-chip-chevron { display: inline-flex; flex: 0 0 auto; color: var(--dsw-alias-label-caption); transition: transform 120ms ease; }',
+  '.dsh-oncall-session-chip[data-open="true"] .dsh-oncall-session-chip-chevron { transform: rotate(180deg); }',
+  '/* Popover extras: the write error and the two footnotes. 12/18 tertiary is DSH own',
+  '   small-copy scale (ModelSelect footnote), not a new size. */',
+  '.dsh-oncall-session-chip-error {',
+  '  margin: 4px 7px 6px;',
+  '  padding: 6px 8px;',
+  '  border-radius: var(--dsw-radius-md);',
+  '  background: var(--dsw-alias-interactive-bg-hover-danger);',
+  '  /* 语义色不当文字色（本项目的既有约定）：底用 danger 淡染，字仍是 label-primary。',
+  '     `state-error-primary` 在浅色主题下是中间调，做 12px 文字过不了 AA。 */',
+  '  color: var(--dsw-alias-label-primary);',
+  '  font-size: 12px;',
+  '  line-height: 18px;',
+  '}',
+  '.dsh-oncall-session-chip-note { margin: 2px 7px 6px; color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }',
+  // 固定宽度：路由名长短不一时弹层不再跟着变宽，长路由在行内省略（title 里有全名）。
+  '.dsh-oncall-session-chip-menu { width: 280px; max-width: calc(100vw - 24px); }',
+  // Menu 的数据标签没有 className 钩子；卡片的 [role=presentation] 视口里第一个孩子就是标题行。
+  '.dsh-oncall-session-chip-menu > div[role="presentation"] > div:first-child { color: var(--dsw-alias-label-primary); font-size: 11px; line-height: 16px; font-weight: 600; }',
+  // 链行：Menu 原语不画子菜单箭头，这里自己排「链 | 名字 | ›」，让它看起来可点。
+  '.dsh-oncall-session-chip-chain { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 0; }',
+  '.dsh-oncall-session-chip-chain-key { flex: none; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }',
+  '.dsh-oncall-session-chip-chain-value { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-oncall-session-chip-chain-chevron { flex: none; color: var(--dsw-alias-label-caption); font-size: 14px; line-height: 1; }',
+  '/* 弹层里的每路由重试行：路由名可压缩，输入框定宽 48px（设计稿的宽度，刚好放两位数字）。 */',
+  '.dsh-oncall-session-chip-retries { display: flex; flex-direction: column; gap: 2px; margin: 4px 7px 0; padding-top: 5px; border-top: 0.5px solid var(--dsw-alias-border-l1); }',
+  // 标题与提示用更小的字号：和路由行拉开层级，不再一行行都是 12px。
+  '.dsh-oncall-session-chip-retry-note { margin: 0 0 4px; color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }',
+  '.dsh-oncall-session-chip-retry-note-title { color: var(--dsw-alias-label-primary); font-size: 11px; font-weight: 600; }',
+  '.dsh-oncall-session-chip-retry { display: flex; align-items: center; gap: 8px; min-height: 30px; }',
+  '.dsh-oncall-session-chip-route { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
+  '.dsh-oncall-session-chip-retry-input { flex: none; width: 48px; height: 26px; padding: 0 6px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; font-size: 12px; text-align: center; box-sizing: border-box; }',
+  '.dsh-oncall-session-chip-retry-input::placeholder { color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-oncall-session-chip-retry-input:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); }',
+  '/* 链管理：每条链一行（编辑 / 改名 / 设为默认 / 删除）。 */',
+  '.dsh-oncall-chain-list { display: flex; flex-direction: column; gap: 6px; }',
+  '.dsh-oncall-chain-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); }',
+  '/* 编辑中的那条用强调色描边，与健康页的焦点行同一套做法（色只进边，不进文字）。 */',
+  '.dsh-oncall-chain-row.is-editing { border-color: var(--dsh-oncall-accent); }',
+  '.dsh-oncall-chain-pick { flex: none; width: 68px; height: 24px; padding: 0; border: none; border-radius: var(--dsw-radius-sm); background: transparent; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; text-align: center; cursor: pointer; box-sizing: border-box; }',
+  '.dsh-oncall-chain-pick[aria-pressed="true"] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }',
+  '.dsh-oncall-chain-name { flex: 1 1 auto; min-width: 120px; }',
+  // 「默认」徽标与「设为默认」按钮占同一个固定槽位，所有链的改名输入框才会等长。
+  '.dsh-oncall-chain-default-slot { flex: none; width: 92px; display: flex; justify-content: center; }',
+  '.dsh-oncall-chain-default { flex: none; padding: 2px 8px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }',
+  '/* The composer row is the size container (InputBar .row declares container-type:',
+  '   inline-size), so this is the same anonymous @container query PermissionSelect uses,',
+  '   at the same 460px cut: all three chips drop their labels together. */',
+  '@container (max-width: 460px) {',
+  '  .dsh-oncall-session-chip-label { display: none; }',
+  '}',
+
+  // ---- delegation roster (P2) ----
+  // 主从两列：224px 列表 + 编辑器。列表独立滚动、最高 420px——12 个角色也不撑爆页面。
+  // 不写视口单位：这一页是面板里的一个滚动列，宽度由容器决定，不是窗口。
+  '.dsh-roster-body { display: grid; grid-template-columns: minmax(160px, 224px) minmax(0, 1fr); gap: 20px; align-items: start; }',
+  '.dsh-roster-list { display: flex; flex-direction: column; gap: 2px; max-height: 420px; overflow-y: auto; padding-right: 4px; border-right: 0.5px solid var(--dsw-alias-border-l2); }',
+  '.dsh-roster-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: var(--dsw-radius-sm); cursor: pointer; }',
+  '.dsh-roster-item:hover { background: var(--dsw-alias-interactive-bg-hover); }',
+  '.dsh-roster-item:focus-visible { outline: 2px solid var(--dsh-oncall-accent); outline-offset: -1px; }',
+  '.dsh-roster-item-active { background: var(--dsw-alias-bg-layer-2); }',
+  '.dsh-roster-item-invalid { box-shadow: inset 2px 0 0 var(--dsw-alias-label-danger, #c0392b); }',
+  '.dsh-roster-item-name { font-size: 12px; line-height: 17.5px; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-roster-item-meta { display: flex; gap: 8px; min-width: 0; font-size: 11.5px; line-height: 16px; color: var(--dsw-alias-label-tertiary); }',
+  '.dsh-roster-item-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+  '.dsh-roster-item-badge { align-self: flex-start; font-size: 10.5px; line-height: 16px; font-weight: 500; color: var(--dsw-alias-label-danger, #c0392b); font-variant-numeric: tabular-nums; }',
+  '.dsh-roster-editor { min-width: 0; }',
+  '.dsh-roster-editor-body { display: flex; flex-direction: column; gap: 14px; }',
+  '.dsh-oncall-subtitle { margin: 8px 0 0; font-size: 12px; line-height: 18px; font-weight: 600; color: var(--dsw-alias-label-secondary); }',
+  '.dsh-oncall-counter { margin-left: 8px; font-size: 11.5px; line-height: 16px; font-weight: 400; color: var(--dsw-alias-label-tertiary); font-variant-numeric: tabular-nums; }',
+  '.dsh-oncall-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }',
+  '.dsh-oncall-field-compact > input { max-width: 120px; }',
+  '.dsh-oncall-textarea { width: 100%; min-height: 64px; padding: 8px 10px; border: 0.5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-3); font: inherit; font-size: 13px; line-height: 20px; color: var(--dsw-alias-label-primary); resize: vertical; }',
+  '.dsh-oncall-textarea:focus-visible { outline: 2px solid var(--dsh-oncall-accent); outline-offset: 1px; }',
+  '.dsh-oncall-textarea.dsh-oncall-invalid { border-color: var(--dsw-alias-label-danger, #c0392b); }',
+  '.dsh-oncall-actions { display: flex; justify-content: flex-end; gap: 8px; }',
+].join('\n')
+
+
+/**
+ * How many activations are holding the shared style element.
+ *
+ * The sheet is global (one <style> per document) but its lifetime is per fiber:
+ * Cordis reloads the plugin by applying the new instance while the old one is
+ * still on its way out. Without a count, the surviving activation would inherit a
+ * disposer that removes a sheet another instance is still using, and the UI would
+ * lose every `dsh-oncall-*` rule while still mounted.
+ */
+var styleHolders = 0
+
+/**
+ * The module system may hand a top-level CSS array back as one joined string.
+ * Note: 为何不能直接对 ROUTER_CSS 调 .join —— 见
+ * .agents/notes/implemented/2026-10-23-agent-fleet-p1-and-config-surfaces.md
+ */
+function cssText(value) {
+  return Array.isArray(value) ? value.join('\n') : String(value)
+}
+
+export function ensureStyles() {
+  if (typeof document === 'undefined') return function () {}
+  // `querySelector` is `Element | null`, but the selector matches a `<style>` and
+  // the tag is created as one below: declaring the element type is what lets the
+  // two branches (`dataset`, `textContent`) be one variable.
+  var tag = document.querySelector<HTMLStyleElement>('style[data-plugin="dsh-oncall"]')
+  if (!tag) {
+    tag = document.createElement('style')
+    tag.dataset.plugin = 'dsh-oncall'
+    tag.dataset.pluginCss = 'dsh-oncall-styles'
+    document.head.appendChild(tag)
+  }
+  // The client module system may hand a top-level CSS array back as one joined
+  // string (measured in the browser: ROUTER_CSS was a string while the imported
+  // FLEET_CSS stayed an array). Normalize both shapes before injecting, or the
+  // imported array is stringified with commas and every rule after it is lost.
+  tag.textContent = cssText(ROUTER_CSS) + '\n' + cssText(FLEET_CSS)
+  styleHolders += 1
+  var released = false
+  return function () {
+    if (released) return
+    released = true
+    styleHolders -= 1
+    if (styleHolders <= 0 && tag && tag.parentNode) tag.parentNode.removeChild(tag)
+  }
+}
+
+
+/**
+ * z-index for this plugin's own body-portal layers (the failover drawer's
+ * overlay/panel pair).
+ *
+ * The VALUES are not invented: DSH has no z-index token scale to draw from —
+ * `ui-dockkit/src/components/dockkit.module.css:544` says so outright ("No
+ * z-index token layer exists to draw from") — and 1100 is DSH's own established
+ * "one layer above Modal" value, where Modal is 1000
+ * (`ui-primitives/src/Modal.module.css:10`). Nine in-tree precedents use exactly
+ * 1100 for that meaning: Tooltip.module.css:25, Toast.module.css:12,
+ * Menu.module.css:45, ContextMeter.module.css:48, ModelSelect.module.css:93,
+ * PluginManagerPage.module.css:786, PickerPopover.module.css:8,
+ * TaskMenu.module.css:46, stat-dialog.module.css:12. The panel sits one step
+ * above its own overlay, the way DSH's own pairs do.
+ */
+const Z_OVERLAY = 1100
+const Z_PANEL = 1101
+
+

@@ -7,6 +7,14 @@
 `1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围（当前 `^0.2.1-rc.3`）
 随之移动。
 
+## [Unreleased]
+
+插件改名为 `dsh-oncall`（中文「值班台」）。这是**破坏性改名**：包名、bundle 行 id / 配置 ns（`model-desk` → `oncall`）、Cordis service key（`modelDesk` → `oncall`）、Typert ns（`deskHealth` → `oncallHealth`）、CSS 前缀（`dsh-router-*` → `dsh-oncall-*`）、持久化标识（`model_router_sessions` → `oncall_sessions`，`router/*` → `oncall/*`）全部改了。
+
+旧 `model-desk` 行不会被认领：加载时会打一条错误日志指出改法。旧投影读不到，切换历史会从空开始。重装必须先 `dsh plugin remove` 旧包——`dsh.profile.bundles` 与 `dependencies` 各有一条，只 add 新包不会清掉旧行。
+
+同时落地入口（默认关）：盯一个 GitHub 仓库的 issue，把被授权的要求变成 Case；令牌只读 `GITHUB_TOKEN`。现在只建 Case，executor 与回评论仍未做。
+
 ## [0.5.0] — 2026-10-22
 
 失败默认就动，截断默认续跑。
@@ -141,7 +149,7 @@ published by CI through the npm trusted publisher (OIDC) rather than a manual
 - **CI** runs on every push to `master` and every pull request: the build, the
   host type-check, and each of the four suites as its own step.
 - npm metadata (`keywords`, `homepage`, `bugs`, `author`, `engines`) and the
-  README badges; `dsh-model-desk` replaces `dsh-model-desk` everywhere,
+  README badges; `dsh-model-desk` replaces `dsh-models-router` everywhere,
   including the repository name.
 
 ### Fixed

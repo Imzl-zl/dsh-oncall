@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Desk — 工作台布局重构"
+title: "DSH On-call — 工作台布局重构"
 status: "implemented"
 kind: "ui-design"
 last_updated: "2026-10-20"
@@ -29,14 +29,14 @@ last_updated: "2026-10-20"
 
 ```
 main panel
-└── .dsh-router-page           全高 flex 列；overflow-y:auto + scrollbar-gutter:stable，
+└── .dsh-oncall-page           全高 flex 列；overflow-y:auto + scrollbar-gutter:stable，
                                padding:0 clamp(24,4vw,48)——水平留白与滚动条都属于它
-    ├── .dsh-router-top        position:sticky; top:0；页头 + 页签的整体吸顶行
-    │   ├── .dsh-router-head   padding-top:28; 左：h1 + 状态 Tag；右：接管 Switch
-    │   └── .dsh-router-tabs   SegmentedTabs「降级链路 N」「渠道健康 N」
-    ├── .dsh-router-content    960 列，随页面滚动
+    ├── .dsh-oncall-top        position:sticky; top:0；页头 + 页签的整体吸顶行
+    │   ├── .dsh-oncall-head   padding-top:28; 左：h1 + 状态 Tag；右：接管 Switch
+    │   └── .dsh-oncall-tabs   SegmentedTabs「降级链路 N」「渠道健康 N」
+    ├── .dsh-oncall-content    960 列，随页面滚动
     │   └── 视图内容（下方）
-    └── .dsh-router-footer     position:sticky; bottom:0；常驻：提示 + 放弃 + 保存
+    └── .dsh-oncall-footer     position:sticky; bottom:0；常驻：提示 + 放弃 + 保存
 ```
 
 - **一条列，只写一次**：页头、页签、正文、保存条共用一条合并选择器（`width:100%; max-width:960px; margin:0 auto`），行内不许有水平 padding。页面自己滚动时，四条行和滚动条住在同一个容器里，左边界由构造决定而不是各算一份——此前把滚动区拆成兄弟节点，四行分别写 padding，实测页头/页签 442、页脚 394、正文 390。
@@ -76,7 +76,7 @@ main panel
 浏览器实测（2026-10-20，隔离 `.dshhome-view` + Chrome MCP，端口 3401）覆盖：固定/滚动分层、策略先行、添加候选按钮可见、保存条常驻、权重策略的校验提示、识图粘滞分段、尝试预算计算式、健康扁平行、两个弹窗与历史 Modal。证据与两处实测修复见
 `.agents/notes/implemented/2026-10-19-recovery-rulings-and-page-shell.md`。
 
-**列宽单源与分区头基线（2026-10-20 实测修）**：把滚动区并回 `.dsh-router-page` 后，四条行共享一条列规则——1468 视口下四行左边界均为 391.7、1000 视口下均为 96；滚到最大时 `.dsh-router-top` 的 `top` 恒为 0、`.dsh-router-footer` 的 `bottom` 恒等于视口高，`document.scrollingElement` 不滚动（没有第二根滚动条）。分区头 `align-items` 由 `center` 改为 DSH 自己的 `baseline`（`PluginManagerPage.module.css` `.sectionHead`），"降级候选 3" 的计数不再像上标。取舍见 `.agents/notes/implemented/2026-10-20-page-owns-the-column.md`。
+**列宽单源与分区头基线（2026-10-20 实测修）**：把滚动区并回 `.dsh-oncall-page` 后，四条行共享一条列规则——1468 视口下四行左边界均为 391.7、1000 视口下均为 96；滚到最大时 `.dsh-oncall-top` 的 `top` 恒为 0、`.dsh-oncall-footer` 的 `bottom` 恒等于视口高，`document.scrollingElement` 不滚动（没有第二根滚动条）。分区头 `align-items` 由 `center` 改为 DSH 自己的 `baseline`（`PluginManagerPage.module.css` `.sectionHead`），"降级候选 3" 的计数不再像上标。取舍见 `.agents/notes/implemented/2026-10-20-page-owns-the-column.md`。
 
 字典与文档同步：删掉 82 个旧 UI 的键（zh/en 各 243 键、零重复、零缺失）；`product-plan.md` 的"只打一次"、旧 UI 表、"不做"表与 `open-questions.md` 的 `profiles`/primary 旧裁定已按现状更新。
 

@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Desk — Agent Fleet 右栏与三页签配置中枢"
+title: "DSH On-call — Agent Fleet 右栏与三页签配置中枢"
 status: "proposal"
 kind: "ui-design"
 last_updated: "2026-10-23"
@@ -9,7 +9,7 @@ last_updated: "2026-10-23"
 
 ## 摘要
 
-本页定义 DSH Model Desk 的目标界面：**主列做配置，右栏做运行**。
+本页定义 DSH On-call 的目标界面：**主列做配置，右栏做运行**。
 
 - 主列仍是 960 列、吸顶页头/页签、吸底保存条；一级页签收敛为 **路由链 / 委派名册 / 渠道健康** 三个。会话绑定回到会话输入框的 chip，故障转移历史留在 Modal，不再占一级页签。
 - 右栏是一个 **DSH dockkit 标签页**，不是 `fixed` 抽屉。默认显示**全局**：跨工作区、跨会话的运行中会话、子智能体、待处理事项和异常；点任意会话下钻到**单会话**，看到主会话 → 直接子节点、三本预算、活动流与可执行动作。
@@ -23,7 +23,7 @@ last_updated: "2026-10-23"
 | 区块 | 状态 | 依据 |
 |---|---|---|
 | 右栏 dockkit 标签页（全局 + 单会话） | **提案**，数据已具备 | `sidebarRightTabs` / `sidebar.right.pane.tab`；`subagentCatalog` / `subagentTiming` / `tokenUsage` / `SessionStatus` |
-| 三页签配置中枢（路由 / 名册 / 健康） | **提案**；路由与健康已实现，名册待 handoff | 当前 `RouterPage` 只有两视图（[`page.ts:37-38`](../../packages/dsh-model-desk/src/client/page.ts#L37)） |
+| 三页签配置中枢（路由 / 名册 / 健康） | **提案**；路由与健康已实现，名册待 handoff | 当前 `RouterPage` 只有两视图（[`page.ts:37-38`](../../packages/dsh-oncall/src/client/page.ts#L37)） |
 | 名册、三本预算、收工回执 | **提案**；需 handoff 宿主能力 | [handoff-proposal.md](handoff-proposal.md) §4–§8 |
 | 复核账本 / 失败的子智能体 | **需新增投影** | 当前 client 只有 `subagentCatalog` / `subagentTiming`，没有“失败”状态 |
 | Nudge 按钮 / 手动熔断 / 导出审计 | **不做（v1）** | 没有宿主动作或数据源；不要用 `alert()` 假装修好 |
@@ -116,7 +116,7 @@ Modal：故障转移历史 / 添加候选 / 健康设置 / 删除确认 / 工牌
 
 ```ts
 ctx.sidebarRightTabs.register({
-  id: 'dsh-model-desk/fleet',
+  id: 'dsh-oncall/fleet',
   kind: 'agent-fleet',
   priority: 'extension',
   title: () => t('fleet.tab'),
@@ -194,7 +194,7 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 
 **会话头**：返回全局、标题、状态、工作区/模型/链/会话 id；右上“打开主会话”。其他会话只读，不出现配置开关。
 
-**三本预算（D7）**：派发 / 复核 / 开新会话，各自“已用 / 上限”+ 细进度条；下方一句“人一说话就重置；接力不重置；上限不是配额”。已用 = `router/handoff` 投影计数 + 账本里接力带来的计数（`addCarried` 一个表达式，闸门与界面共用）；上限来自浏览器自己那份配置。投影未加载、接力计数还没读回、或 handoff 关着时**整块隐藏**，不显示假数字。
+**三本预算（D7）**：派发 / 复核 / 开新会话，各自“已用 / 上限”+ 细进度条；下方一句“人一说话就重置；接力不重置；上限不是配额”。已用 = `oncall/handoff` 投影计数 + 账本里接力带来的计数（`addCarried` 一个表达式，闸门与界面共用）；上限来自浏览器自己那份配置。投影未加载、接力计数还没读回、或 handoff 关着时**整块隐藏**，不显示假数字。
 
 **拓扑条（D8）**：
 - 根节点是**本会话主智能体**，不是虚构的“主控脑”。
@@ -207,7 +207,7 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 - 排序：运行中 → 待复核 → 失败 → 完成 → 空闲；同状态按开始时间。
 - 卡片是按钮，打开子会话；尾部“在侧栏打开”是独立动作，不嵌套在按钮里。
 
-**活动流（D10）**：行是**模型自己写下的回执**，来自 `router/handoff` 投影的 `records`——派发（带角色 id）/ 收工（带 outcome）/ 开新会话 / 读事实，时间 + 类型 + 对象，最新在前。复核是一次派给 `review` 角色的委派，按派发行显示；「结算」与「失败」需要子智能体结算事件，投影不折叠它，因此不出现（见 §9.3 的 F-21）。没有事件投影时显示“活动流尚未接入”，投影在但为空显示“还没有派发或收工记录”，都不画空时间线、不拿伪终端文本充数。
+**活动流（D10）**：行是**模型自己写下的回执**，来自 `oncall/handoff` 投影的 `records`——派发（带角色 id）/ 收工（带 outcome）/ 开新会话 / 读事实，时间 + 类型 + 对象，最新在前。复核是一次派给 `review` 角色的委派，按派发行显示；「结算」与「失败」需要子智能体结算事件，投影不折叠它，因此不出现（见 §9.3 的 F-21）。没有事件投影时显示“活动流尚未接入”，投影在但为空显示“还没有派发或收工记录”，都不画空时间线、不拿伪终端文本充数。
 
 **动作条**：复制会话 ID、打开子会话、打开主会话。v1 不做 Nudge / 停止 / 熔断，因为没有宿主动作；不要用 `alert()` 假装。
 
@@ -302,8 +302,8 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 | 直接子智能体 | `projectionsBySession[id].values.subagentCatalog`（[`projection-types.ts:10-38`](file:///D:/sudy/github/deepseek-harness/packages/subagent/subagent/src/projection-types.ts#L10)） | 可能未加载 | 显示“未知”+ 加载 |
 | 子智能体耗时 | `subagentTiming.active.since` / `settledMs` / `lastTurnCompleted` | 可能未加载 | `—` |
 | Token | `tokenUsage` 投影（[`projection.ts:68-76`](file:///D:/sudy/github/deepseek-harness/packages/llm/token-meter/src/projection.ts#L68)） | provider 上报时 | 整格隐藏 |
-| 复核 / 收工 / 活动流 | 插件自有 `router/handoff` 投影的 `records`（`handoff.ts` 的 `handoffProjection`） | 插件 fiber 已加载时；可能未加载 | 未加载写“活动流尚未接入”；已接入但没有回执写“还没有派发或收工记录”；都不画空时间线 |
-| 三本预算 | 投影计数（`router/handoff` 的 `records`）+ 账本里接力携带的计数（`deskHealth.handoffCarried` 只回答这一半） | 投影可能未加载；carried 读一次后缓存 | 任何一半未知就整块隐藏；不显示假数字 |
+| 复核 / 收工 / 活动流 | 插件自有 `oncall/handoff` 投影的 `records`（`handoff.ts` 的 `handoffProjection`） | 插件 fiber 已加载时；可能未加载 | 未加载写“活动流尚未接入”；已接入但没有回执写“还没有派发或收工记录”；都不画空时间线 |
+| 三本预算 | 投影计数（`oncall/handoff` 的 `records`）+ 账本里接力携带的计数（`oncallHealth.handoffCarried` 只回答这一半） | 投影可能未加载；carried 读一次后缓存 | 任何一半未知就整块隐藏；不显示假数字 |
 | 失败的子智能体 | 插件账本；`lastTurnCompleted === false` 只能标“未正常完成” | **需新增/谨慎** | 不写“失败” |
 | 打开子会话 | `ctx.sidebarRight.openResource(subagentChatAddress(address), { kind: 'subagentchat' })`（[`ui-subagent/index.ts:60-72`](file:///D:/sudy/github/deepseek-harness/packages/client/ui-subagent/src/client/index.ts#L60)） | 始终 | 只打开主会话 |
 
@@ -397,10 +397,10 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 **分期**：
 
 - **P1（可先做）**：右栏 tab + 全局/单会话，使用现有会话与 `subagentCatalog`；不改宿主。配置页保持两个页签；名册入口暂不展示。
-- **P2**：handoff 名册 + 三本预算 + `router/handoff` 投影 + 第三页签；收工回执/复核账本。
+- **P2**：handoff 名册 + 三本预算 + `oncall/handoff` 投影 + 第三页签；收工回执/复核账本。
 - **P3**：活动流细化、审计导出（若届时确有数据源）、更多干预动作（若宿主提供契约）。
 
-**2026-10-23 P1 落地**：`client/fleet/` 注册了 `dsh-model-desk` / `agent-fleet` 类型与 `sidebar.right.pane.tab` 正文；全局/单会话、最近 20 并发 4、未知/空/错误/无匹配、紧凑拓扑、920 全屏列与 reduced-motion 守卫均已实现。分组头用 DSH `DisclosureRow`，长标题/任务用 DSH `Tooltip`（不再自绘折叠按钮、不再靠原生 `title`）；调度由 `tab.visible` 驱动，隐藏即 `pause()`（F-06）；拓扑有共享导轨与首个运行子节点的 1.8s 流动点（F-04）。配置页输出续跑独立分区、候选/第一跳各自保留重试输入、删除总调用数字、chip 保留链绑定与 per-route 覆盖。P2 仍按 §10.1 等待 host。
+**2026-10-23 P1 落地**：`client/fleet/` 注册了 `dsh-oncall` / `agent-fleet` 类型与 `sidebar.right.pane.tab` 正文；全局/单会话、最近 20 并发 4、未知/空/错误/无匹配、紧凑拓扑、920 全屏列与 reduced-motion 守卫均已实现。分组头用 DSH `DisclosureRow`，长标题/任务用 DSH `Tooltip`（不再自绘折叠按钮、不再靠原生 `title`）；调度由 `tab.visible` 驱动，隐藏即 `pause()`（F-06）；拓扑有共享导轨与首个运行子节点的 1.8s 流动点（F-04）。配置页输出续跑独立分区、候选/第一跳各自保留重试输入、删除总调用数字、chip 保留链绑定与 per-route 覆盖。P2 仍按 §10.1 等待 host。
 
 ## 九、原型、标注与偏离记录
 
@@ -456,7 +456,7 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 
 | ID | 日期 | 原条款 | 实际做法 | 原因 | 证据 | 状态 |
 |---|---|---|---|---|---|---|
-| F-01 | 2026-10-23 | §4.1 标签类型 `id` 用包名 | `id: dsh-model-desk`，`kind: agent-fleet`，正文/标题 key 同 id | 包名是 registry 的自然唯一身份；正文 key 必须与类型 id 相同 | `client/fleet/index.ts`；`tab-registry.ts:94-139` | 已落地 |
+| F-01 | 2026-10-23 | §4.1 标签类型 `id` 用包名 | `id: dsh-oncall`，`kind: agent-fleet`，正文/标题 key 同 id | 包名是 registry 的自然唯一身份；正文 key 必须与类型 id 相同 | `client/fleet/index.ts`；`tab-registry.ts:94-139` | 已落地 |
 | F-02 | 2026-10-23 | §4.3 会话行显示“模型/链/子智能体计数” | 链名只在当前会话或已下钻会话读取并显示；其他行省略 | 每个会话的链绑定是插件自有 Remote；首屏 20 行逐个读会形成 RPC 风暴，违反 §6.2 | `client/fleet/controller.ts` 的 `loadBinding`；`src/index.ts:726-734` | 已落地 |
 | F-03 | 2026-10-23 | §4.4 D9 智能体卡含步数、预算、进度 | 卡片显示状态、模型、任务、耗时、Token；无步数/预算/进度，缺失即隐藏 | `subagentTiming` 只有 `settledMs`/`active`/`lastTurnCompleted`；预算与复核属 handoff 账本，P1 不伪造 | `subagent/projection-types.ts:22-38`；`client/fleet/model.ts` | P1 限制 |
 | F-04 | 2026-10-23 | §7.4 活动边 1.8s 流动点 | 紧凑 chip 拓扑 + 共享导轨（行顶 1px 线、每 chip 一根 1px 竖线、根节点一根竖线）；首个运行子节点内一颗 4px 流动点，`dsh-fleet-flow` 1.8s；根节点保留 2.4s 脉冲；全视图 2 个持续动画；`data-visible="false"` / `data-page-hidden="true"` 暂停，`prefers-reduced-motion` 全关 | 原型拓扑是 chip 行，没有逐子节点长边；第三个动画会违反“最多 2 个”；流动点只表达“有活动”，不表达进度或健康 | `client/fleet/view.ts` 的 `Topology`；`client/fleet/styles.ts` 的 `@keyframes dsh-fleet-flow`/`dsh-fleet-pulse`；[`agent-fleet.html:466-467`](../prototypes/agent-fleet.html#L466) 的 `flowdot`/`drip`、[`:448`](../prototypes/agent-fleet.html#L448) 的 `topo-rail` | 已落地（2026-10-23 复核后补齐） |
@@ -464,21 +464,21 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 | F-06 | 2026-10-23 | §6.2 右栏关闭取消在飞请求 | `FleetController.pause()/resume()`：`tab.visible === false` 或 body 卸载时停止调度并忽略重绘；恢复时补一次重绘并继续队列。已派发的 `refreshProjections` 仍会完成，迟到结果只在恢复后可见；不声称能取消 Host 读 | `ISessions.refreshProjections(sessionId): Promise<void>` 没有 AbortSignal；`retain({signal})` 只取消“等待打开”，不能 abort 已派发的投影读；能做的只有停止队列 + 忽略重绘 | `api/session-controller/src/client/contract/sessions.ts:101-106`、`:36-39`、`sessions/service.ts:285-292`；`client/fleet/controller.ts` 的 `pause`/`resume`；`client/fleet/useFleet.ts` 的可见性 effect；`client/fleet/index.ts` 传 `tab.visible` | 已落地（2026-10-23 复核后补齐） |
 | F-07 | 2026-10-23 | §4.3 列表失败摘要 `—` | 首次列表读取：8s 超时或公开 `phase === 'pending'`（尚无成功拉取）→ 错误卡；后续刷新失败保留上次成功列表 | `SessionListState` 不暴露 error；`refresh()` 在 Host 业务错误时仍 resolve，只把错误留在 manager 私有字段；`phase` 是公开的“尚无成功拉取”信号，但成功一次后不再回退 | `client/fleet/controller.ts` 的 `REFRESH_TIMEOUT_MS`；`client/fleet/useFleet.ts`；`manager.ts:412-416,459-467` | 已落地（首次读取） |
 | F-08 | 2026-10-23 | §4.3 摘要带四个数 | 任一相关会话未知时该格显示 `—`，副行写未知数 | 部分样本不是计数；与 D3 “数据缺失 `—`” 一致，避免把未知写成 0 | `client/fleet/model.ts` 的 `fleetSummary`；`client/fleet/view.ts` 的 `Summary` | 已落地 |
-| F-09 | 2026-10-24 | §5.1 P2 第三页签 | 第三页签已注册：`降级链路` / `委派名册` / `渠道健康`；名册页为 224px 列表 + 编辑器，空态是激活卡 | host 已落地（`config.handoff` + 一个 `handoff` 工具 + `router/handoff` 投影 + 账本），因此页签不再是空壳；名册为空时显示空态而不是假行 | `src/config.ts` 的 `handoffSchema`；`src/client/page.ts` 的 `VIEW_ROSTER`；`src/client/roster.ts`；`docs/assets/ui/roster-p2-*.png` | 已落地 |
+| F-09 | 2026-10-24 | §5.1 P2 第三页签 | 第三页签已注册：`降级链路` / `委派名册` / `渠道健康`；名册页为 224px 列表 + 编辑器，空态是激活卡 | host 已落地（`config.handoff` + 一个 `handoff` 工具 + `oncall/handoff` 投影 + 账本），因此页签不再是空壳；名册为空时显示空态而不是假行 | `src/config.ts` 的 `handoffSchema`；`src/client/page.ts` 的 `VIEW_ROSTER`；`src/client/roster.ts`；`docs/assets/ui/roster-p2-*.png` | 已落地 |
 | F-10 | 2026-10-23 | §5.2 重试与输出续跑 | 输出续跑独立分区；删除总调用数字；候选/第一跳各自保留唯一重试输入 | 用户明确要求；`max-tokens` 不是失败重试；没有 `maxTotalAttempts` 配置 | `client/pipeline.ts` 的 `OutputContinuationSection`/`RetrySection`；`client/chain.ts` | 已落地 |
 | F-11 | 2026-10-23 | §7.2 分组头 28px；§7.1 行标题 11.5/16 | 分组头改成 DSH `DisclosureRow`：原生 row 24px + 外层 2px 上下 padding = 28px；标题用 `.dsh-fleet-group-disclosure .dsh-fleet-group-title`（2 个类）压回 11.5/16，**不依赖** CSS Module 与注入样式的先后顺序。若 DSH 之后把 `.title` 提到同等特异性，接受原生 13/24 并在此记录 | 原生行高固定 `calc(24px + var(--dsh-content-font-delta))`，字号来自 `dsh-content-font-size-secondary`（默认 13）；要让 28px 的分组头成立且字不撑行，只能外层补 2px；用特异性而非顺序，是因为注入表挂在插件 apply 时，顺序不属于本包可控契约 | `ui-primitives/src/DisclosureRow.module.css` 的 `.row`/`.title`；`client/fleet/view.ts` 的 `GroupList`；`client/fleet/styles.ts` 的 `.dsh-fleet-group-disclosure` 规则 | 已落地；浏览器实测 header 28px、标题 11.5/16（无需退回 13/24） |
 | F-12 | 2026-10-23 | §4.2 「1024 左栏收起后右栏 461」 | 该数字是 45% 反推值，不是运行时的结果：右栏宽度按像素记忆（1440 下 648），求解器封顶 `viewport − 左栏 − 400`，所以 1024 视口、左栏收起（56）实测 569。已按实测改写 §4.2，两组数并列 | 文档只是参考，不写真值；`AppFrame` 记忆的是像素宽度，`computeColumns` 按可用空间封顶。跟随最新运行时（桌面 `0.2.1-rc.2`）而不是旧截图 | `ui-layout/src/client/columns.ts:11-29`、`:52-58`；浏览器实测 1440→648、1025 展开→345、1025 收起→569、801→345、全屏列 920 | 文档已更正（不涉及代码） |
 | F-13 | 2026-10-23 | §4.3 会话行 48px、标题优先省略 | ≤430 容器下补三条：标题 `min-width:72px`、模型 `max-width:42%` 先省略、状态词不截断；并把会话头部的 `flex-wrap` 收回到 `.dsh-fleet-session-head`（原先裸 `.dsh-fleet-session-meta` 的 wrap 会命中列表行，窄栏把行撑成两行） | 345px 下长路由名（`cherry/<uuid>:model`）会把标题挤成一个字；修复前实测行高 49→2 行，修复后 345/648 均 49px、无横向溢出 | `client/fleet/styles.ts` 的 `@container fleet (max-width: 430px)`；浏览器实测标题 73–126px、状态完整、`scrollWidth === clientWidth` | 已落地 |
 
-| F-14 | 2026-10-24 | §4.6 接力首条消息用普通用户消息（`source.kind: 'user'`） | 用 `user` 角色 + 插件自有来源 `model-desk-handoff`（`form: 'notice'`），正文第一行仍写明"由插件按接力配置生成" | 预算的"人一说话就清零"必须能在重放中判定：`kind: 'user'` 加内存里的 id 集合在投影重放时不存在，而接力简报恰恰是**不该**清零的那条消息（计数随会话复制）。角色仍是 user，模型照样当任务执行 | `src/handoff.ts` 的 `MessageSourceMap` 增补与 `handoffProjection.apply` 的 epoch 分支；`tests/unit.mjs` 的 "the projection resets the budget on a human message and only on a human message" | 已落地 |
+| F-14 | 2026-10-24 | §4.6 接力首条消息用普通用户消息（`source.kind: 'user'`） | 用 `user` 角色 + 插件自有来源 `oncall-handoff`（`form: 'notice'`），正文第一行仍写明"由插件按接力配置生成" | 预算的"人一说话就清零"必须能在重放中判定：`kind: 'user'` 加内存里的 id 集合在投影重放时不存在，而接力简报恰恰是**不该**清零的那条消息（计数随会话复制）。角色仍是 user，模型照样当任务执行 | `src/handoff.ts` 的 `MessageSourceMap` 增补与 `handoffProjection.apply` 的 epoch 分支；`tests/unit.mjs` 的 "the projection resets the budget on a human message and only on a human message" | 已落地 |
 | F-15 | 2026-10-24 | §6 拒绝写在返回值里 | 拒绝抛 `HarnessError`（durable `tool/result` 带 `isError` 与错误码） | 投影用 `isError` 判"这次调用没花预算"；返回值里的 `{rejected:true}` 与成功无法在折叠时区分，被拒的 `delegate` 会白吃一次额度。模型侧照样在工具结果里读到同一条中文原因 | `src/handoff.ts` 的 `gateRefusal`；`src/handoff-tool.ts`；`tests/remote.mjs` 的三条拒绝用例 | 已落地 |
 | F-16 | 2026-10-24 | §5 `roster[].outputSchema` 可配 | 不开放为配置项：`role: review` 的角色由插件传固定的 verdict schema（`pass` / `gaps` + `gaps[]`） | 闸门必须能读结论；用户自定义形状会让插件猜哪个字段算"通过"。写入的是"结论的形状"，不是判断内容 | `src/handoff.ts` 的 `REVIEW_VERDICT_SCHEMA`；`src/client/roster.ts` 的运行分区没有该字段 | 已落地 |
 | F-17 | 2026-10-24 | §3 建新会话 `ctx.agents.createSession({sessionId?, cwd, agentPreset?})` | `ctx.sessionController.createSession({cwd, reusable})`；`selectionFor` / `selectForNextRequest` 同属该服务；`ctx.goals.get` 要 agent | 0.2.1-rc.2 的实际签名：`reusable` 是必填谓词，服务键是 `sessionController`（`api-session-controller/lib/types/agent.d.ts:31-44`）。headless 组合不挂该服务时 `newSession` 明确拒绝 | `src/handoff-tool.ts` 的 `relay`；`tests/remote.mjs` 的拒绝用例 | 已落地 |
 | F-18 | 2026-10-24 | §4.4 复核必须发生在最近一条用户消息之后 | 账本记的是**派发时**的 epoch；复核期间人说话，这次复核作废 | 复核者没看到新指令，结论是旧状态的；按结算时间记账会把一次过期复核算成有效。失败关闭，不猜 | `src/handoff.ts` 的 `ReviewRecord.epoch` 与 `latestReview`；`tests/unit.mjs` 的 review-gate 用例 | 已落地 |
 | F-19 | 2026-10-24 | §4.6 步 4 链绑定与预算计数写到新会话 | 链绑定走会话侧车（既有），预算计数落账本的 `budgets` 表；闸门读"投影计数 + 携带计数" | 投影按会话折叠，无法被另一个会话播种；账本已经存在（复核结论），不为预算再造第二本 | `src/handoff.ts` 的 `HandoffLedger.carry` 与 `effectiveBudget`；`tests/unit.mjs` 的 new-session gate 用例 | 已落地 |
 | F-20 | 2026-10-24 | §4.2 工具注册在插件自己的 ctx 上 | 注册延后到 `ctx.inject(['tools','subagents'])` 的子 fiber | 插件 `inject` 只有 `['llm']`，构造期这两个服务还没挂上；headless 组合实测工具**没有**注册。子 fiber 随本 fiber 卸载，配置保存仍然只重注册一次 | `src/index.ts` 的 `installHandoff`；`tests/remote.mjs` 的 "the handoff tool is registered in the real composition" | 已落地 |
-| F-21 | 2026-10-24 | §6.1 复核/收工/预算读插件自有投影 | 活动流已接 `router/handoff`：读投影 `records`，时间 + 类型 + 对象（派发带角色 id、收工带 outcome），最新在前；投影缺席写“活动流尚未接入”，投影在但为空写“还没有派发或收工记录”，两种情况都不画空时间线 | 投影本来就随会话快照下发（`snapshot()` 遍历所有带 `wire` 的注册项），不需要新 RPC；投影键由 `src/handoff-wire.ts` 共享，浏览器半包不从 `handoff.ts` 取常量（那里 import 了 zod/storage-domain，会把第二份 schema 运行时拖进 bundle）。`finish` 的 outcome 从 `tool/call.arguments` 折进记录（该字段本来就在 wire schema 里） | `src/client/fleet/model.ts` 的 `parseHandoff`/`activityOf`；`src/client/fleet/view.ts` 的 `ActivityStream`；`tests/unit.mjs` 的三态用例；`tests/client-controller.mjs` 的渲染用例；`docs/assets/ui/fleet-p2-activity-1920.png`（浏览器实测读到“已接入但为空”） | 已落地（2026-10-24 二轮） |
-| F-22 | 2026-10-24 | §4.4 D7「数字来自插件账本」 | “已用”= 投影计数 + 账本里接力带来的计数（同一个 `addCarried`）；“上限”= 浏览器自己那份配置（`normalizeHandoff`，与名册页同源）。新增只读 Remote `deskHealth.handoffCarried`，**只回答“接力带了什么”** | 投影本来就到浏览器且随事件实时更新；把整个读数放 Remote 会在同一回合里过期，还会把同一份算术写两遍。账本只补投影拿不到的那半，浏览器按会话读一次并缓存；读被拒时留空 → 预算块隐藏（未知不是 0） | `src/handoff-wire.ts` 的 `addCarried`；`controller.ts` 的 `loadCarried`/`handoffBudgetConfig`；`model.ts` 的 `budgetOf`；`view.ts` 的 `Budget`；`tests/unit.mjs` 的预算与控制器用例；`tests/remote.mjs` 的 `handoffCarried` 用例；`docs/assets/ui/fleet-p2-budgets-1920.png` | 已落地（2026-10-24 二轮） |
+| F-21 | 2026-10-24 | §6.1 复核/收工/预算读插件自有投影 | 活动流已接 `oncall/handoff`：读投影 `records`，时间 + 类型 + 对象（派发带角色 id、收工带 outcome），最新在前；投影缺席写“活动流尚未接入”，投影在但为空写“还没有派发或收工记录”，两种情况都不画空时间线 | 投影本来就随会话快照下发（`snapshot()` 遍历所有带 `wire` 的注册项），不需要新 RPC；投影键由 `src/handoff-wire.ts` 共享，浏览器半包不从 `handoff.ts` 取常量（那里 import 了 zod/storage-domain，会把第二份 schema 运行时拖进 bundle）。`finish` 的 outcome 从 `tool/call.arguments` 折进记录（该字段本来就在 wire schema 里） | `src/client/fleet/model.ts` 的 `parseHandoff`/`activityOf`；`src/client/fleet/view.ts` 的 `ActivityStream`；`tests/unit.mjs` 的三态用例；`tests/client-controller.mjs` 的渲染用例；`docs/assets/ui/fleet-p2-activity-1920.png`（浏览器实测读到“已接入但为空”） | 已落地（2026-10-24 二轮） |
+| F-22 | 2026-10-24 | §4.4 D7「数字来自插件账本」 | “已用”= 投影计数 + 账本里接力带来的计数（同一个 `addCarried`）；“上限”= 浏览器自己那份配置（`normalizeHandoff`，与名册页同源）。新增只读 Remote `oncallHealth.handoffCarried`，**只回答“接力带了什么”** | 投影本来就到浏览器且随事件实时更新；把整个读数放 Remote 会在同一回合里过期，还会把同一份算术写两遍。账本只补投影拿不到的那半，浏览器按会话读一次并缓存；读被拒时留空 → 预算块隐藏（未知不是 0） | `src/handoff-wire.ts` 的 `addCarried`；`controller.ts` 的 `loadCarried`/`handoffBudgetConfig`；`model.ts` 的 `budgetOf`；`view.ts` 的 `Budget`；`tests/unit.mjs` 的预算与控制器用例；`tests/remote.mjs` 的 `handoffCarried` 用例；`docs/assets/ui/fleet-p2-budgets-1920.png` | 已落地（2026-10-24 二轮） |
 
 **2026-10-23 能力复核（已实施）**：已对 DSH checkout 逐项复核并落地。F-02/F-03/F-05/F-07/F-08/F-10 复核后保留（只补证据与源码行号）；F-04 改为共享导轨 + 首个运行子节点的 1.8s 流动点 + 根节点 2.4s 脉冲；F-06 改为 `pause()/resume()`（`tab.visible=false` 或卸载时停止调度并忽略重绘，仍不能 abort 已派发 `refreshProjections`）；`GroupList` 改用 `DisclosureRow`，长行/卡片标题改用 `Tooltip`；`agentTeam` 明确不采用；新增 F-11/F-12/F-13。能力表、文件级计划与验证路径见 [下一会话交接](agent-fleet-next-session-brief.md)，取舍理由见 [决策笔记](../../.agents/notes/implemented/2026-10-23-agent-fleet-capability-review.md)。
 
@@ -526,11 +526,11 @@ DSH 右栏宽度由列求解器决定，不能用 `vw` 写死。右栏宽度是*
 
 1. **Host 配置**：`handoff` 段字段与默认值逐项照 [handoff-proposal.md](handoff-proposal.md) §5/§十二，默认全关；保存期校验 `purpose` 非空、`preset` 与 `instructions` 至少一个非空、`instructions` ≤4000 字符、`id` 唯一、`failover` 指向存在的链、兜底角色存在。**未**新增 durable 事件类型，未改 `SESSION_FORMAT_VERSION`。`provider`/`model` 只校验"半条路由"；能否真的解析是环境事实（与候选同一条既有裁定），在界面上按目录给警告，不在保存期拒绝。
 2. **Host 工具**：一个 `handoff` 工具四个动作（`delegate` / `finish` / `newSession` / `facts`）；派发用 `ctx.subagents.startActivation` + `delivery: 'parent'`，唤醒只用 `agent.followup` / `agent.steer`，接力用 `ctx.sessionController.createSession` + `selectForNextRequest`（0.2.1-rc.2 的实际服务键，见 F-17），目标用 `ctx.goals`；非顶层会话在 handler 里拒绝，不做动态注册。注册延后到 `ctx.inject(['tools','subagents'])`（F-20）。
-3. **Host 账本**：`ctx.sessionProjections.register('router/handoff')` 折叠 `user/message`（epoch）、`tool/call` + `tool/result`（回执，被拒不记账）、`step/start`（回合）、`turn/end`、`compaction/start`；复核账本落 `storageDomain`（`model_router_handoff`），无 storage 时内存 + 一条可见 notice。预算计数随会话复制落在账本的 `budgets` 表（F-19）。
+3. **Host 账本**：`ctx.sessionProjections.register('oncall/handoff')` 折叠 `user/message`（epoch）、`tool/call` + `tool/result`（回执，被拒不记账）、`step/start`（回合）、`turn/end`、`compaction/start`；复核账本落 `storageDomain`（`oncall_handoff`），无 storage 时内存 + 一条可见 notice。预算计数随会话复制落在账本的 `budgets` 表（F-19）。
 4. **Client 第三页签**：`page.ts` 的 `SegmentedTabs` 增至三项；名册页 224px 列表 + 编辑器，列表最大高 420px 独立滚动、选中项滚进视野，校验摘要置顶并按角色过滤；保存仍走 `scope.mutate` 的同一次写（新增一个 `path: ['handoff']` 的 set），没有第二套保存链路。
 5. **验证**：`npm test` = 220 unit / 116 client-controller / 24 remote / 35 scenarios 0 失败；指定 `tsc` exit 0；`node --check lib/client.js` 通过；浏览器 1440 / 1025 / 801 / 大屏（列 960）、12 角色、空态、校验拒绝、保存回写全部实测。
 
-P1 已落地的右栏与配置页修正不依赖以上任何一项。右栏活动流与三本预算已在 2026-10-24 二轮接上 `router/handoff`（F-21、F-22）。
+P1 已落地的右栏与配置页修正不依赖以上任何一项。右栏活动流与三本预算已在 2026-10-24 二轮接上 `oncall/handoff`（F-21、F-22）。
 
 下一会话的优化交接（设计假设复核、已知偏差、可直接粘贴的提示词）见 [agent-fleet-next-session-brief.md](agent-fleet-next-session-brief.md)。P2 的 host→UI 次序、运行时（`0.2.1-rc.3`）对齐与验收见 [p2-roster-and-runtime-alignment.md](p2-roster-and-runtime-alignment.md)。 落地后的状态、原生能力核对与剩余缺口见 [p2-next-session-brief.md](p2-next-session-brief.md)。
 
@@ -574,7 +574,7 @@ P1 已落地的右栏与配置页修正不依赖以上任何一项。右栏活�
 | 层 | 画什么 | 数据 |
 |---|---|---|
 | 工作区 | 一个工作区块，块内并排它在跑的会话房间（一个工作区可并发多个会话） | 工作区 + 会话列表 |
-| 会话 = 房间 | 一间等距房间，最多 6 个工位，超员显示 "+N" | 该会话的直接子智能体（`router/handoff` 投影） |
+| 会话 = 房间 | 一间等距房间，最多 6 个工位，超员显示 "+N" | 该会话的直接子智能体（`oncall/handoff` 投影） |
 | 子智能体 = 工位 | 一个小人 + 桌椅 + 显示器；点它打开该子会话 | 子会话 id（打开走既有入口） |
 
 **网格与单位**

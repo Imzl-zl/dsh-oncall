@@ -1,6 +1,6 @@
 # Contributing
 
-This repository is one DSH plugin (`packages/dsh-model-desk/`) plus the design
+This repository is one DSH plugin (`packages/dsh-oncall/`) plus the design
 and decision records around it. Before changing behaviour, read
 [`AGENTS.md`](AGENTS.md) — it is the rulebook — and
 [`.agents/notes/AGENTS.md`](.agents/notes/AGENTS.md) for how decisions are
@@ -26,8 +26,8 @@ recorded.
 
 ```sh
 npm install
-npm ci --prefix packages/dsh-model-desk --legacy-peer-deps
-npm run bundle --prefix packages/dsh-model-desk
+npm ci --prefix packages/dsh-oncall --legacy-peer-deps
+npm run bundle --prefix packages/dsh-oncall
 npm test
 ```
 
@@ -40,11 +40,11 @@ standalone type-check:
 npx tsc --noEmit --skipLibCheck --strict \
   --module nodenext --moduleResolution nodenext \
   --target es2022 --allowImportingTsExtensions \
-  packages/dsh-model-desk/src/index.ts
+  packages/dsh-oncall/src/index.ts
 ```
 
 ## Releases
 
 Tag-driven; see the README's "Releasing" section. The tag must equal
-`packages/dsh-model-desk/package.json`'s version, and the CHANGELOG section
+`packages/dsh-oncall/package.json`'s version, and the CHANGELOG section
 for that version becomes the GitHub release notes.

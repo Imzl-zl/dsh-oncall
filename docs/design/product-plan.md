@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Desk — 产品形态与配置面"
+title: "DSH On-call — 产品形态与配置面"
 status: "proposal"
 kind: "product-plan"
 last_updated: "2026-10-12"
 ---
 
-# DSH Model Desk — 产品形态与配置面
+# DSH On-call — 产品形态与配置面
 
 ## 摘要
 
@@ -154,7 +154,7 @@ Trajectory 视图本来就把 `assistant/attempt`、`llm/retry`、`request/heade
 
 > 主模型 deepseek-official/deepseek-v4-flash 限流，已切换到 pi-ai-gpt/gpt-5（候选 2/3）
 
-**已实测可行**（见能力边界 7.7）：外置插件用自定义 `kind`（如 `model-desk`）+ `form: 'notice'` append 的消息完整落进 durable log，运行未被破坏。客户端读 `form` 不读 `kind`，未知 kind 有既定 fallback，故渲染成折叠行；文案可控、可中文。摘要经 `boundContextSummary()` 限 120 字符。浏览器实际样式未过，上线前建议过一次。
+**已实测可行**（见能力边界 7.7）：外置插件用自定义 `kind`（如 `oncall`）+ `form: 'notice'` append 的消息完整落进 durable log，运行未被破坏。客户端读 `form` 不读 `kind`，未知 kind 有既定 fallback，故渲染成折叠行；文案可控、可中文。摘要经 `boundContextSummary()` 限 120 字符。浏览器实际样式未过，上线前建议过一次。
 
 ### 4.3 一条去不掉的英文通知
 

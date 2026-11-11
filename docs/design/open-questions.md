@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Desk — 决策登记簿"
+title: "DSH On-call — 决策登记簿"
 status: "open"
 kind: "decision-register"
 last_updated: "2026-10-23"
 ---
 
-# DSH Model Desk — 决策登记簿
+# DSH On-call — 决策登记簿
 
 ## 摘要
 
@@ -85,8 +85,8 @@ last_updated: "2026-10-23"
 | 1 | **C2：可服务性提成独立谓词，由 `decideRecovery` 在授权下一次发火之前判**（已实测通过） | 根因：可服务性判断藏在 `planFire` 的"顺带前进"里（`router.ts:135-142`），只在**发火当时**算一次；第一个能阻止这次发火的决策点 `decideRecovery` 在**下一次失败后**才跑，等它看到 `exhausted` 时多打的那一次已经打完。`agent/request` 必须返回一个 config，所以"在 handler 里拦"只能 redirect 不能 cancel——原文最小修法实测把多打的那次从末位候选搬到 primary，**总数仍是 4**。修法：`canFireAgain(state)`（当前候选还有预算，或还有下一个候选），`decideRecovery` 在 `return 'retry'` 之前判它。实测：3 次真实调用、health fold 每候选恰好一次、unit 99 / run.mjs 18 / client-controller 37 全绿。附带：不需要 notice（没有隐藏的调用）、`totalAttempts` 不被污染、`maxAttempts` 成为真不变量。**遗留清理**：`planFire` 的 `exhausted` 标记与 `decideRecovery` 的 `state.exhausted` 守卫都要留——后者还服务 `outgoing === undefined` 的落回路径，两者不可互相取代；同一次提交里写明分工 | `router.ts` 的 `planFire`/`decideRecovery` |
 | 2 | **I1：留外层 + 本候选配额已尽时不让 llm-retry 插手**（第三选项，已实测通过，两者都要到） | 留外层是硬前提：删 `prepend` 后 `run.mjs:372` 打 7 次（上限 2）。但外层不必付内层的代价——在 `agent/request-error` 里、`await next()` **之前**判"本候选配额已尽 && 这个错该切换"，成立就直接决定（换得动返回 `{kind:'retry'}` 让 `planFire` 前进，换不动返回 `undefined` 终态），**根本不进 llm-retry**。实测：budget-cap 场景 boot **8547ms → 2227ms**、`llm/retry` **2 → 0**、`llm/retry-started` **2 → 0**、真实调用仍 2、18 场景 + 99 单测 + 37 client 全绿。语义依据：`maxAttempts` 的文案是"这条渠道最多真实调用多少次"，候选配额已尽时 llm-retry 想给同一条路由第二次本身就是越权——不让它做是执行分层不是破坏分层。附带修掉一个既有谎报：当前实现里 `llm/retry`/`llm/retry-started` 记录的 provider 往往不是真正被打的那一条（llm-retry 记"重试 primary"而 `planFire` 把这次重试改道到了 backup）。**实现陷阱（第一次 patch 实测踩到）**：熔断记录原本只在"内层放弃"分支，提前返回会跳过它 → `breaker-channel-scope-skips-sibling-models` 打红；修为提 `noteBreaker()` 闭包两分支共用，复验全绿 | `index.ts:325-362`、`run.mjs:372` |
 | 3 | **I10：分三档，不是两档**（定案；验收用例需先扩 stub） | 可达性已核：`resolveCallConfig`（`llm/src/index.ts:871-872`）→ `registration()`(:940→995) → `resolveModelInfoFor`(:880 → pi-ai `adapter.ts:268`/`:271` → `normalizeModelInfo` :766/:773) → `resolveCallWithInfo`(:881→:897)，五类全可达。DSH 自己的分层支持三档：`agent.ts:603-610` 只吞 `NO_ADAPTER`、其余 preparation error 直接终态；`resolveCallConfig` 的 JSDoc(:864-866)把它定义为"对确切模型能力的校验"。① **请求形状不匹配** `UNSUPPORTED_REASONING_EFFORT` → 现有 `skipped` notice；② **路由不存在/配错** `UNKNOWN_MODEL`/`INVALID_CONFIG`/`NO_ADAPTER` → 独立 notice，措辞指向"去 Models 页 / 装 provider"而不是"改这条链"；③ **适配器契约违规** `INVALID_MODEL_INFO`/`INVALID_MODEL_CONTEXT` → `ctx.logger.error` + 明说"这是适配器缺陷"的 notice。**不 rethrow**：一个坏 adapter 会掀掉整条链，与插件目的相反；`logger.error` + durable notice 已经响，不构成静默兜底。验收：stub 的 `script[route].model` 返回不匹配的 `id` 即可触发 `INVALID_MODEL_INFO`（`normalizeModelInfo` 校验 `resolved.id === model`），新增组合场景断言三档文案可区分 | `index.ts:254-263`、`notice.ts`、`tests/stub-adapter.mjs` |
-| 4 | **I7 滚动钩子：插件自己当滚动容器，零类名猜测**（定案） | 现状是两层猜测叠加：注入 `[class*="body"]{overflow-y:auto}` 把 DSH 的 body 改成滚动容器，再用 `closest('[class*="body"]')` 去找它。定案：删 `styles.ts:234-249` 的 `[class*="body"]` 整块；插件自己的 `#dsh-router-health-modal-body` 升级成滚动容器（`flex:1; min-height:0; overflow-y:auto`，它本来就是 flex 列的孩子）；`contentClassName` 用在 DSH 的 `css.content` 上给它 `flex:1; min-height:0`，让插件容器拿到有界高度；effect 改读自己的 id。依据：项目自己的教训（`tools.md`「别猜 DSH 的 CSS-modules 类名——猜类名的失败模式是静默的」）；`[hash]_[local]` 虽受构建保证（`tsdown.client.ts:562`），但 hash 随内容变，猜具体类名仍然脆。同时把四重变体收敛：`div[class*="dialog"]` 前缀是冗余的——插件传的 `className` 与 `css.dialog` 落在同一元素上（`Modal.tsx:64` `clsx(css.dialog, className)`），`.dsh-router-settings-modal` 单选择器即可 | `modals.ts:40-50`、`styles.ts:211-249` |
-| 5 | **I7/M20 常数：内容链零 vh 算术；z-index 值本来就对，缺的是引用**（定案） | **70px 删掉**：`.content` 变成正规 flex 孩子后，内容链高度全部由容器链推导，`calc(84vh - 70px)` 连同魔数一起消失（实测 DSH 头高 22+28+12=62px，`Modal.module.css:71-77`，且两个弹窗的 `footer` prop 与 `.dialog` 的 `gap:20px` 完全没被 70px 考虑）。全文件只保留 `max-height: 84vh` 一个 vh 常数在 dialog 根上——"载体本身不超过视口 84%"是合法常数。守卫随之从 `calc\(100vh[^)]*\)` 改成"内容链不允许任何 vh 算术"——2026-10-20 重写后这条链是 `.dsh-router-page → .dsh-router-content` 与弹窗的 `.dsh-router-modal-content → 其最后一个孩子`，不再有 `masterList`/`detailWorkspace`/`workspaceScroll`/`modalContentArea` 这些旧类。**z-index 值不用改**：DSH 自己没有 z-index token 量表（`ui-dockkit/src/components/dockkit.module.css:544` 明写 "No z-index token layer exists to draw from"），而 **1100 是 DSH 自己"压在 Modal(1000) 之上一层"的既定值**——`Tooltip.module.css:25`、`Toast.module.css:12`、`Menu.module.css:45`、`ContextMeter.module.css:48`、`ModelSelect.module.css:93`、`PluginManagerPage.module.css:786`、`PickerPopover.module.css:8`、`TaskMenu.module.css:46`、`stat-dialog.module.css:12` 共 9 处。缺的只是引用：加注释点名 `Modal.module.css:10`=1000 与那 9 处先例，并把 1100/1101 提成命名常量（overlay/panel 一对） | `styles.ts:217,230,1259-1260`、`client-controller.mjs` 的 vh 守卫 |
+| 4 | **I7 滚动钩子：插件自己当滚动容器，零类名猜测**（定案） | 现状是两层猜测叠加：注入 `[class*="body"]{overflow-y:auto}` 把 DSH 的 body 改成滚动容器，再用 `closest('[class*="body"]')` 去找它。定案：删 `styles.ts:234-249` 的 `[class*="body"]` 整块；插件自己的 `#dsh-oncall-health-modal-body` 升级成滚动容器（`flex:1; min-height:0; overflow-y:auto`，它本来就是 flex 列的孩子）；`contentClassName` 用在 DSH 的 `css.content` 上给它 `flex:1; min-height:0`，让插件容器拿到有界高度；effect 改读自己的 id。依据：项目自己的教训（`tools.md`「别猜 DSH 的 CSS-modules 类名——猜类名的失败模式是静默的」）；`[hash]_[local]` 虽受构建保证（`tsdown.client.ts:562`），但 hash 随内容变，猜具体类名仍然脆。同时把四重变体收敛：`div[class*="dialog"]` 前缀是冗余的——插件传的 `className` 与 `css.dialog` 落在同一元素上（`Modal.tsx:64` `clsx(css.dialog, className)`），`.dsh-oncall-settings-modal` 单选择器即可 | `modals.ts:40-50`、`styles.ts:211-249` |
+| 5 | **I7/M20 常数：内容链零 vh 算术；z-index 值本来就对，缺的是引用**（定案） | **70px 删掉**：`.content` 变成正规 flex 孩子后，内容链高度全部由容器链推导，`calc(84vh - 70px)` 连同魔数一起消失（实测 DSH 头高 22+28+12=62px，`Modal.module.css:71-77`，且两个弹窗的 `footer` prop 与 `.dialog` 的 `gap:20px` 完全没被 70px 考虑）。全文件只保留 `max-height: 84vh` 一个 vh 常数在 dialog 根上——"载体本身不超过视口 84%"是合法常数。守卫随之从 `calc\(100vh[^)]*\)` 改成"内容链不允许任何 vh 算术"——2026-10-20 重写后这条链是 `.dsh-oncall-page → .dsh-oncall-content` 与弹窗的 `.dsh-oncall-modal-content → 其最后一个孩子`，不再有 `masterList`/`detailWorkspace`/`workspaceScroll`/`modalContentArea` 这些旧类。**z-index 值不用改**：DSH 自己没有 z-index token 量表（`ui-dockkit/src/components/dockkit.module.css:544` 明写 "No z-index token layer exists to draw from"），而 **1100 是 DSH 自己"压在 Modal(1000) 之上一层"的既定值**——`Tooltip.module.css:25`、`Toast.module.css:12`、`Menu.module.css:45`、`ContextMeter.module.css:48`、`ModelSelect.module.css:93`、`PluginManagerPage.module.css:786`、`PickerPopover.module.css:8`、`TaskMenu.module.css:46`、`stat-dialog.module.css:12` 共 9 处。缺的只是引用：加注释点名 `Modal.module.css:10`=1000 与那 9 处先例，并把 1100/1101 提成命名常量（overlay/panel 一对） | `styles.ts:217,230,1259-1260`、`client-controller.mjs` 的 vh 守卫 |
 
 **前置说明**：第 1、2 项改同一段代码（`index.ts:317-362`、`router.ts`），同一次提交落地；
 第 3、4、5 项互相独立，可并行。
@@ -225,13 +225,34 @@ Minor 收尾（同轮）：5.3 三项已修（`nudges` 改 WeakMap + 换轮归�
 
 仍未做（全部是记账，不是缺陷修复）：5.2 的「场景配置形状」只作新场景约定（写 `chains`）、既有场景不改；5.3 的会话绑定只写不删（没有可靠删除钩子，每会话一行）；5.4 其余四项（英文夹全角括号、`0~99` 硬编码文案、同一状态两名、通知印原始键）。5.6 的源码行号漂移已重核（同日第二轮），不再列在这里。
 
+
 ### 13.2 待拍板
 
 | # | 问题 | 设计默认 | 影响 |
 |---|---|---|---|
-| 1 | `dsh-model-desk` 改名的**发布与仓库侧动作** | 仓库内改名已落地（[笔记](../../.agents/notes/implemented/2026-10-26-rename-away-from-model-router.md)）；剩余：GitHub 仓库改名、npm 包名发布、发版说明写明「配置 ns 改为 `model-desk`，存量配置需重存」 | 未发版前旧安装仍以 `dsh-models-router` 运行。**重装必须先 remove 旧包**：`dsh.profile.bundles` 与 `dependencies` 各有一条，只 add 新包不会清掉旧行，两包并存会出现两条配置行与两个面板。配置 ns 改名后旧 bundle 行的配置不再被认领，链/名册需在新对话框中重存 |
-| 2 | 持久化标识（`model_router_sessions`、`router/failover-history`、`router/channel-health`、`router/handoff`）是否随改名迁移 | **不动**，或迁移另开一轮 | 动了会丢既有会话绑定与历史投影；不动则长期存在「新旧两套词根」的已知债 |
+| 1 | ~~`dsh-model-desk` 改名的仓库内动作~~ | **已执行（2026-11-11）**，见第十四节与[改名笔记](../../.agents/notes/implemented/2026-11-11-rename-to-oncall.md) | 仓库内已无旧名；剩余只有仓库侧改名与 npm 发布 |
+| 2 | ~~持久化标识是否随改名迁移~~ | **已迁移**：`oncall_sessions`、`oncall/failover-history`、`oncall/channel-health`、`oncall/handoff` | 旧 `router/*` 投影读不到，历史切换记录看起来是空的；包未发布，存量只可能是本机 |
 | 3 | 是否先为 10-23 立即切换白名单与 10-24 交接/名册/Fleet 补 `CHANGELOG` 条目 | **先开 `Unreleased`** | 当前 `release.generated.ts` 内嵌的仍是 0.5.0（10-22）说明，升级弹窗读不到这三项能力 |
 | 4 | 实现与设计页的偏离如何记账 | 待定：约 10 项（页签缺计数、健康页缺四格 KPI、白名单移到重试分区、§3 删除确认弹窗不存在、`styles.ts` 行数不符等）逐条标注「改文档」或「改实现」 | 不记账会让下一次审查重复发现同一批偏差 |
-| 5 | ~~`AGENTS.md` 两处措辞是否修正~~ | 已关闭（2026-10-26） | §0 / §5 的计数与验证命令已按实际改为五套件、37 场景；§6 的「真实组合验证」现在有 `tests/handoff-relay.mjs` 兜住交接 |
+| 5 | ~~`AGENTS.md` 两处措辞是否修正~~ | 已关闭（2026-10-26；2026-11-11 复核） | 验证命令已按实际改为 11 套；§6 的「真实组合验证」由 `tests/handoff-relay.mjs` 兜住交接 |
 
+## 十四、改名与产品路线（2026-11-11）
+
+用户明确要求「改名尽快改，仓库名、包名、id、项目文件名都改，别遗留」；路线判断授权为「你看过源码，你比我清楚」。
+
+### 14.1 已执行
+
+| # | 决定 | 证据 |
+|---|---|---|
+| 1 | 包名 / 仓库名 / 目录 / 根工作区 → `dsh-oncall`；配置 ns 与行 id → `oncall`；service key → `oncall`；typert ns → `oncallHealth`；CSS 前缀 → `dsh-oncall-*`；持久化 → `oncall_sessions` / `oncall/*`；中文名 → 「值班台」 | 11 套全绿；`npm run bundle` 通过 |
+| 2 | 产品路线定为 on-call：路由是底座、入口是 V0 前门；`super-plugin-merge.md` 标 superseded | [路线笔记](../../.agents/notes/implemented/2026-11-11-oncall-product-route.md) |
+| 3 | 加载时检测旧 `model-desk` 行，打错误日志，不静默接管 | `index.ts` 的 `warnLegacyRow()` |
+
+### 14.2 待用户确认
+
+| # | 问题 | 我的判断 | 不确认的后果 |
+|---|---|---|---|
+| 1 | `thread` 映射提前到 V0 | 必须提前。幂等键是 trigger 级，同一 issue 的追问会开第二个 Case，两个 Case 抢同一分支 | 产品第一周就踩；补救要迁 Case 表 |
+| 2 | 最小 `step` 表提前到 V0（只存 `caseId + seq + outcome + at`） | 必须提前。executor 写 outcome 时必须有归属，否则 V1 要迁移并重解释历史 | executor 的 outcome 只能塞进 case 或审计流 |
+| 3 | `packages/dsh-oncall/README.md` 补 `ingress` 段（`repository` / `agentLogin` / `allowed` / `acceptMode` / `pollSeconds` + `GITHUB_TOKEN`） | 要做。V0 验收要求「设 token、填仓库、加白名单」，现在只能看 schema 描述 | 用户装完不知道入口存在 |
+| 4 | 仓库侧改名（GitHub `Imzl-zl/dsh-model-desk` → `dsh-oncall`）与首次 npm 发布 | 仓库内改名完成后即可做；发布前先 `dsh plugin remove` 旧包 | 旧仓库名与包名不一致，文档链接会 404 |

@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="dsh-model-desk" width="640">
+  <img src="docs/assets/banner.svg" alt="dsh-oncall" width="640">
 </p>
 
 <p align="center">
-  <a href="https://github.com/Imzl-zl/dsh-model-desk/actions/workflows/ci.yml"><img src="https://github.com/Imzl-zl/dsh-model-desk/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
-  <a href="https://www.npmjs.com/package/dsh-model-desk"><img src="https://img.shields.io/npm/v/dsh-model-desk?color=4A65E8" alt="npm"></a>
-  <a href="https://github.com/Imzl-zl/dsh-model-desk/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-4A65E8.svg" alt="License: MIT"></a>
+  <a href="https://github.com/Imzl-zl/dsh-oncall/actions/workflows/ci.yml"><img src="https://github.com/Imzl-zl/dsh-oncall/actions/workflows/ci.yml/badge.svg" alt="ci"></a>
+  <a href="https://www.npmjs.com/package/dsh-oncall"><img src="https://img.shields.io/npm/v/dsh-oncall?color=4A65E8" alt="npm"></a>
+  <a href="https://github.com/Imzl-zl/dsh-oncall/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-MIT-4A65E8.svg" alt="License: MIT"></a>
   <a href="https://github.com/deepseek-ai/deepseek-harness"><img src="https://img.shields.io/badge/DSH-0.2.1--rc.3-4A65E8.svg" alt="DSH 0.2.1-rc.3"></a>
 </p>
 
@@ -29,6 +29,7 @@
 - **条件路由** —— 按候选的 `images` / `minContextTokens` 条件，以及按失败码的 `switchOn`。
 - **渠道健康工作台** —— 零 Token 的被动延迟与吞吐、按需的 1-token 探测、按路由/按渠道的熔断，以及从 durable 会话日志折叠出的转移历史。
 - **中英双语界面** —— 带未保存修改提示条。
+- **入口（值班）** —— 盯一个 GitHub 仓库的 issue，把被授权的要求变成 Case；令牌走环境变量 `GITHUB_TOKEN`，不落配置。默认关，开启后只建 Case，执行器仍在下一刀。
 
 ## 截图
 
@@ -58,27 +59,27 @@
 需要 DSH `0.2.1-rc.3`。
 
 ```sh
-dsh plugin add dsh-model-desk
+dsh plugin add dsh-oncall
 ```
 
-从源码安装（包名是 `dsh-model-desk`；npm 上的 `dsh-model-desk` 是另一个包）：
+从源码安装（包名是 `dsh-oncall`）：
 
 ```sh
-git clone https://github.com/Imzl-zl/dsh-model-desk.git
-cd dsh-model-desk
+git clone https://github.com/Imzl-zl/dsh-oncall.git
+cd dsh-oncall
 npm install
-npm run bundle --prefix packages/dsh-model-desk
-dsh plugin --profile web add packages/dsh-model-desk
+npm run bundle --prefix packages/dsh-oncall
+dsh plugin --profile web add packages/dsh-oncall
 ```
 
-打开侧栏面板列表里的 **模型工作台** 配置链。
+打开侧栏面板列表里的 **值班台** 配置链。
 
 ## 更新
 
 更新由 DSH 的插件市场（`dshmarket`）原生处理：在「插件」页打开已安装列表，它会按 npm 上的版本检查并提供 **一键更新**；有更新时每行还带 **更新了什么**，内容来自本仓库 GitHub Release 的 notes（即 `CHANGELOG.md` 的对应小节）。插件不自己启动包管理器，也不复制安装算法。
 
 - **更新后**：新版本第一次打开工作台会弹一次该版本的更新日志；之后点页头的「检查更新」再看（已是最新版时会显示当前版本的说明，离线也能看）。
-- **手动更新（CLI）**：`dsh plugin --profile <profile> remove dsh-model-desk`，再 `dsh plugin --profile <profile> add dsh-model-desk@latest`。
+- **手动更新（CLI）**：`dsh plugin --profile <profile> remove dsh-oncall`，再 `dsh plugin --profile <profile> add dsh-oncall@latest`。
 - **桌面版**：在应用自己的「设置 → 插件」里更新，不要直接改它管理的 profile。
 - 版本记录：[CHANGELOG.md](CHANGELOG.md)。
 
@@ -108,6 +109,27 @@ chains:
 
 第一跳永远是你在 DSH 里选中的模型，不在配置里——链只回答「失败之后去哪」。旧的单 `chain` 配置（以及 2026-10-19 那版的 per-model `profiles`）在读取时迁成一条命名链，第一次保存写新形状。
 
+## 入口（值班）
+
+默认关。开启后，插件按 `pollSeconds` 轮询一个仓库，把被授权的消息变成 Case：
+
+```yaml
+ingress:
+  enabled: true
+  repository: owner/name          # 只盯一个仓库
+  agentLogin: my-bot              # agent 自己的 GitHub 登录名
+  allowed: [alice, bob]          # 可以派活的人（GitHub 登录名）
+  bots: [ci-bot]                 # 可以产生候选的机器人
+  acceptMode: observe             # off / observe / auto；auto 才真干
+  pollSeconds: 60
+```
+
+令牌只从环境变量读：`GITHUB_TOKEN`，不存配置——配置会落进 profile 的 `cordis.patch.yml`，也会出现在每次打印配置的日志里。
+
+判定规则：人在 issue 里 @ `agentLogin`、或 issue 指派给 `agentLogin`，才算候选；陌生人的不点名消息直接拒；`observe` 只记下本来会做什么。游标回看一分钟，靠 `case:<trigger>` 幂等，同一事件重读不会开第二个 Case。
+
+**现在只建 Case，不执行。** 打开入口后你会在日志里看到 `oncall: ingress ... opened/observed/refused`，但还没有会话被开出来——executor 与回评论是下一刀。
+
 ## 工作原理
 
 插件接管 Agent 循环的两个缝：
@@ -115,14 +137,14 @@ chains:
 - **`agent/request`**（`prepend: true`）为每次尝试选物理路由。它在 `installModelSelection` 之外运行，所以用户选的模型永远先试，没有失败就不会切换。
 - **`agent/request-error`**（`prepend: true`，最外层）先看到每次失败：`switchOn` 里的码，插件自己等一会儿重试，再往前推进；其它码交给 DSH，`llm-retry` 保留自己的次数与上限。
 
-每次切换都从 durable 会话日志折叠进 `router/failover-history` 投影，在转移历史抽屉里展示。
+每次切换都从 durable 会话日志折叠进 `oncall/failover-history` 投影，在转移历史抽屉里展示。
 
 ## 项目结构
 
 | 路径 | 是什么 |
 |---|---|
-| `packages/dsh-model-desk/src/` | 插件：Host 半包（`index.ts`、`router.ts`、`bindings.ts`、`chain.ts`…）与浏览器半包（`src/client/`）。 |
-| `packages/dsh-model-desk/tests/` | 四套件：`unit`、`client-controller`、`remote`（进程内生产组合）、`run`（真 headless Loader 组合，逐场景）。 |
+| `packages/dsh-oncall/src/` | 插件：Host 半包（`index.ts`、`router.ts`、`bindings.ts`、`chain.ts`…）与浏览器半包（`src/client/`）。 |
+| `packages/dsh-oncall/tests/` | 11 套：`layers`（分层守卫）、`ingress`、`github-issue`、`pass`、`github-http`、`ingress-loop`、`unit`、`client-controller`、`remote`（进程内生产组合）、`handoff-relay`（真实 web 组合的接力）、`run`（真 headless Loader 组合，逐场景）。 |
 | `docs/design/` | 当前设计：路由提案、源码地图、能力边界、按会话选链、发布说明策略。 |
 | `.agents/notes/` | 决策笔记（为什么、否掉了什么、代价是什么）。状态就是目录。 |
 | `spike/` | Phase 1 实证产物，原样保留；不属于包。 |
@@ -131,18 +153,18 @@ chains:
 
 ```sh
 npm install                                                  # 根目录：DSH CLI 与 peer
-npm ci --prefix packages/dsh-model-desk --legacy-peer-deps # 包内：tsc、tsdown、typert 生成器
-npm run bundle --prefix packages/dsh-model-desk           # 构建 lib/（host + client + typert）
+npm ci --prefix packages/dsh-oncall --legacy-peer-deps # 包内：tsc、tsdown、typert 生成器
+npm run bundle --prefix packages/dsh-oncall           # 构建 lib/（host + client + typert）
 npm test                                                     # 四套件
 ```
 
 单独跑某一套（组合套可带场景名）：
 
 ```sh
-node packages/dsh-model-desk/tests/unit.mjs
-node packages/dsh-model-desk/tests/client-controller.mjs
-node packages/dsh-model-desk/tests/remote.mjs
-node packages/dsh-model-desk/tests/run.mjs [scenario]
+node packages/dsh-oncall/tests/unit.mjs
+node packages/dsh-oncall/tests/client-controller.mjs
+node packages/dsh-oncall/tests/remote.mjs
+node packages/dsh-oncall/tests/run.mjs [scenario]
 ```
 
 `lib/` 不进 git（在 `files` 里，npm 会发）；改源码后必须先 `npm run bundle`，浏览器与 Loader 才看得到，组合测试故意加载构建产物。
@@ -150,10 +172,10 @@ node packages/dsh-model-desk/tests/run.mjs [scenario]
 ## 发布
 
 ```sh
-npm version minor --prefix packages/dsh-model-desk   # 0.2.0 → 0.3.0，先不打 tag
+npm version minor --prefix packages/dsh-oncall   # 0.2.0 → 0.3.0，先不打 tag
 # 把 CHANGELOG 的 Unreleased 内容挪到新版本标题下
 git add -A && git commit -m "chore(release): 0.3.0"
-git tag -a v0.3.0 -m "dsh-model-desk 0.3.0" && git push origin master v0.3.0
+git tag -a v0.3.0 -m "dsh-oncall 0.3.0" && git push origin master v0.3.0
 ```
 
 推 tag 就是发布：
@@ -164,7 +186,7 @@ git tag -a v0.3.0 -m "dsh-model-desk 0.3.0" && git push origin master v0.3.0
 
 版本策略按 CHANGELOG：`1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围随之移动。
 
-包名是 `dsh-model-desk`：npm 上的 `dsh-model-desk` 属于别人，所以安装命令、徽章、bundle patch 都用复数名。
+包名是 `dsh-oncall`：npm 上的 `dsh-oncall` 属于别人，所以安装命令、徽章、bundle patch 都用复数名。
 
 ## 限制
 

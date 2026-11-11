@@ -1,0 +1,677 @@
+/**
+ * The plugin's two configuration dialogs.
+ *
+ * Both are DSH's own `Modal` with one fixed size (`.dsh-oncall-modal`) and one
+ * scrolling body (`contentClassName` → the content wrapper → its last child,
+ * the same structural chain styles.ts documents). The health dialog is a single
+ * scrollable column of sections — the tabbed version changed the card's height
+ * by ~300px when switching to the breaker tab, and the breaker rules opened a
+ * second dialog on top. Rules are edited in place now.
+ *
+ * Note: 弹窗尺寸、滚动链与"无第二层子弹窗"的依据 —— 见 docs/design/ui-layout-redesign.md
+ */
+
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { ChangeEvent } from 'react'
+import type { ModelCatalogModel, ModelProviderGroup } from '@deepseek-ai/dsh-api-session-controller/types'
+import { Button, Checkbox, Input, MarkdownText, Modal, SegmentedControl, Switch } from '@deepseek-ai/dsh-client-ui-primitives'
+import { h } from './dom.ts'
+import { fill, formatWindowHours } from './format.ts'
+import { routeNames } from './naming.ts'
+import { Icon, ICON_TRASH } from './icons.ts'
+import { routeKeyOf, routeParts } from '../routes.ts'
+import { BREAKER_CODE_PRESETS, clampInt } from './validate.ts'
+import {
+  BREAKER_COOLDOWN_MAX_SECONDS,
+  BREAKER_COOLDOWN_MIN_SECONDS,
+  DEFAULT_BREAKER_COOLDOWN_SECONDS,
+  DEFAULT_BREAKER_SCOPE,
+  DEFAULT_INTERVAL_SECONDS,
+  DEFAULT_PROBE_PROMPT,
+  DEFAULT_PROBE_TIMEOUT_SECONDS,
+  HEALTH_INTERVAL_MAX_SECONDS,
+  PROBE_TIMEOUT_MAX_SECONDS,
+  PROBE_TIMEOUT_MIN_SECONDS,
+} from '../defaults.ts'
+import { DEFAULT_TIMELINE_BUCKET_SECONDS, TIMELINE_BUCKET_SECONDS } from '../timeline.ts'
+
+const MODAL_CLASS = 'dsh-oncall-modal'
+const MODAL_CONTENT = 'dsh-oncall-modal-content'
+
+/**
+ * One titled block inside a dialog body. The tier's on/off switch sits in the
+ * section head on the right — repeating the tier name on its own switch row
+ * made every section say its name twice.
+ */
+function Section(props) {
+  return h('section', { className: 'dsh-oncall-modal-section' },
+    h('div', { className: 'dsh-oncall-modal-section-head' },
+      h('div', { className: 'dsh-oncall-modal-section-copy' },
+        h('h3', { className: 'dsh-oncall-modal-section-title' }, props.title),
+        props.hint === undefined ? null : h('p', { className: 'dsh-oncall-modal-section-hint' }, props.hint)),
+      props.switch === undefined ? null : h('div', { className: 'dsh-oncall-modal-section-switch' }, props.switch)),
+    props.children)
+}
+
+/** Label above control: the shape a long hint needs (the control row squeezed it). */
+function StackedField(props) {
+  return h('div', { className: 'dsh-oncall-field-col' },
+    h('span', { className: 'dsh-oncall-label' }, props.label),
+    props.children,
+    props.hint === undefined ? null : h('span', { className: 'dsh-oncall-hint' }, props.hint))
+}
+
+/** A whole-number text field that reports a number, clamped by the caller. */
+function NumberInput(props) {
+  return h(Input, {
+    type: 'text',
+    inputMode: 'numeric',
+    className: props.className,
+    value: props.value,
+    disabled: props.disabled,
+    'aria-label': props.label,
+    onChange: function (event) {
+      var parsed = Number(event.target.value)
+      if (Number.isFinite(parsed)) props.onChange(parsed)
+    },
+  })
+}
+
+export function HealthSettingsModal(props) {
+  var t = props.t
+  // 下拉里显示目录中的名字，`value` 仍是原始 `provider/model` 键——写进配置的
+  // 必须是真键，名字只是给人看的。
+  var names = useMemo(function () { return routeNames(props.catalog) }, [props.catalog])
+  var health = props.health || {}
+  var discover = health.discover || {}
+  var probe = health.probe || {}
+  var breaker = health.breaker || {}
+
+  var [timelineBucketSeconds, setTimelineBucketSeconds] = useState(
+    typeof health.timelineBucketSeconds === 'number' ? health.timelineBucketSeconds : DEFAULT_TIMELINE_BUCKET_SECONDS,
+  )
+  var [discoverOn, setDiscoverOn] = useState(discover.enabled === true)
+  var [discoverInterval, setDiscoverInterval] = useState(String(discover.intervalSeconds ?? DEFAULT_INTERVAL_SECONDS))
+  var [probeOn, setProbeOn] = useState(probe.enabled === true)
+  var [probeInterval, setProbeInterval] = useState(String(probe.intervalSeconds ?? DEFAULT_INTERVAL_SECONDS))
+  var [probePrompt, setProbePrompt] = useState(typeof probe.prompt === 'string' ? probe.prompt : DEFAULT_PROBE_PROMPT)
+  var [probeTimeout, setProbeTimeout] = useState(String(probe.timeoutSeconds ?? DEFAULT_PROBE_TIMEOUT_SECONDS))
+  var [promptOverrides, setPromptOverrides] = useState((probe.prompts ?? []).map(function (entry) {
+    return { route: entry.route ?? '', prompt: entry.prompt ?? '' }
+  }))
+  var [breakerOn, setBreakerOn] = useState(breaker.enabled === true)
+  var [rules, setRules] = useState((breaker.rules || []).map(function (rule) {
+    return {
+      code: rule.code || '',
+      message: rule.message || '',
+      cooldownSeconds: rule.cooldownSeconds ?? DEFAULT_BREAKER_COOLDOWN_SECONDS,
+      scope: rule.scope === 'channel' ? 'channel' : DEFAULT_BREAKER_SCOPE,
+    }
+  }))
+
+  var routeChoices = (props.routes ?? []).filter(function (route) {
+    return !promptOverrides.some(function (entry) { return entry.route === route })
+  })
+  function routeLabelOf(route) {
+    var parts = routeParts(route)
+    return names.route(parts.provider, parts.model)
+  }
+  // 一条两个字段都空白的规则永远命中不了任何东西。不静默过滤：弹窗替用户删规则，
+  // 就会和页面级 validate() 对同一份数据说出两种结论。禁掉确认，把问题摆在旁边。
+  var hasEmptyRule = rules.some(function (rule) { return !rule.code && !rule.message })
+
+  // A newly added override row lands at the bottom of the scrolling body; bring it
+  // into view with scrollIntoView (the nearest scrollable ancestor is the modal
+  // body), so the click never looks dead.
+  var lastOverrideRef = useRef<HTMLDivElement | null>(null)
+  useEffect(function () {
+    var el = lastOverrideRef.current
+    if (el && typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' })
+  }, [promptOverrides.length])
+
+  function intervalOf(text) {
+    var n = Math.round(Number(text))
+    return isFinite(n) && n > 0 ? n : 0
+  }
+
+  function patchOverride(index, patch) {
+    setPromptOverrides(function (current) {
+      var next = current.slice()
+      next[index] = Object.assign({}, next[index], patch)
+      return next
+    })
+  }
+
+  function patchRule(index, patch) {
+    setRules(function (current) {
+      var next = current.slice()
+      next[index] = Object.assign({}, next[index], patch)
+      return next
+    })
+  }
+
+  // 时间轴桶长单独一段：被动观测没有开关（它只是把真实对话的结果折进投影，零成本、
+  // 也没有"要不要记录"这个选择），所以这一段只放桶长。
+  var timelineSection = h(Section, {
+    key: 'timeline',
+    title: t('timelineBucketLabel'),
+    hint: t('timelineBucketHint'),
+  },
+    h(SegmentedControl, {
+      id: 'router-timeline-bucket',
+      label: t('timelineBucketLabel'),
+      value: String(timelineBucketSeconds),
+      disabled: props.disabled,
+      options: TIMELINE_BUCKET_SECONDS.map(function (seconds) {
+        return {
+          value: String(seconds),
+          label: seconds >= 60 ? (seconds / 60) + t('timelineBucketMinutes') : seconds + 's',
+          title: fill(t('timelineBucketWindow'), { window: formatWindowHours(seconds) }),
+        }
+      }),
+      onChange: function (next) { setTimelineBucketSeconds(Number(next)) },
+    }))
+
+  var discoverSection = h(Section, {
+    key: 'discover',
+    title: t('healthDiscoverLabel'),
+    hint: t('healthDiscoverHint'),
+    switch: h(Switch, {
+      checked: discoverOn,
+      label: t('healthDiscoverLabel'),
+      disabled: props.disabled,
+      onChange: function (next) { setDiscoverOn(next) },
+    }),
+  },
+    discoverOn
+      ? h(StackedField, { label: t('healthDiscoverIntervalLabel'), hint: t('healthDiscoverIntervalHint') },
+          h(NumberInput, {
+            label: t('healthDiscoverIntervalLabel'),
+            value: discoverInterval,
+            disabled: props.disabled,
+            onChange: function (next) { setDiscoverInterval(String(clampInt(next, 0, HEALTH_INTERVAL_MAX_SECONDS))) },
+          }))
+      : null)
+
+  var overrideRows = promptOverrides.map(function (entry, index) {
+    var isLast = index === promptOverrides.length - 1
+    return h('div', {
+      key: entry.route + '#' + index,
+      className: 'dsh-oncall-breaker-row',
+      ref: isLast ? lastOverrideRef : undefined,
+    },
+      h('select', {
+        className: 'dsh-oncall-select',
+        'aria-label': t('healthProbeRouteLabel'),
+        value: entry.route,
+        disabled: props.disabled,
+        onChange: function (event: ChangeEvent<HTMLSelectElement>) { patchOverride(index, { route: event.currentTarget.value }) },
+      },
+        h('option', { value: entry.route }, entry.route === '' ? t('healthProbeRoutePlaceholder') : routeLabelOf(entry.route)),
+        routeChoices.map(function (route) {
+          return h('option', { key: route, value: route }, routeLabelOf(route))
+        })),
+      h(Input, {
+        type: 'text',
+        placeholder: probePrompt || '1',
+        'aria-label': t('healthProbePromptLabel'),
+        value: entry.prompt,
+        disabled: props.disabled,
+        onChange: function (event) { patchOverride(index, { prompt: event.target.value }) },
+      }),
+      h('button', {
+        type: 'button',
+        className: 'dsh-oncall-icon-btn dsh-oncall-icon-btn-danger',
+        title: t('healthProbeOverrideRemove'),
+        'aria-label': t('healthProbeOverrideRemove'),
+        disabled: props.disabled,
+        onClick: function () {
+          setPromptOverrides(function (current) {
+            var next = current.slice()
+            next.splice(index, 1)
+            return next
+          })
+        },
+      }, h(Icon, { d: ICON_TRASH, size: 12 })))
+  })
+
+  var probeSection = h(Section, {
+    key: 'probe',
+    title: t('healthProbeLabel'),
+    hint: t('healthProbeHint'),
+    switch: h(Switch, {
+      checked: probeOn,
+      label: t('healthProbeLabel'),
+      disabled: props.disabled,
+      onChange: function (next) { setProbeOn(next) },
+    }),
+  },
+    probeOn
+      ? h('div', { className: 'dsh-oncall-field-grid' },
+          h(StackedField, { label: t('healthProbeIntervalLabel'), hint: t('healthProbeIntervalHint') },
+            h(NumberInput, {
+              label: t('healthProbeIntervalLabel'),
+              value: probeInterval,
+              disabled: props.disabled,
+              onChange: function (next) { setProbeInterval(String(clampInt(next, 0, HEALTH_INTERVAL_MAX_SECONDS))) },
+            })),
+          h(StackedField, { label: t('healthProbeTimeoutLabel'), hint: t('healthProbeTimeoutHint') },
+            h(NumberInput, {
+              label: t('healthProbeTimeoutLabel'),
+              value: probeTimeout,
+              disabled: props.disabled,
+              // 下限是 host schema 的 min（2 秒），不是 1：从前这里钳到 1，
+              // 于是"1"能被填进去、被保存、被宿主拒绝，页脚只说保存失败。
+              onChange: function (next) { setProbeTimeout(String(clampInt(next, PROBE_TIMEOUT_MIN_SECONDS, PROBE_TIMEOUT_MAX_SECONDS))) },
+            })))
+      : null,
+    probeOn
+      ? h(StackedField, { label: t('healthProbePromptLabel'), hint: t('healthProbePromptHint') },
+          h(Input, {
+            type: 'text',
+            placeholder: String(DEFAULT_PROBE_PROMPT),
+            'aria-label': t('healthProbePromptLabel'),
+            value: probePrompt,
+            disabled: props.disabled,
+            onChange: function (event) { setProbePrompt(event.target.value) },
+          }))
+      : null,
+    probeOn
+      ? h('div', { className: 'dsh-oncall-modal-stack' },
+          h('div', { className: 'dsh-oncall-modal-field' },
+            h('div', { className: 'dsh-oncall-modal-field-copy' },
+              h('span', { className: 'dsh-oncall-label' }, t('healthProbePromptsLabel')),
+              h('span', { className: 'dsh-oncall-hint' }, t('healthProbePromptsHint'))),
+            h(Button, {
+              variant: 'outline',
+              size: 'sm',
+              disabled: props.disabled || routeChoices.length === 0,
+              onClick: function () {
+                setPromptOverrides(function (current) {
+                  var free = routeChoices.filter(function (route) {
+                    return !current.some(function (entry) { return entry.route === route })
+                  })
+                  return current.concat([{ route: free[0] ?? '', prompt: '' }])
+                })
+              },
+            }, t('healthProbeOverrideAdd'))),
+          overrideRows)
+      : null)
+
+  var presetChips = BREAKER_CODE_PRESETS.map(function (preset) {
+    var exists = rules.some(function (rule) { return rule.code === preset.code && !rule.message })
+    return h(Button, {
+      key: preset.code,
+      variant: 'outline',
+      size: 'sm',
+      disabled: props.disabled || exists,
+      title: exists ? t('breakerAlreadyAdded') : t(preset.descKey),
+      onClick: function () {
+        setRules(function (current) {
+          return current.concat([{ code: preset.code, message: '', cooldownSeconds: preset.seconds, scope: DEFAULT_BREAKER_SCOPE }])
+        })
+      },
+    }, preset.code)
+  })
+
+  var ruleRows = rules.map(function (rule, index) {
+    return h('div', { key: 'br' + index, className: 'dsh-oncall-breaker-row' },
+      h(Input, {
+        type: 'text',
+        className: 'dsh-oncall-breaker-code',
+        placeholder: t('breakerCodePlaceholder'),
+        'aria-label': t('breakerCodeLabel'),
+        value: rule.code,
+        disabled: props.disabled,
+        onChange: function (event) { patchRule(index, { code: event.target.value }) },
+      }),
+      h(Input, {
+        type: 'text',
+        placeholder: t('breakerMessagePlaceholder'),
+        'aria-label': t('breakerMessageLabel'),
+        value: rule.message,
+        disabled: props.disabled,
+        onChange: function (event) { patchRule(index, { message: event.target.value }) },
+      }),
+      h(NumberInput, {
+        label: t('breakerCooldownLabel'),
+        value: String(rule.cooldownSeconds),
+        disabled: props.disabled,
+        onChange: function (next) { patchRule(index, { cooldownSeconds: clampInt(next, BREAKER_COOLDOWN_MIN_SECONDS, BREAKER_COOLDOWN_MAX_SECONDS) }) },
+      }),
+      h('span', { className: 'dsh-oncall-muted' }, t('breakerSecondsUnit')),
+      h(SegmentedControl, {
+        id: 'router-breaker-scope-' + index,
+        label: t('breakerScopeLabel'),
+        value: rule.scope,
+        disabled: props.disabled,
+        options: [
+          { value: 'route', label: t('breakerScopeRoute'), title: t('breakerScopeRouteHint') },
+          { value: 'channel', label: t('breakerScopeChannel'), title: t('breakerScopeChannelHint') },
+        ],
+        onChange: function (next) { patchRule(index, { scope: next }) },
+      }),
+      h('button', {
+        type: 'button',
+        className: 'dsh-oncall-icon-btn dsh-oncall-icon-btn-danger',
+        title: t('breakerRemoveRule'),
+        'aria-label': t('breakerRemoveRule'),
+        disabled: props.disabled,
+        onClick: function () {
+          setRules(function (current) {
+            var next = current.slice()
+            next.splice(index, 1)
+            return next
+          })
+        },
+      }, h(Icon, { d: ICON_TRASH, size: 12 })))
+  })
+
+  var breakerSection = h(Section, {
+    key: 'breaker',
+    title: t('breakerLabel'),
+    hint: t('breakerHint'),
+    switch: h(Switch, {
+      checked: breakerOn,
+      label: t('breakerLabel'),
+      disabled: props.disabled,
+      onChange: function (next) { setBreakerOn(next) },
+    }),
+  },
+    breakerOn
+      ? h('div', { className: 'dsh-oncall-modal-stack' },
+          h('p', { className: 'dsh-oncall-modal-section-hint' }, t('breakerSharedHint')),
+          h('div', { className: 'dsh-oncall-chip-row' }, presetChips),
+          ruleRows.length === 0
+            ? h('p', { className: 'dsh-oncall-empty' }, t('breakerRulesEmpty'))
+            : h('div', null, ruleRows),
+          h(Button, {
+            variant: 'ghost',
+            size: 'sm',
+            disabled: props.disabled,
+            onClick: function () {
+              setRules(function (current) {
+                return current.concat([{ code: '', message: '', cooldownSeconds: DEFAULT_BREAKER_COOLDOWN_SECONDS, scope: DEFAULT_BREAKER_SCOPE }])
+              })
+            },
+          }, t('breakerAddRule')),
+          hasEmptyRule
+            ? h('p', { className: 'dsh-oncall-notice dsh-oncall-notice-error', role: 'alert' }, t('problemBreakerEmptyRule'))
+            : null)
+      : null)
+
+  return h(Modal, {
+    open: true,
+    className: MODAL_CLASS,
+    contentClassName: MODAL_CONTENT,
+    title: t('healthModalTitle'),
+    closeLabel: t('close'),
+    onClose: props.onClose,
+    footer: h('div', { className: 'dsh-oncall-footer-actions' },
+      h(Button, { variant: 'outline', onClick: props.onClose }, t('cancel')),
+      h(Button, {
+        variant: 'primary',
+        disabled: hasEmptyRule,
+        onClick: function () {
+          props.onUpdateHealth({
+            discover: { enabled: discoverOn, intervalSeconds: intervalOf(discoverInterval) },
+            probe: {
+              enabled: probeOn,
+              intervalSeconds: intervalOf(probeInterval),
+              prompt: probePrompt.trim().length > 0 ? probePrompt.trim() : DEFAULT_PROBE_PROMPT,
+              timeoutSeconds: clampInt(Number(probeTimeout) || DEFAULT_PROBE_TIMEOUT_SECONDS, PROBE_TIMEOUT_MIN_SECONDS, PROBE_TIMEOUT_MAX_SECONDS),
+              // 逐路由覆盖：路由与内容都填满才算一条——空路由是用户还没选完，
+              // 空内容是用户刚删了字，两种情况都不该落一条进配置。
+              prompts: promptOverrides
+                .filter(function (entry) { return entry.route.length > 0 && entry.prompt.trim().length > 0 })
+                .map(function (entry) { return { route: entry.route, prompt: entry.prompt.trim() } }),
+            },
+            breaker: { enabled: breakerOn, rules },
+            timelineBucketSeconds: timelineBucketSeconds,
+          })
+          props.onClose()
+        },
+      }, t('applyChanges'))),
+  },
+    h('div', { className: 'dsh-oncall-modal-body' },
+      timelineSection,
+      discoverSection,
+      probeSection,
+      breakerSection))
+}
+
+/**
+ * Pick fallback candidates from the model catalog.
+ *
+ * One list, not two tabs. The catalog is `session/modelCatalog()` — the same
+ * projection DSH's own model switcher reads — so every model DSH can address is
+ * already listed here. A hand-typed model id was a second path to routes that
+ * only resolved on adapters with pass-through ids (`llm-deepseek`), and became
+ * `UNKNOWN_MODEL` before any request on the rest (`llm-pi-ai`), which is what
+ * this plugin's channels mostly are. Registering the model under
+ * Settings → Models is the one place that makes an id real; there is no second
+ * source of truth to offer here.
+ *
+ * Note: 为何删掉「自定义模型 ID」Tab —— 见
+ * .agents/notes/implemented/2026-10-20-remove-manual-model-id-tab.md
+ */
+export function AddCandidateModal(props) {
+  var t = props.t
+  var [query, setQuery] = useState('')
+  var [selected, setSelected] = useState({})
+  // The catalog is `ModelCatalog` from the session-controller's Host face; only the
+  // provider groups matter here. Typed at the read so the filter below works on
+  // real `id`/`name` fields instead of `any`.
+  var groups: readonly ModelProviderGroup[] = props.catalog?.groups ?? []
+  var needle = query.trim().toLowerCase()
+  /** One provider group with the models that matched the search. */
+  var entries: { group: ModelProviderGroup; models: ModelCatalogModel[] }[] = []
+  groups.forEach(function (group) {
+    var models = group.models.filter(function (model) {
+      if (needle === '') return true
+      return model.name.toLowerCase().includes(needle) || model.id.toLowerCase().includes(needle) || group.name.toLowerCase().includes(needle)
+    })
+    if (models.length > 0) entries.push({ group: group, models: models })
+  })
+  var selectedCount = Object.keys(selected).length
+
+  return h(Modal, {
+    open: true,
+    className: MODAL_CLASS,
+    contentClassName: MODAL_CONTENT,
+    title: t('addCandidateModalTitle'),
+    closeLabel: t('close'),
+    onClose: props.onClose,
+    footer: h('div', { className: 'dsh-oncall-footer-actions' },
+      h(Button, { variant: 'outline', onClick: props.onClose }, t('cancel')),
+      h(Button, {
+        variant: 'primary',
+        disabled: selectedCount === 0,
+        onClick: function () {
+          if (selectedCount === 0) return
+          props.onAdd(Object.keys(selected).map(routeParts))
+          props.onClose()
+        },
+      }, t('adoptSelected') + (selectedCount > 0 ? ' (' + selectedCount + ')' : ''))),
+  },
+    h('div', { className: 'dsh-oncall-modal-body' },
+      h(Input, {
+        type: 'search',
+        placeholder: t('searchModelPlaceholder'),
+        'aria-label': t('searchModelPlaceholder'),
+        value: query,
+        onChange: function (event) { setQuery(event.target.value) },
+      }),
+      // 读失败与"还在读"是两件事：`catalogFailed` 从前没有任何读者，于是失败之后
+      // 这个对话框永远显示「正在加载」，也没有重试入口。`ensureCatalog` 本身幂等，
+      // 重试就是再调一次它（页面已有的 `onLoadCatalog`）。
+      props.catalogFailed === true && props.catalog === null
+        ? h('div', { className: 'dsh-oncall-empty' },
+            h('p', null, t('catalogUnavailable')),
+            h(Button, { variant: 'outline', onClick: props.onLoadCatalog }, t('catalogRetry')))
+        : props.catalog === null ? h('p', { className: 'dsh-oncall-modal-section-hint' }, t('catalogLoading')) : null,
+      entries.length === 0 && props.catalog !== null
+        ? h('p', { className: 'dsh-oncall-empty' }, query ? t('noMatchingProfiles') : t('addCandidateEmpty'))
+        : entries.map(function (entry) {
+            return h('div', { key: entry.group.id, className: 'dsh-oncall-catalog-group' },
+              h('div', { className: 'dsh-oncall-catalog-group-title' }, entry.group.name),
+              entry.models.map(function (m) {
+                var route = routeKeyOf(entry.group.id, m.id)
+                return h('div', { key: route, className: 'dsh-oncall-catalog-row' },
+                  h(Checkbox, {
+                    checked: Boolean(selected[route]),
+                    label: m.name,
+                    onChange: function () {
+                      // 更新器形式：读渲染期闭包里的 selected，同一 tick 的两次点击
+                      // 会互相覆盖（用户看得见却存不上）。
+                      setSelected(function (current) {
+                        var next = Object.assign({}, current)
+                        if (next[route]) delete next[route]
+                        else next[route] = true
+                        return next
+                      })
+                    },
+                  }),
+                  h('code', null, m.id))
+              }))
+          })))
+}
+
+/**
+ * The update check: is there a newer release, and what did it change?
+ *
+ * One dialog does both, because the two answers belong together: a version
+ * number without its notes says nothing about whether to update, and notes
+ * without a version number describe a release the reader may already have.
+ *
+ * The running version's notes are embedded in the artifact, so the dialog can
+ * show them offline and can never disagree with what is installed. A newer
+ * version's notes come from its GitHub release — the same body the release
+ * workflow writes from this repository's CHANGELOG.
+ *
+ * What the dialog does NOT do is turn an unanswered check into an answer: a
+ * registry that could not be reached says so, and the current version's notes
+ * are shown beside that failure rather than instead of it.
+ */
+export function UpdateCheckModal(props) {
+  var t = props.t
+  var result = props.result
+  var current = result !== null && result !== undefined ? result.current : props.currentVersion
+  var newer = result !== null && result !== undefined && result.newer === true
+  var latest = result !== null && result !== undefined ? result.latest : null
+  var notesVersion = newer && latest !== null ? latest : current
+  var notes = newer && result.notes !== null && result.notes !== undefined
+    ? result.notes
+    : props.currentNotes
+  var publishedAt = newer && result.publishedAt !== null && result.publishedAt !== undefined
+    ? result.publishedAt
+    : null
+
+  // 两种失败都要上屏：宿主没答上来（props.error，传输层）与宿主答了但"查不到"
+  // （result.error，registry 读不到）。两者都不是"已是最新"。
+  var checkError = props.error !== null && props.error !== undefined
+    ? props.error
+    : (result !== null && result !== undefined ? result.error : null)
+
+  var status
+  if (checkError !== null && checkError !== undefined) {
+    status = h('p', { className: 'dsh-oncall-notice dsh-oncall-notice-error', role: 'alert' },
+      fill(t('updateCheckFailed'), { reason: checkError }))
+  } else if (newer) {
+    status = h('p', { className: 'dsh-oncall-update-status' },
+      fill(t('updateNewVersion'), { version: latest, date: publishedAt === null ? '' : formatDate(publishedAt) }))
+  } else if (latest !== null) {
+    status = h('p', { className: 'dsh-oncall-update-status' }, t('updateUpToDate'))
+  } else {
+    status = h('p', { className: 'dsh-oncall-muted' }, props.checking ? t('updateChecking') : '')
+  }
+
+  var notesUnavailable = result !== null && result !== undefined
+    && result.notesError !== null && result.notesError !== undefined
+
+  return h(Modal, {
+    open: true,
+    className: MODAL_CLASS,
+    contentClassName: MODAL_CONTENT,
+    title: t('updateCheckTitle'),
+    closeLabel: t('close'),
+    onClose: props.onClose,
+    footer: h('div', { className: 'dsh-oncall-footer-actions' },
+      h(Button, { variant: 'outline', size: 'sm', disabled: props.checking, onClick: props.onRecheck }, t('updateRecheck')),
+      h(Button, { variant: 'primary', onClick: props.onClose }, t('updateClose'))),
+  },
+    h('div', { className: 'dsh-oncall-modal-body' },
+      h('div', { className: 'dsh-oncall-update-versions' },
+        h('span', { className: 'dsh-oncall-muted' }, t('updateCurrentVersion') + ' ' + current),
+        h('span', { className: 'dsh-oncall-muted' }, t('updateLatestVersion') + ' ' + (latest ?? '—'))),
+      status,
+      newer
+        ? h('div', { className: 'dsh-oncall-update-actions' },
+            h('a', {
+              className: 'dsh-oncall-update-link',
+              href: 'https://github.com/Imzl-zl/dsh-oncall/releases/tag/v' + latest,
+              target: '_blank',
+              rel: 'noreferrer',
+            }, t('updateOpenRelease')),
+            h('span', { className: 'dsh-oncall-hint' }, t('updateInstallHint')))
+        : null,
+      notesUnavailable
+        ? h('p', { className: 'dsh-oncall-notice', role: 'status' },
+            fill(t('updateNotesUnavailable'), { reason: result.notesError }))
+        : null,
+      h('h3', { className: 'dsh-oncall-modal-section-title' }, fill(t('updateNotesTitle'), { version: notesVersion })),
+      h('div', { className: 'dsh-oncall-release-notes' },
+        h(MarkdownText, {
+          text: notes,
+          variant: 'compact',
+          labels: {
+            code: { copyLabel: t('notesCopy'), copiedLabel: t('notesCopied') },
+            footnotes: t('notesFootnotes'),
+          },
+        }))))
+}
+
+/** A publication date, as a plain local date. */
+function formatDate(iso) {
+  var date = new Date(iso)
+  if (isNaN(date.getTime())) return iso
+  return date.toISOString().slice(0, 10)
+}
+
+/**
+ * The running release's notes, shown once after an update.
+ *
+ * DSH Market owns the update check and the one-click install; it does not pop a
+ * changelog after the new version comes up. This dialog is the only extra step:
+ * the notes were embedded at build time (scripts/embed-changelog.mjs), so they
+ * describe the artifact actually loaded, not the repository's current HEAD.
+ * The same dialog backs the permanent "What's new" button in the page head.
+ *
+ * @param props.version - the running package version.
+ * @param props.notes - that version's CHANGELOG section, as plain text.
+ * @param props.onClose - dismiss and remember this version.
+ */
+export function WhatsNewModal(props) {
+  var t = props.t
+  return h(Modal, {
+    open: true,
+    className: MODAL_CLASS,
+    contentClassName: MODAL_CONTENT,
+    title: fill(t('whatsNewTitle'), { version: props.version }),
+    closeLabel: t('close'),
+    onClose: props.onClose,
+    footer: h('div', { className: 'dsh-oncall-footer-actions' },
+      h(Button, { variant: 'primary', onClick: props.onClose }, t('whatsNewClose'))),
+  },
+    h('div', { className: 'dsh-oncall-modal-body' },
+      h('p', { className: 'dsh-oncall-modal-section-hint' }, t('whatsNewHint')),
+      h('div', { className: 'dsh-oncall-release-notes' },
+        h(MarkdownText, {
+          text: props.notes,
+          variant: 'compact',
+          labels: {
+            code: { copyLabel: t('notesCopy'), copiedLabel: t('notesCopied') },
+            footnotes: t('notesFootnotes'),
+          },
+        }))))
+}

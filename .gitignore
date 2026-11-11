@@ -13,7 +13,7 @@ Thumbs.db
 node_modules/
 dist/
 coverage/
-packages/dsh-model-desk/lib/
+packages/dsh-oncall/lib/
 
 # Spike runtime artifacts: the installed dsh CLI, the pinned Harness home,
 # local session logs and probe evidence. None of it is a deliverable.
@@ -33,32 +33,32 @@ spike/split/
 setup-collaboration-files.backup/
 
 # Plugin test runtime: pinned DSH home, session logs, generated overlay/script
-packages/dsh-model-desk/tests/.dshhome/
-packages/dsh-model-desk/tests/.dshhome-web/
-packages/dsh-model-desk/tests/.dshhome-delivery/
-packages/dsh-model-desk/tests/.dshhome-real/
-packages/dsh-model-desk/tests/.dshhome-real-web/
-packages/dsh-model-desk/tests/.dshhome-view/
-packages/dsh-model-desk/tests/.dshhome-remote/
-packages/dsh-model-desk/tests/.dshhome-relay/
-packages/dsh-model-desk/tests/.dshhome-save/
-packages/dsh-model-desk/tests/.dshhome-office/
-packages/dsh-model-desk/tests/.dshhome-real-handoff/
-packages/dsh-model-desk/tests/.workspace-real-handoff/
-packages/dsh-model-desk/tests/real-handoff.overlay.yml
-packages/dsh-model-desk/tests/*.log
-packages/dsh-model-desk/tests/.sessions/
-packages/dsh-model-desk/tests/.sessions-relay/
-packages/dsh-model-desk/tests/overlay.yml
-packages/dsh-model-desk/tests/overlay-real.yml
-packages/dsh-model-desk/tests/remote-overlay.yml
-packages/dsh-model-desk/tests/handoff-overlay.yml
-packages/dsh-model-desk/tests/web-real.overlay.yml
-packages/dsh-model-desk/tests/web-view.overlay.yml
-packages/dsh-model-desk/tests/web-save.overlay.yml
-packages/dsh-model-desk/tests/stub-script*.json
-packages/dsh-model-desk/tests/.binding-observed.json
-packages/dsh-model-desk/tests/vision-test.png
+packages/dsh-oncall/tests/.dshhome/
+packages/dsh-oncall/tests/.dshhome-web/
+packages/dsh-oncall/tests/.dshhome-delivery/
+packages/dsh-oncall/tests/.dshhome-real/
+packages/dsh-oncall/tests/.dshhome-real-web/
+packages/dsh-oncall/tests/.dshhome-view/
+packages/dsh-oncall/tests/.dshhome-remote/
+packages/dsh-oncall/tests/.dshhome-relay/
+packages/dsh-oncall/tests/.dshhome-save/
+packages/dsh-oncall/tests/.dshhome-office/
+packages/dsh-oncall/tests/.dshhome-real-handoff/
+packages/dsh-oncall/tests/.workspace-real-handoff/
+packages/dsh-oncall/tests/real-handoff.overlay.yml
+packages/dsh-oncall/tests/*.log
+packages/dsh-oncall/tests/.sessions/
+packages/dsh-oncall/tests/.sessions-relay/
+packages/dsh-oncall/tests/overlay.yml
+packages/dsh-oncall/tests/overlay-real.yml
+packages/dsh-oncall/tests/remote-overlay.yml
+packages/dsh-oncall/tests/handoff-overlay.yml
+packages/dsh-oncall/tests/web-real.overlay.yml
+packages/dsh-oncall/tests/web-view.overlay.yml
+packages/dsh-oncall/tests/web-save.overlay.yml
+packages/dsh-oncall/tests/stub-script*.json
+packages/dsh-oncall/tests/.binding-observed.json
+packages/dsh-oncall/tests/vision-test.png
 
 # Serena MCP local project cache; not project content
 .serena/

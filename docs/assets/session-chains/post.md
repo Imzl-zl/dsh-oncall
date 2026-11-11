@@ -1,4 +1,4 @@
-# dsh-model-desk：给每个会话选降级链，按路由覆盖重试次数
+# dsh-oncall：给每个会话选降级链，按路由覆盖重试次数
 
 > 发帖草稿。图片在本目录，上传到论坛后把 `./xxx.png` 换成图床地址即可。
 
@@ -36,10 +36,10 @@ DSH 的模型选择器是全局的，但不同会话干的是不同的活：写�
 ## 安装
 
 ```sh
-dsh plugin add dsh-model-desk
+dsh plugin add dsh-oncall
 ```
 
-需要 DSH `0.2.0-rc.2`。仓库：<https://github.com/Imzl-zl/dsh-model-desk>
+需要 DSH `0.2.0-rc.2`。仓库：<https://github.com/Imzl-zl/dsh-oncall>
 
 ## 已知边界
 

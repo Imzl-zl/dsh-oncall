@@ -35,26 +35,26 @@ jobs:
         # The package's peer dependencies (@deepseek-ai/*, zod, schemastery) must
         # resolve from the workspace tree above it, so they are installed with
         # the legacy peer resolution the package's own lockfile was built with.
-        run: npm ci --prefix packages/dsh-model-desk --legacy-peer-deps
+        run: npm ci --prefix packages/dsh-oncall --legacy-peer-deps
 
       - name: Build lib/ (host, client, typert)
-        run: npm run bundle --prefix packages/dsh-model-desk
+        run: npm run bundle --prefix packages/dsh-oncall
 
       - name: Type-check the host entry
         run: >
           npx tsc --noEmit --skipLibCheck --strict
           --module nodenext --moduleResolution nodenext
           --target es2022 --allowImportingTsExtensions
-          packages/dsh-model-desk/src/index.ts
+          packages/dsh-oncall/src/index.ts
 
       - name: unit
-        run: node packages/dsh-model-desk/tests/unit.mjs
+        run: node packages/dsh-oncall/tests/unit.mjs
 
       - name: client-controller
-        run: node packages/dsh-model-desk/tests/client-controller.mjs
+        run: node packages/dsh-oncall/tests/client-controller.mjs
 
       - name: remote
-        run: node packages/dsh-model-desk/tests/remote.mjs
+        run: node packages/dsh-oncall/tests/remote.mjs
 
       - name: Loader composition
-        run: node packages/dsh-model-desk/tests/run.mjs
+        run: node packages/dsh-oncall/tests/run.mjs

@@ -65,7 +65,7 @@ last_updated: "2026-10-26"
 
 ## 六、环境与规则
 
-- 仓库 `D:\sudy\myproject\dsh-model-desk`；DSH 参考 checkout `D:\sudy\github\deepseek-harness`（**只读**）。
+- 仓库 `D:\sudy\myproject\dsh-oncall`；DSH 参考 checkout `D:\sudy\github\deepseek-harness`（**只读**）。
 - 运行时基线 `0.2.1-rc.3`：仓内 `node_modules/@deepseek-ai/*` 与该版本同源，API 断言一律在这里读。
 - 项目规则：根 [`AGENTS.md`](../../AGENTS.md)、[`docs/AGENTS.md`](../AGENTS.md)；源码事实看 [`source-map.md`](source-map.md)。
 - 判定口径与四类结论的定义见审查页四节开头；不要把「更窄」写成「不成立」，也不要把「设计缺口」写成「不成立」。

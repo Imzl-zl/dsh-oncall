@@ -1,11 +1,11 @@
 ---
-title: "DSH Model Desk — 配置 UI 设计"
+title: "DSH On-call — 配置 UI 设计"
 status: "proposal"
 kind: "ui-design"
 last_updated: "2026-10-18"
 ---
 
-# DSH Model Desk — 配置 UI 设计
+# DSH On-call — 配置 UI 设计
 
 ## 摘要
 
@@ -14,7 +14,7 @@ last_updated: "2026-10-18"
 > 具体偏差：挂载点已从 `plugins.bundle.config` 页面改为**侧栏按钮 → 快捷弹窗**（单一载体）；
 > 识图粘滞已从预算区移出、候选节点已改为紧凑布局、健康监控已独立成工作台。以下正文保留提案原貌，不逐处改写。
 
-本页是 `dsh-model-desk` 插件在 DSH 客户端配置界面的设计提案。原设计挂载点为 **Plugins 页 → 已安装插件 → `dsh-model-desk` → 配置面板**（Slot: `plugins.bundle.config`），该形态已于 2026-10-16 删除，现为侧栏 `sidebar.footer.action` 打开的弹窗（见 [ui-review.md](ui-review.md) §一）。
+本页是 `dsh-oncall` 插件在 DSH 客户端配置界面的设计提案。原设计挂载点为 **Plugins 页 → 已安装插件 → `dsh-oncall` → 配置面板**（Slot: `plugins.bundle.config`），该形态已于 2026-10-16 删除，现为侧栏 `sidebar.footer.action` 打开的弹窗（见 [ui-review.md](ui-review.md) §一）。
 
 **设计理念**：
 - **拒绝粗暴表格**：彻底抛弃死板文本框堆砌的“简陋表格”排版，建立以**有序降级流水线（Fallback Chain Pipeline）**为核心的直观心智模型；
@@ -52,7 +52,7 @@ last_updated: "2026-10-18"
 ```text
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ 插件头部 (Plugin Header)                                                    │
-│ [图标] Model Router  [v0.1.0] [● 活跃运行中]           [Switch] 启用渠道路由   │
+│ [图标] On-call  [v0.1.0] [● 活跃运行中]           [Switch] 启用渠道路由   │
 │        为 Agent 主请求提供透明的跨 Provider 故障转移与备份链。               │
 │                                                [按钮] 故障转移历史 ➔          │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -150,7 +150,7 @@ last_updated: "2026-10-18"
 - **触发路径**：点击页面右上角 `故障转移历史` 按钮。
 - **右侧滑出抽屉（Drawer 非官方原语，须自建 `createPortal` 到 body，不用裸 `fixed` 定位），只含一个区块**：
   - **最近故障转移历史**：时间戳、所属会话、原始失败模型、触发的错误码（`RATE_LIMIT` / `TIMEOUT` / …）、最终接管的候选序号；
-  - 数据来自插件自有 session projection（key `router/failover-history`，带 wire，折叠 `request/header` + `assistant/attempt`）；
+  - 数据来自插件自有 session projection（key `oncall/failover-history`，带 wire，折叠 `request/header` + `assistant/attempt`）；
   - 客户端读取路径：`ctx.remote.session.list()` 取会话列表（list 行自带 cached 投影提示，冷会话零额外调用）→ 对最近 N=20 个会话调 `ctx.remote.session.projections({sessionId})` 取权威值；client 半包须 `inject: ['remote', 'remote.session', 'sessions']`。
 - **投影硬约束**（违反即设计缺陷）：wire view 只输出“最近 N 条 + 聚合计数”（每个 tail 页携带全部 client-visible key，无按 key 裁剪，UI-scale 是纪律）；state 必须 plain JSON；view 返回对象必须复用引用；key 带插件命名空间，`stateVersion` 从 1 起只增；卸载即 key 消失、客户端读成能力缺失。
 - **健康状态/延迟/成功率/冷却倒计时不做**：无数据来源（Router 不包 stream、全局健康度明确不做），列入 README Known Limitations，与全局熔断同批“不做”。
@@ -191,7 +191,7 @@ export interface ChainDraft {
   strategy: 'order' | 'weight' | 'round-robin'
 }
 
-export interface ModelDeskCardState {
+export interface OnCallDeskCardState {
   available: boolean
   writable: boolean
   dirty: boolean
@@ -234,12 +234,12 @@ export interface ModelDeskCardState {
 
 严格遵循 DSH `verify-client-ui-i18n` 门禁约束（无行内硬编码字符串，所有可见文本、`aria-label`、`title` 必须进 locale）：
 
-命名空间：`settings.modelDesk`
+命名空间：`settings.oncall`
 
 ```typescript
 export const zh = {
   // 头部与全局
-  pluginTitle: 'Model Router',
+  pluginTitle: 'On-call',
   pluginDesc: '为 Agent 主请求提供透明的跨 Provider 故障转移与备份链。当主模型遭遇限流或异常时，按指定顺序自动降级并保留上下文。',
   pluginStatusRunning: '活跃运行中',
   globalSwitchLabel: '启用渠道路由',
@@ -343,7 +343,7 @@ export const zh = {
 
 export const en = {
   // Header
-  pluginTitle: 'Model Router',
+  pluginTitle: 'On-call',
   pluginDesc: 'Provides transparent cross-provider failover and fallback chains for Agent main requests. Gracefully falls back when primary models hit rate limits or downtime.',
   pluginStatusRunning: 'Active',
   globalSwitchLabel: 'Enable Model Routing',

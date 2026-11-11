@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Desk — 下一轮：运行时对齐与委派名册（P2）"
+title: "DSH On-call — 下一轮：运行时对齐与委派名册（P2）"
 status: "implemented"
 kind: "handoff-brief"
 last_updated: "2026-10-24"
@@ -12,7 +12,7 @@ last_updated: "2026-10-24"
 右栏 Agent Fleet 的优化已经落地并通过四套件与真实浏览器验证；配置中枢仍只有**路由链**和**渠道健康**两个页签，第三块（委派名册 = 子智能体预设）因为仓库没有 handoff host 而按 F-09 保持空缺。下一轮做两件事，顺序固定：
 
 1. **运行时对齐**：把仓库的 `@deepseek-ai/dsh` 基线从 `0.2.0-rc.2` 升到与只读 checkout 同版（`0.2.1-rc.3`；先到 `latest` 的 `0.2.1-rc.2`，随后按 checkout 再对一次，见 §四之一与 [rc3 笔记](../../.agents/notes/implemented/2026-10-24-runtime-alignment-rc3.md)），让 `npm test`、本地启动与浏览器验证跑在同一条运行时上。
-2. **P2 委派名册整包**：host 配置段 + 一个 `handoff` 工具 + `router/handoff` 投影与三本账 + 配置页第三页签。host 不落地就不注册页签（不造空壳、不放假名册）。
+2. **P2 委派名册整包**：host 配置段 + 一个 `handoff` 工具 + `oncall/handoff` 投影与三本账 + 配置页第三页签。host 不落地就不注册页签（不造空壳、不放假名册）。
 
 ## 一、起点基线（2026-10-23 实跑）
 
@@ -55,7 +55,7 @@ last_updated: "2026-10-24"
 |---|---|---|---|
 | B1 | `src/config.ts` | 新增 `handoff` 段（`enabled`、`subagentBackend`、`protocol`、`limits`、`newSession`、`onUnreceiptedStop`、`roster[]`），默认值照 §12；保存期校验：`purpose` 非空、`preset` 与 `instructions` 至少一个非空、`instructions ≤ 4000`、`id` 唯一、`provider/model` 可解析 | 配置能存能读；坏值被拒并给出字段级原因；不新增 durable 事件类型、不改 `SESSION_FORMAT_VERSION` |
 | B2 | `src/index.ts` | 一个 `handoff` 工具四个动作：`delegate` / `finish` / `newSession` / `facts`（前三可关，`newSession` 随接力配置）。派发用 `ctx.subagents.startActivation`；唤醒只用 `agent.followup` / `agent.steer`；接力用 `ctx.agents.createSession` + `selectForNextRequest`；目标用 `ctx.goals`；非顶层会话在 handler 内拒绝 | 工具在真实 Loader 组合里注册成功；拒绝路径有明确错误，不静默降级 |
-| B3 | `src/index.ts` + `src/handoff.ts` | 一个 `ctx.sessionProjections.register('router/handoff')`：折叠 `tool/call`、`subagent-settled` 与 `finish` 回执；三本账（派发 / 复核 / 新会话）按 user message 重置，接力不重置；复核账本落 `storageDomain`，无 storage 时内存 + 可见 notice | 投影可回放；账本与闸门在组合测试里可断言；没有 storage 时不假装持久 |
+| B3 | `src/index.ts` + `src/handoff.ts` | 一个 `ctx.sessionProjections.register('oncall/handoff')`：折叠 `tool/call`、`subagent-settled` 与 `finish` 回执；三本账（派发 / 复核 / 新会话）按 user message 重置，接力不重置；复核账本落 `storageDomain`，无 storage 时内存 + 可见 notice | 投影可回放；账本与闸门在组合测试里可断言；没有 storage 时不假装持久 |
 | B4 | `src/client/page.ts` | `SegmentedTabs` 两个 → 三个；名册页：224px 列表（最大高 420px，独立滚动，选中项滚入视野）+ 编辑器；校验摘要置顶；保存走现有 `configForms` / `scope.mutate` / `validate` | 12 角色压力下不撑爆页面；保存被拒时摘要 + 字段级红框同时出现；**页签只在 B1 落地后注册** |
 | B5 | 验证 | Loader 组合（工具注册、投影折叠、三本账闸门、接力六步）+ 浏览器（12 角色 / 10 智能体 / 800-1440 / 空态 / 校验拒绝） | 四套件 + 指定 tsc + 浏览器截图 |
 
@@ -83,12 +83,12 @@ last_updated: "2026-10-24"
 
 - 根 `package.json`：`@deepseek-ai/dsh` 0.2.1-rc.2；`zod` 由 `^4.6.6` 固定为 `4.4.3`（DSH 每个包都精确钉 4.4.3，见下）。
 - 插件 `package.json`：`@deepseek-ai/dsh-typert-generator` 0.2.1-rc.2；peer 的五个 `@deepseek-ai/dsh-*` 改 `^0.2.1-rc.2`，新增 `@deepseek-ai/dsh-tools`；`zod` peer 改 `^4.4.3`。
-- `packages/dsh-model-desk/.npmrc`：`legacy-peer-deps=true`，让 peer 由根 workspace 解析。否则 npm 会在这个包下自动装 peer，并选中 **0.2.1-rc.3（next）** 与第二份 zod（4.6.7）。
+- `packages/dsh-oncall/.npmrc`：`legacy-peer-deps=true`，让 peer 由根 workspace 解析。否则 npm 会在这个包下自动装 peer，并选中 **0.2.1-rc.3（next）** 与第二份 zod（4.6.7）。
 
 四个真实差异（都不是"新版不支持"）：
 
 1. **zod 精确钉版 → 类型同一性**：0.2.0-rc.2 的包依赖 `zod: ^4.4.3`，0.2.1-rc.2 全部改成 `zod: 4.4.3`。out-of-tree 安装于是出现两份 zod（根的 4.6.7 与嵌套的 4.4.3），`domainTable(bindingSchema)` 的推断爆栈（`TS2589`，默认堆直接 OOM）。修法是把 dev 环境的 zod 对齐到 4.4.3 并让 peer 从根解析，不是给调用点加类型断言。
-2. **typert 生成物注入 zod runtime**：0.2.1-rc.2 的生成器把 zod 传进 remote metadata 工厂（`@deepseek-ai/dsh-typert-generator` 提交 `bd91a4a570`），`client/apply.ts` 又 import 了 `dsh-model-desk/remote`，于是客户端 bundle 一度内联了整份 zod（562 kB → 874 kB）。DSH 的 shell 模块表本来就 seed 了 `zod`（`packages/client/web/src/platform.ts:12`），所以 `tsdown.config.ts` 的 `clientModules` 补上 `zod`，bundle 回到 445 kB。
+2. **typert 生成物注入 zod runtime**：0.2.1-rc.2 的生成器把 zod 传进 remote metadata 工厂（`@deepseek-ai/dsh-typert-generator` 提交 `bd91a4a570`），`client/apply.ts` 又 import 了 `dsh-oncall/remote`，于是客户端 bundle 一度内联了整份 zod（562 kB → 874 kB）。DSH 的 shell 模块表本来就 seed 了 `zod`（`packages/client/web/src/platform.ts:12`），所以 `tsdown.config.ts` 的 `clientModules` 补上 `zod`，bundle 回到 445 kB。
 3. **`TypertGateway.invoke` 现在必须带 peer**：`assertPeerLive(peer)` 读 `peer.signal`，不传 peer 就是 TypeError（`api-gateway` 0.2.1-rc.2）。测试按 DSH 自己的 gateway spec 造 owner peer（`new Peer(ctx.root, { principal: { kind: 'owner' } })`）。
 4. **`SessionBindings` 的首读早于域打开**：`persistent` 在 open 落定前是 `false`，remote 首读会把一份持久绑定报成"仅内存"。补 `ready()`，`sessionBinding` 先 await 它。
 
@@ -105,7 +105,7 @@ last_updated: "2026-10-24"
 
 浏览器实测（截图在 `docs/assets/ui/`）：1440 右栏列 960、12 角色列表 224px / 420px 独立滚动（scrollHeight 592）、1025 两列、801 侧栏收成图标且无横向溢出、大屏列 960；空态是激活卡；清空 purpose 后保存按钮 disabled + 摘要置顶 + 字段 `aria-invalid`；改回后保存把 `handoff` 整段写回 profile patch（磁盘核对到新文本与 host 补全的字段）。DOM 里没有本插件自绘的 `position: fixed`、遮罩、标签条或关闭/全屏按钮。
 
-**仍未做**：右栏活动流未接 `router/handoff`（F-21）；`facts` 的 goal/todos 依赖宿主投影与 `ctx.goals`，headless 组合里没有 `sessionController`，因此 `newSession` 的真实建会话只在浏览器侧手工可用、没有自动化用例覆盖（组件测试覆盖拒绝路径与闸门）。
+**仍未做**：右栏活动流未接 `oncall/handoff`（F-21）；`facts` 的 goal/todos 依赖宿主投影与 `ctx.goals`，headless 组合里没有 `sessionController`，因此 `newSession` 的真实建会话只在浏览器侧手工可用、没有自动化用例覆盖（组件测试覆盖拒绝路径与闸门）。
 
 ## 五、新会话提示词（复制到新会话）
 
@@ -114,7 +114,7 @@ last_updated: "2026-10-24"
 > [p2-next-session-brief.md](p2-next-session-brief.md) §一 取代。当前基线以那份简报为准，不要照本段重新升级。
 
 ```text
-你在 DSH Model Desk 仓库做两件事，按顺序：先做运行时对齐，再做 P2 委派名册（配置中枢第三块）。仓库：D:\sudy\myproject\dsh-model-desk；DSH 源码只读：D:\sudy\github\deepseek-harness。当前分支 master，工作树有未提交改动（P1 + 本轮 Fleet 优化 + 文档 + 截图），先 git status / git diff 看清现状，不要 reset、checkout 或覆盖。
+你在 DSH On-call 仓库做两件事，按顺序：先做运行时对齐，再做 P2 委派名册（配置中枢第三块）。仓库：D:\sudy\myproject\dsh-oncall；DSH 源码只读：D:\sudy\github\deepseek-harness。当前分支 master，工作树有未提交改动（P1 + 本轮 Fleet 优化 + 文档 + 截图），先 git status / git diff 看清现状，不要 reset、checkout 或覆盖。
 
 第一步先读：
 - AGENTS.md、docs/AGENTS.md、.agents/notes/AGENTS.md
@@ -123,7 +123,7 @@ last_updated: "2026-10-24"
 - docs/design/handoff-proposal.md §5 / §12（名册字段与默认值的唯一来源）
 - docs/design/agent-fleet-drawer.md §5.3 / §9.3 / §10.1
 - docs/design/agent-fleet-next-session-brief.md §1.1（上一轮实施与浏览器结论）
-- packages/dsh-model-desk/src/config.ts、src/index.ts、src/client/page.ts、src/client/locales.ts、tests/
+- packages/dsh-oncall/src/config.ts、src/index.ts、src/client/page.ts、src/client/locales.ts、tests/
 - 上一轮决策：.agents/notes/implemented/2026-10-23-agent-fleet-capability-review.md
 
 背景事实（已核实，不要重新调研）：
@@ -132,19 +132,19 @@ last_updated: "2026-10-24"
 
 任务 A（先做，独立可回滚）：把 @deepseek-ai/dsh 从 0.2.0-rc.2 升到 0.2.1-rc.2；插件 devDependency 的 @deepseek-ai/dsh-typert-generator 同步；peerDependencies 的 @deepseek-ai/dsh-* 改为 ^0.2.1-rc.2（注意：^0.2.0-rc.2 不匹配 0.2.1-rc.2 的预发布，必须改范围）。重生成锁文件与 typert 产物。然后 npm run bundle + 四套件（unit / client-controller / remote / run 35 场景）+ 指定 tsc + node --check。红了就逐个查真实差异（typert 生成物、Loader 组合、新的 durable 事件类型进入 SessionEvent 联合后投影 apply 的穷尽性），修不了就回滚这一项并在页面里记具体红点，不要写成“新版不支持”。
 
-任务 B（A 绿了再做）：按 handoff-proposal §5/§12 落 B1 host 配置段（含校验）→ B3 router/handoff 投影与三本账 → B2 一个 handoff 工具四动作（delegate/finish/newSession/facts）→ B4 client 第三页签与名册主从编辑器 → B5 验证。host 不落地就不注册页签；不放假名册、不做占位页、不用 alert、不做 mock 成功路径。
+任务 B（A 绿了再做）：按 handoff-proposal §5/§12 落 B1 host 配置段（含校验）→ B3 oncall/handoff 投影与三本账 → B2 一个 handoff 工具四动作（delegate/finish/newSession/facts）→ B4 client 第三页签与名册主从编辑器 → B5 验证。host 不落地就不注册页签；不放假名册、不做占位页、不用 alert、不做 mock 成功路径。
 
 实现要求：
 - 不重写 47k 页面 controller；配置页复用现有 configForms / scope.mutate / validate，不建第二套保存链路。
 - 字段与默认值只从 handoff-proposal §12 取，不在 UI 或 config 里再抄一份。
-- 一个 handoff 工具、一个 router/handoff 投影、一个账本；闸门（requireReviewFor 等）与接力（newSession.*）分开。
+- 一个 handoff 工具、一个 oncall/handoff 投影、一个账本；闸门（requireReviewFor 等）与接力（newSession.*）分开。
 - 只用 DSH token 与 @deepseek-ai/dsh-client-ui-primitives；容器查询继续，不写 vw 固定宽度；CSS 注入继续 cssText 双形状归一。
 - 未知不是 0；缺失投影隐藏或写未加载；不新增 durable 事件类型、不改 SESSION_FORMAT_VERSION；不碰 live profile；不改 DSH checkout。
 
 验证：
-- npm run bundle --prefix packages/dsh-model-desk（客户端测试跑 lib/client.js）。
-- npm test 四套件；指定 npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-model-desk/src/index.ts；node --check packages/dsh-model-desk/lib/client.js。
-- 客户端半包有独立 tsc：`npx tsc -p packages/dsh-model-desk/tsconfig.client.json` 必须 exit 0（`bundle` 已内含）；不得声称没跑过的检查通过。
+- npm run bundle --prefix packages/dsh-oncall（客户端测试跑 lib/client.js）。
+- npm test 四套件；指定 npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-oncall/src/index.ts；node --check packages/dsh-oncall/lib/client.js。
+- 客户端半包有独立 tsc：`npx tsc -p packages/dsh-oncall/tsconfig.client.json` 必须 exit 0（`bundle` 已内含）；不得声称没跑过的检查通过。
 - 浏览器：DSH_HOME 指向隔离 home（例如 %TEMP%\dsh-fleet-cap-22），这次用 npm 宿主起（对齐后它应能读同一批日志）；覆盖 1440/1024/800/全屏、12 角色名册、校验拒绝、空态、保存回写、DOM 无 position:fixed/遮罩/自绘标签条/自绘关闭全屏。截图写 docs/assets/ui/，不覆盖已有文件。
 
 文档与收尾：

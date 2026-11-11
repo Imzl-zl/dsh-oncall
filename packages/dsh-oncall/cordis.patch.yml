@@ -1,0 +1,12 @@
+# Bundle patch for dsh-oncall.
+#
+# The row id doubles as the settings namespace (`ns: entry.options.id`), and the
+# specifier must be the bare package name so the browser half of this package
+# attaches to this row. See docs/design/dsh-capability-boundary.md 7.9.
+#
+# Renamed from `model-desk` on 2026-11-11; old rows are reported, never adopted.
+# Note: .agents/notes/implemented/2026-11-11-rename-to-oncall.md
+
+- insert:
+    - id: oncall
+      name: 'dsh-oncall'

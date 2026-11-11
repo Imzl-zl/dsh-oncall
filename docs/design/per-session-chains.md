@@ -1,5 +1,5 @@
 ---
-title: "DSH Model Desk — 按会话选择降级链"
+title: "DSH On-call — 按会话选择降级链"
 status: "implemented"
 kind: "design"
 last_updated: "2026-10-21"
@@ -24,7 +24,7 @@ last_updated: "2026-10-21"
 | 会话列表 + 名字 | 宿主 `session.list` 给 `{ sessionId, updatedAt }`；名字是 `title` 投影（`values.title`） | `packages/api/session-controller/src/types.ts:183`；`packages/session/session-title/src/index.ts:269` |
 | 会话级 UI 槽位 | `conversation.input.left`/`.right`、`conversation.session.header.utilities` 等是 `scope: 'session'` 的 list 槽；占位组件**直接收到 `sessionId`**（还有 `useSession`、`useProjection`、`useAccess`） | `packages/client/ui-conversation/src/client/contract/slots.ts:276-298`；`packages/client/ui-session/src/client/index.ts:166-175` |
 | 会话侧车存储 | `ctx.storageDomain.open(spec)`：schema 校验的 KV，**写入即持久**、不进会话日志、对模型不可见；DSH 的 `bundle/base` 已挂载 storage 家族。名字受 `UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/` 约束（**不能带点和横线**） | `packages/storage/storage-domain/README.md:28`；`packages/storage/storage/src/backend.ts:10`；`packages/bundle/base/cordis.patch.yml:180-188` |
-| 插件自有 Remote | 浏览器半包已有一个 `deskHealth` Remote；会话绑定的读写挂在同一个命名空间下 | 本项目 `src/index.ts` 的 `@Remote` |
+| 插件自有 Remote | 浏览器半包已有一个 `oncallHealth` Remote；会话绑定的读写挂在同一个命名空间下 | 本项目 `src/index.ts` 的 `@Remote` |
 | 选路时机可读会话 | `agent/request` 在 `prepareCall` 之前，返回的 `LlmCallConfig` 决定这一跳打到哪 | 本项目 `src/index.ts` 的 `agent/request` handler |
 
 ## 二、DSH 原生没有什么
@@ -83,7 +83,7 @@ chain: {...}                        # 旧形状：只在 chains 缺失时读取�
 ```ts
 ctx.slots.inject('conversation.input.left', () => ctx.slots.register({
   name: 'conversation.input.left',
-  id: 'model-desk-session',
+  id: 'oncall-session',
   locale: NS,
   // 普通对象走普通 prop。`hooks` 是保留键：装 observable source，运行时转成 use* 选择器。
   inject: () => ({ sessionChip }),
