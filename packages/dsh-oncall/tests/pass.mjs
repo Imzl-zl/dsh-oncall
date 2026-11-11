@@ -15,7 +15,7 @@
 import assert from 'node:assert/strict'
 
 import { briefOf } from '../src/core/brief.ts'
-import { caseIdOf } from '../src/core/case-id.ts'
+import { caseIdOf, inputIdOf } from '../src/core/case-id.ts'
 import { MAX_BRIEF_CHARS } from '../src/contract/defaults.ts'
 import { memoryLedger } from '../src/runtime/ledger.ts'
 import { runPass } from '../src/runtime/pass.ts'
@@ -139,6 +139,44 @@ await test('同 thread 第二条评论不开新 Case：投给已有 Case，审�
   ])
   eq(ledger.threads[0].subscriptions, [caseIdOf(trigger().key)], '订阅只增不减，也不会因为追问多出一条')
   eq(ledger.threads[0].lastAt, NOW + 15_000, '追问把 lastAt 推到最近一次看到它的时候')
+})
+
+await test('同一句追问重放（60 秒重叠窗口）→ 不再审计、不再投递', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  const owner = caseIdOf(trigger().key)
+  const second = trigger({ key: `${SRC}:comment-2`, text: '还有一处 flaky' })
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger, executor })
+  await run({ sources: [sourceOf({ triggers: [second], cursor: 'c2' })], ledger, executor })
+  eq(ledger.audit.filter(event => event.kind === 'case.followed-up').length, 1)
+
+  // What the executor does when it actually queues the message.
+  const input = ledger.inputOf(inputIdOf(owner, second.key))
+  await ledger.writeInputs([{ ...input, deliveredAt: NOW + 1 }])
+  executor.calls.length = 0
+
+  const report = await run({ sources: [sourceOf({ triggers: [second], cursor: 'c3' })], ledger, executor, now: NOW + 30_000 })
+
+  eq(report.sources[0], { sourceId: SRC, opened: 0, observed: 0, refused: 0, delivered: 0, skipped: 1, error: null })
+  eq(executor.calls, [], '重读不该再投一次')
+  eq(ledger.audit.filter(event => event.kind === 'case.followed-up').length, 1, '审计也只有一条')
+})
+
+await test('投递前崩溃（input 行在、deliveredAt 为空）→ 下一轮重投，不重复审计', async () => {
+  const ledger = memoryLedger()
+  const executor = executorOf()
+  const owner = caseIdOf(trigger().key)
+  const second = trigger({ key: `${SRC}:comment-2`, text: '还有一处 flaky' })
+  await run({ sources: [sourceOf({ triggers: [trigger()], cursor: 'c1' })], ledger, executor })
+  await run({ sources: [sourceOf({ triggers: [second], cursor: 'c2' })], ledger, executor })
+  eq(ledger.inputOf(inputIdOf(owner, second.key)).deliveredAt, null)
+  executor.calls.length = 0
+
+  const report = await run({ sources: [sourceOf({ triggers: [second], cursor: 'c3' })], ledger, executor, now: NOW + 15_000 })
+
+  eq(report.sources[0].delivered, 1, '欠着的投递要补')
+  eq(executor.calls.map(call => call.trigger), [second.key])
+  eq(ledger.audit.filter(event => event.kind === 'case.followed-up').length, 1, '审计不重复')
 })
 
 await test('人停掉的不复活：不往 stopped 的 Case 投递，新要求按新 Case 开', async () => {

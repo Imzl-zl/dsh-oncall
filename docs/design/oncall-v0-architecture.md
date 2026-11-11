@@ -133,6 +133,7 @@ L5 faces/      ingress.ts（不变）、index.ts（接线）、reports.ts（onca
 | `progress` | sourceId | cursor / lastError / lastPolledAt | pass |
 | `cases` | caseId | `CaseRecord`（mandate/scope/origin/brief/openedAt/closed） | pass |
 | `threads` | ThreadKey | `{ key, subscriptions: caseId[], lastAt }` | pass（开 Case 时订阅、人关 Case 时不删） |
+| `inputs` | `caseId:trigger` | `{ caseId, trigger, text, at, deliveredAt \| null }` | pass（路由一条追问时写）、executor（投递后盖 `deliveredAt`） |
 | `steps` | `caseId#seq` | `{ caseId, seq, state: 'running'|'ended', brief, report: {state,summary,at}|null, at, endedAt? }` | executor |
 | `replies` | `caseId#seq` | `{ caseId, seq, intent: 'result'|'attention'|'failed', state: 'pending'|'sent'|'gone'|'failed', at }` | outbox |
 | `audit` | uuid | 追加事实 | 三者 |
@@ -211,7 +212,7 @@ follow-up 投递：该 case 有 running step 且会话活着 → 直接 followup
 ## 五、三处与参考实现不同的地方（都写清代价）
 
 1. **没有评估层**。参考实现的“新活还是补充”由主会话的模型用 `orchestrator_eval_decide` 判（`app/assessment.ts`，评估卡带 `relatedTickets`），而评估器就是**主会话本身**（`effects` 的 `assessment` 种类把卡送进主会话）。我们没有那个人在读的主会话，所以 V0 用确定性替代：**thread 有 owner 就投给 owner**，没有才过闸门开新 Case。代价：一张 issue 上两件独立的活不会自动分成两个 Case；补救是 V1 引入评估会话（表结构不用改）。
-2. **没有 Input 队列**。参考实现把每条消息落成 `TicketInput` 并维护 `undelivered`；V0 只做两种投递——进活会话（消息 id 幂等）或开新派工（原文进 `brief`）。代价：一轮里多条 follow-up 的“读没读”判断没有；参考实现用它决定 Case 结束时哪些消息退回评估，我们 V0 直接结束。
+2. **Input 只保留最小一列**。参考实现把每条消息落成 `TicketInput`，带 `undelivered`、`readAt`、`deliveredTo`，并据此决定“哪些消息没读到、Case 结束时退回哪里”（`core/tickets.ts:231` 的 `addInput`、`:330` 的 `requeueUntaken`）。V0 取它的**幂等骨架**：一条消息一行（`caseId:trigger`），`deliveredAt` 为空即"欠着没投"，这挡住源回看 60 秒带来的重复路由与重复审计。**没有取**的是 `readAt` 与"Case 结束时把没读的消息退回评估"——V0 没有评估层可退，硬造一个只会让消息掉进没有消费者的队列。代价：跨重启的"这条追问读没读"仍然不知道；投递幂等靠消息 id，不是输入行。
 3. **层 B 判据换成“层 A 报 exhausted”**，退避优先用 `turn/end.error.providerRetryAfterMs`（三方网关 429 常带），否则 30/60s，≤2 次。参考实现的 15/30/60s 是单渠道常数；照抄会把“全链都挂”拖成 45 秒静默。
 4. **没有 comet 的 checkpoint**。恢复粒度是“重开一次派工 + recovery note”，不是“精确回到断点”。长任务的恢复质量属 V1。
 

@@ -39,13 +39,14 @@
 
 import { admit } from '../core/admission.ts'
 import { briefOf } from '../core/brief.ts'
-import { caseIdOf } from '../core/case-id.ts'
+import { caseIdOf, inputIdOf } from '../core/case-id.ts'
 import { mayWake, threadOwner } from '../core/thread-owner.ts'
 import type { Policy } from '../contract/policy.ts'
 import type {
   AuditEvent,
   CaseId,
   CaseRecord,
+  InputRecord,
   RefusalReason,
   SourceId,
   ThreadKey,
@@ -148,12 +149,14 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
       progress: { cursor: progress.cursor, lastError: message, lastPolledAt: now },
       cases: [],
       threads: [],
+      inputs: [],
       audit: [{ kind: 'poll.failed', at: now, source: source.id, message }],
     })
     return { sourceId: source.id, opened: 0, observed: 0, refused: 0, delivered: 0, skipped: 0, error: message }
   }
 
   const cases: CaseRecord[] = []
+  const inputs: InputRecord[] = []
   const audit: AuditEvent[] = []
   /**
    * What this pass has already changed, so a second trigger on the same thread sees
@@ -201,11 +204,32 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
         skipped += 1
         continue
       }
-      delivered += 1
-      audit.push({ kind: 'case.followed-up', at: now, caseId: owner.id, trigger: trigger.key })
+      // One row per (Case, Trigger): a message routed once is never routed (or
+      // audited) again when the source re-reads it. The reference's `addInput`
+      // (`core/tickets.ts:231`) does the same with its `undelivered` list.
+      const inputId = inputIdOf(owner.id, trigger.key)
+      const routed = ledger.inputOf(inputId)
+      if (routed !== undefined && routed.deliveredAt !== null) {
+        skipped += 1
+        continue
+      }
+      if (routed === undefined) {
+        audit.push({ kind: 'case.followed-up', at: now, caseId: owner.id, trigger: trigger.key })
+        inputs.push({
+          id: inputId,
+          caseId: owner.id,
+          trigger: trigger.key,
+          text: trigger.text.trim(),
+          at: now,
+          deliveredAt: null,
+        })
+      }
       // The subscription list never shrinks (a person's next message resumes the
       // Case), so only the observation time moves.
       threadRows.set(trigger.thread, { key: trigger.thread, subscriptions: [...thread.subscriptions], lastAt: now })
+      // A row with `deliveredAt === null` is a delivery a crash interrupted; the
+      // executor's message id makes sending it again a no-op when it did land.
+      delivered += 1
       deliveries.push({ caseId: owner.id, text: trigger.text.trim(), trigger: trigger.key })
       continue
     }
@@ -251,6 +275,7 @@ async function passOne(source: Source, input: PassInput): Promise<SourceReport> 
     progress: { cursor: polled.cursor, lastError: null, lastPolledAt: now },
     cases,
     threads: [...threadRows.values()],
+    inputs,
     audit,
   }
   await ledger.commit(commit)

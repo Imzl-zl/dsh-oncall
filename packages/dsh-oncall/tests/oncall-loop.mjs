@@ -328,6 +328,9 @@ try {
   const followed = await waitFor('the follow-up was audited', () => rows('audit').find(event => event.kind === 'case.followed-up'))
   check('the audit names the owning Case and the trigger', followed?.caseId === caseId
     && followed?.trigger === `${SRC}:comment-9001`, JSON.stringify(followed))
+  const inputRow = rows('inputs').find(row => row.trigger === `${SRC}:comment-9001`)
+  check('the routed message has an input row, stamped delivered', inputRow?.caseId === caseId
+    && typeof inputRow?.deliveredAt === 'number', JSON.stringify(rows('inputs')))
 
   // ---- the worker session is an ordinary routed session ----
   //
@@ -404,6 +407,9 @@ try {
   check('the second Case stays open (blocked waits for a person)',
     rows('cases').find(item => item.key === second.found.key)?.closed === null,
     JSON.stringify(rows('cases').find(item => item.key === second.found.key)?.closed))
+  check('re-reads of an already routed message added no audit rows (input ledger)',
+    rows('audit').filter(event => event.kind === 'case.followed-up').length === 1,
+    JSON.stringify(rows('audit').filter(event => event.kind === 'case.followed-up').map(event => event.trigger)))
   check('both receipts are in the audit stream',
     JSON.stringify(rows('audit').filter(event => event.kind === 'reply.settled').map(event => event.state))
       === JSON.stringify(['sent', 'gone']),

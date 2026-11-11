@@ -16,3 +16,14 @@ import type { CaseId, TriggerKey } from '../contract/types.ts'
 export function caseIdOf(trigger: TriggerKey): CaseId {
   return `case:${trigger}` as CaseId
 }
+
+/**
+ * The one input row for a message routed to a Case: one per (Case, Trigger).
+ *
+ * Deterministic, so a re-read of the same comment finds the row the first pass wrote
+ * instead of routing it again. `dsh-superagent` derives its input ids the same way
+ * (`core/ids.ts` `key('input', …)` — content-derived, never a counter).
+ */
+export function inputIdOf(caseId: CaseId, trigger: TriggerKey): string {
+  return `${caseId}:${trigger}`
+}

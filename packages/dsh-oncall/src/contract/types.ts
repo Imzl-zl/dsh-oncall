@@ -110,6 +110,30 @@ export interface ThreadRecord {
 }
 
 /**
+ * One further message recorded against the Case it was routed to.
+ *
+ * This is `dsh-superagent`'s `TicketInput` in miniature (`src/core/model.ts:237`,
+ * `TicketInput`), and it exists for the one fact the session log cannot answer: a
+ * message already routed to a Case must not be routed (or audited) again when the
+ * source re-reads it. The opening Trigger needs no row — `CaseRecord.origin` is
+ * exactly that Trigger, and `case:<trigger>` is the Case's own dedupe.
+ *
+ * `deliveredAt` is the reference's field and its meaning: `null` while the message is
+ * still owed (a crash between the commit and the delivery leaves exactly this), set
+ * when the executor queued it into the worker session. The reference's `readAt` and
+ * its release-on-end are not adopted: V0 has no evaluation layer to hand unread
+ * messages back to (`docs/design/oncall-v0-architecture.md` §五 2).
+ */
+export interface InputRecord {
+  readonly id: string
+  readonly caseId: CaseId
+  readonly trigger: TriggerKey
+  readonly text: string
+  readonly at: number
+  readonly deliveredAt: number | null
+}
+
+/**
  * What a worker's step reported.
  *
  * The vocabulary is `dsh-superagent`'s `ReportState` verbatim (`src/core/model.ts`):

@@ -19,6 +19,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 import { caseSessionId, Executor, titleOf } from '../src/runtime/executor.ts'
+import { inputIdOf } from '../src/core/case-id.ts'
 import { memoryLedger } from '../src/runtime/ledger.ts'
 import { Outbox } from '../src/runtime/outbox.ts'
 import { planReply, replyMarker } from '../src/core/reply-plan.ts'
@@ -161,6 +162,7 @@ await test('启动扫描：没有派工的 Case → 开 seq 1、起会话、投 
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [{ key: THREAD, subscriptions: [CASE], lastAt: NOW }],
+    inputs: [],
     audit: [],
   })
   const fake = fakeHost()
@@ -182,6 +184,7 @@ await test('启动扫描：在等触发的 Case（running + 已结算）什么�
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   await ledger.writeSteps([stepOf({ report: { state: 'waiting', summary: '还没完', at: NOW } })])
@@ -202,6 +205,7 @@ await test('启动扫描：上一刀没有报告 → 结束旧派工、记 step.
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   await ledger.writeSteps([stepOf()])
@@ -229,6 +233,7 @@ await test('启动扫描不碰已关闭的 Case', async () => {
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf({ closed: { reason: 'completed', at: NOW } })],
     threads: [],
+    inputs: [],
     audit: [],
   })
   const fake = fakeHost()
@@ -248,6 +253,7 @@ const openWithWaitingStep = async () => {
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   await ledger.writeSteps([stepOf({ report: { state: 'waiting', summary: '先看看', at: NOW } })])
@@ -398,6 +404,29 @@ await test('追问投进同一个活着的派工：消息 id 带 trigger，不�
   executor.stop()
 })
 
+await test('投出去之后把 input 行标成已投递（崩溃窗口的另一半）', async () => {
+  const ledger = await openWithWaitingStep()
+  const trigger = `${SRC}:comment-input`
+  await ledger.writeInputs([{
+    id: inputIdOf(CASE, trigger),
+    caseId: CASE,
+    trigger,
+    text: '还有一个地方',
+    at: NOW,
+    deliveredAt: null,
+  }])
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+
+  executor.deliver({ caseId: CASE, text: '还有一个地方', trigger })
+  await settle()
+
+  eq(ledger.inputOf(inputIdOf(CASE, trigger)).deliveredAt, NOW)
+  eq(fake.state.followups.length, 1)
+  executor.stop()
+})
+
 await test('同一条追问重放（消息 id 已在会话里）→ 不重复投递', async () => {
   const ledger = await openWithWaitingStep()
   const fake = fakeHost()
@@ -419,6 +448,7 @@ await test('已完成的 Case 被追问 → 重开 + 新派工，brief 是这一
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf({ closed: { reason: 'completed', at: NOW } })],
     threads: [],
+    inputs: [],
     audit: [],
   })
   await ledger.writeSteps([stepOf({ state: 'ended', report: { state: 'ready', summary: '做完了', at: NOW }, endedAt: NOW })])
@@ -444,6 +474,7 @@ await test('步数用尽 → 关 stopped，不再派工也不再投递', async (
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   const spent = Array.from({ length: MAX_STEPS_PER_CASE }, (_, index) => stepOf({
@@ -530,6 +561,7 @@ await test('oncall_report 拒绝陌生会话、已关闭的 Case、没有运行�
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   const noStep = await executorOf(empty, fakeHost())
@@ -574,6 +606,7 @@ const outboxOf = async (sender, over = {}) => {
     progress: { cursor: null, lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [],
+    inputs: [],
     audit: [],
   })
   const errors = []

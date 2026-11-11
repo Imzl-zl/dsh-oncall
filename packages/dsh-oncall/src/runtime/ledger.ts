@@ -38,6 +38,7 @@ import type {
   CaseId,
   CaseRecord,
   ClosedReason,
+  InputRecord,
   ReplyRecord,
   SourceId,
   StepRecord,
@@ -60,6 +61,7 @@ export interface Commit {
   readonly progress: Progress
   readonly cases: readonly CaseRecord[]
   readonly threads: readonly ThreadRecord[]
+  readonly inputs: readonly InputRecord[]
   readonly audit: readonly AuditEvent[]
 }
 
@@ -71,6 +73,8 @@ export interface Ledger {
   threadOf(key: ThreadKey): ThreadRecord | undefined
   /** Every Case, oldest first — the executor's startup scan. */
   allCases(): readonly CaseRecord[]
+  /** One input row, when that message was already routed to that Case. */
+  inputOf(id: string): InputRecord | undefined
   /** One Case's steps, oldest first. */
   stepsOf(caseId: CaseId): readonly StepRecord[]
   /** The receipt owed for one step, if one was queued. */
@@ -80,6 +84,8 @@ export interface Ledger {
   commit(batch: Commit): Promise<void>
   /** The executor's writes: a step and the audit facts that explain it. */
   writeSteps(records: readonly StepRecord[], audit?: readonly AuditEvent[]): Promise<void>
+  /** Record (or re-stamp) routed messages. Written by the pass on routing and by the executor on delivery. */
+  writeInputs(records: readonly InputRecord[], audit?: readonly AuditEvent[]): Promise<void>
   /** The outbox's write: one receipt, plus its audit fact. */
   writeReply(record: ReplyRecord, audit?: readonly AuditEvent[]): Promise<void>
   /**
@@ -107,6 +113,7 @@ const sequenceKey = (caseId: CaseId, seq: number): string => `${caseId}#${seq}`
 export interface MemoryLedger extends Ledger {
   readonly cases: readonly CaseRecord[]
   readonly threads: readonly ThreadRecord[]
+  readonly inputs: readonly InputRecord[]
   readonly audit: readonly AuditEvent[]
   progressOf(sourceId: SourceId): Progress
 }
@@ -124,6 +131,7 @@ export function memoryLedger(): MemoryLedger {
   const cases = new Map<string, CaseRecord>()
   const threads = new Map<string, ThreadRecord>()
   const steps = new Map<string, StepRecord>()
+  const inputs = new Map<string, InputRecord>()
   const replies = new Map<string, ReplyRecord>()
   const audit: AuditEvent[] = []
   const appendAudit = (events: readonly AuditEvent[] | undefined): void => { if (events !== undefined) audit.push(...events) }
@@ -131,6 +139,7 @@ export function memoryLedger(): MemoryLedger {
   return {
     get cases() { return [...cases.values()].sort((left, right) => left.openedAt - right.openedAt) },
     get threads() { return [...threads.values()] },
+    get inputs() { return [...inputs.values()] },
     get audit() { return [...audit] },
 
     readProgress(sourceId) { return progress.get(sourceId) ?? NO_PROGRESS },
@@ -140,6 +149,8 @@ export function memoryLedger(): MemoryLedger {
     threadOf(key) { return threads.get(key) },
 
     allCases() { return [...cases.values()].sort((left, right) => left.openedAt - right.openedAt) },
+
+    inputOf(id) { return inputs.get(id) },
 
     stepsOf(caseId) {
       return [...steps.values()]
@@ -155,11 +166,17 @@ export function memoryLedger(): MemoryLedger {
       progress.set(batch.sourceId, batch.progress)
       for (const record of batch.cases) cases.set(record.id, record)
       for (const record of batch.threads) threads.set(record.key, record)
+      for (const record of batch.inputs) inputs.set(record.id, record)
       audit.push(...batch.audit)
     },
 
     async writeSteps(records, events) {
       for (const record of records) steps.set(sequenceKey(record.caseId, record.seq), record)
+      appendAudit(events)
+    },
+
+    async writeInputs(records, events) {
+      for (const record of records) inputs.set(record.id, record)
       appendAudit(events)
     },
 

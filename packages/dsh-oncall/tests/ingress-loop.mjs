@@ -57,6 +57,7 @@ function storageOf({ fail = false, tables } = {}) {
     progress: tableOf(),
     cases: tableOf(),
     threads: tableOf(),
+    inputs: tableOf(),
     steps: tableOf(),
     replies: tableOf(),
     audit: tableOf(),
@@ -126,6 +127,7 @@ await test('一次 commit 同时写进度、Case、thread 与审计', async () =
     progress: { cursor: 'c1', lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [thread],
+    inputs: [],
     audit: [{ kind: 'case.opened', at: NOW, caseId: caseOf().id, trigger: `${SRC}:comment-1`, strength: 'explicit' }],
   })
 
@@ -139,7 +141,7 @@ await test('写进去的 Case 读回来形状不变（品牌只在编译期）',
   const ctx = storageOf()
   const ledger = new DurableLedger(ctx)
   await ledger.ready
-  await ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [caseOf()], threads: [], audit: [] })
+  await ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [caseOf()], threads: [], inputs: [], audit: [] })
 
   eq(ledger.allCases(), [caseOf()])
 })
@@ -167,7 +169,7 @@ await test('域没打开时 commit 报自己的错，不写一半', async () => 
   await ledger.ready
 
   await assert.rejects(
-    () => ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [], threads: [], audit: [] }),
+    () => ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [], threads: [], inputs: [], audit: [] }),
     /ingress storage domain is not open/,
   )
 })
@@ -181,6 +183,15 @@ const stepOf = (over = {}) => ({
   brief: 'fix the flaky test',
   report: null,
   at: NOW,
+  ...over,
+})
+const inputOf = (over = {}) => ({
+  id: `${caseId}:${SRC}:comment-2`,
+  caseId,
+  trigger: `${SRC}:comment-2`,
+  text: '还有一个地方',
+  at: NOW,
+  deliveredAt: null,
   ...over,
 })
 const replyOf = (over = {}) => ({
@@ -202,6 +213,7 @@ const seeded = async () => {
     progress: { cursor: 'c1', lastError: null, lastPolledAt: NOW },
     cases: [caseOf()],
     threads: [{ key: `${SRC}:issue-12`, subscriptions: [caseId], lastAt: NOW }],
+    inputs: [],
     audit: [],
   })
   return { ctx, ledger }
@@ -217,7 +229,7 @@ await test('threads：开 Case 时写入的订阅读得回来，没订阅过的 
 await test('steps：按 caseId#seq 覆盖写，stepsOf 只给这个 Case 且按 seq 排序', async () => {
   const { ledger } = await seeded()
   const other = caseOf({ id: `case:${SRC}:comment-2` })
-  await ledger.commit({ sourceId: SRC, progress: { cursor: 'c1', lastError: null, lastPolledAt: NOW }, cases: [other], threads: [], audit: [] })
+  await ledger.commit({ sourceId: SRC, progress: { cursor: 'c1', lastError: null, lastPolledAt: NOW }, cases: [other], threads: [], inputs: [], audit: [] })
 
   await ledger.writeSteps([stepOf({ seq: 2 }), stepOf({ seq: 1 })], [
     { kind: 'step.settled', at: NOW, caseId, seq: 1, state: 'waiting' },
@@ -267,6 +279,17 @@ await test('closeCase：只改 closed 字段，其余原样；未知 Case 拒写
   await assert.rejects(() => ledger.closeCase(`case:${SRC}:nope`, 'completed', NOW), /no such Case/)
 })
 
+await test('inputs：一条消息一行，deliveredAt 由 executor 盖上', async () => {
+  const { ctx, ledger } = await seeded()
+  await ledger.writeInputs([inputOf()], [{ kind: 'case.followed-up', at: NOW, caseId, trigger: `${SRC}:comment-2` }])
+
+  eq(ledger.inputOf(`${caseId}:${SRC}:comment-2`), inputOf())
+  await ledger.writeInputs([inputOf({ deliveredAt: NOW + 5 })])
+
+  eq(ledger.inputOf(`${caseId}:${SRC}:comment-2`).deliveredAt, NOW + 5)
+  eq(ctx.tables.audit.rows.size, 1)
+})
+
 await test('缺表按空表：旧域只服务三张表时，新表读是空值、写报自己的错', async () => {
   const legacy = storageOf({ tables: { progress: tableOf(), cases: tableOf(), audit: tableOf() } })
   const ledger = new DurableLedger(legacy)
@@ -274,13 +297,16 @@ await test('缺表按空表：旧域只服务三张表时，新表读是空值�
 
   eq(ledger.persistent, true, '核心三张表在，仍然认为可持久')
   eq(ledger.threadOf(`${SRC}:issue-12`), undefined)
+  eq(ledger.inputOf(`${caseId}:${SRC}:comment-2`), undefined)
   eq(ledger.stepsOf(caseId), [])
   eq(ledger.replyOf(caseId, 1), undefined)
   eq(ledger.pendingReplies(), [])
+  await assert.rejects(() => ledger.writeInputs([inputOf()]), /storage domain is not open/)
   await assert.rejects(() => ledger.writeSteps([stepOf()]), /storage domain is not open/)
   await assert.rejects(() => ledger.writeReply(replyOf()), /storage domain is not open/)
   await assert.rejects(() => ledger.closeCase(caseId, 'completed', NOW), /storage domain is not open/)
   await assert.rejects(() => ledger.record([]), /storage domain is not open/)
+  await assert.rejects(() => ledger.writeInputs([inputOf()]), /storage domain is not open/)
 })
 
 await test('域关闭后每一类写入都拒写，读仍按空值回答', async () => {
@@ -288,7 +314,7 @@ await test('域关闭后每一类写入都拒写，读仍按空值回答', async
   for (const dispose of ctx.disposers) dispose()
 
   eq(ledger.persistent, false)
-  await assert.rejects(() => ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [], threads: [], audit: [] }), /storage domain is not open/)
+  await assert.rejects(() => ledger.commit({ sourceId: SRC, progress: { cursor: null, lastError: null, lastPolledAt: NOW }, cases: [], threads: [], inputs: [], audit: [] }), /storage domain is not open/)
   await assert.rejects(() => ledger.writeSteps([stepOf()]), /storage domain is not open/)
   await assert.rejects(() => ledger.writeReply(replyOf()), /storage domain is not open/)
   await assert.rejects(() => ledger.closeCase(caseId, 'completed', NOW), /storage domain is not open/)

@@ -31,6 +31,7 @@
  */
 
 import { briefOf } from '../core/brief.ts'
+import { inputIdOf } from '../core/case-id.ts'
 import { budgetOf, planStep } from '../core/plan-step.ts'
 import { planReply, type ReplyPlan } from '../core/reply-plan.ts'
 import { LAYER_B_DELAYS_MS, MAX_SESSION_TITLE_CHARS, MAX_STEPS_PER_CASE, RECOVERY_NOTE } from '../contract/defaults.ts'
@@ -44,6 +45,7 @@ import type {
   StepRecord,
   StampedReport,
   ThreadKey,
+  TriggerKey,
 } from '../contract/types.ts'
 import type { Ledger } from './ledger.ts'
 import type { FollowUpDelivery, FollowUpPort } from './pass.ts'
@@ -335,7 +337,7 @@ export class Executor implements FollowUpPort {
     const running = steps[steps.length - 1]
     if (running?.state === 'running' && theCase.closed === null) {
       const sessionId = await this.ensureSession(theCase)
-      this.deliverTurn(sessionId, theCase.id, running.seq, input.text, input.trigger)
+      await this.deliverTurn(sessionId, theCase.id, running.seq, input.text, input.trigger)
       return
     }
 
@@ -343,7 +345,7 @@ export class Executor implements FollowUpPort {
     const brief = opening ? theCase.brief : briefOf(input.text)
     const started = await this.startStep(theCase, brief)
     if (started === undefined) return
-    this.deliverTurn(started.sessionId, theCase.id, started.step.seq, brief, opening ? undefined : input.trigger)
+    await this.deliverTurn(started.sessionId, theCase.id, started.step.seq, brief, opening ? undefined : input.trigger)
   }
 
   /** End an assignment the restart orphaned, then start the next one with the recovery note. */
@@ -359,7 +361,7 @@ export class Executor implements FollowUpPort {
   private async startStepAndDeliver(theCase: CaseRecord, brief: string): Promise<void> {
     const started = await this.startStep(theCase, brief)
     if (started === undefined) return
-    this.deliverTurn(started.sessionId, theCase.id, started.step.seq, brief)
+    await this.deliverTurn(started.sessionId, theCase.id, started.step.seq, brief)
   }
 
   /**
@@ -409,7 +411,7 @@ export class Executor implements FollowUpPort {
    * seq in the id, a re-read would look new, reopen the Case and wake the worker for
    * a comment it already handled (measured in `oncall-loop.mjs` phase 2).
    */
-  private deliverTurn(sessionId: string, caseId: CaseId, seq: number, text: string, trigger?: string): void {
+  private async deliverTurn(sessionId: string, caseId: CaseId, seq: number, text: string, trigger?: string): Promise<void> {
     const messageId = trigger === undefined ? `oncall:${caseId}#${seq}` : `oncall:${caseId}:${trigger}`
     if (!this.host.holds(sessionId, messageId)) {
       this.host.followup({ sessionId, messageId, text })
@@ -419,7 +421,22 @@ export class Executor implements FollowUpPort {
         this.logger.warn(`oncall: flushing the worker session failed: ${String(error)}`)
       })
     }
+    if (trigger !== undefined) await this.markDelivered(caseId, trigger as TriggerKey)
     this.wake(sessionId)
+  }
+
+  /**
+   * The input row's `deliveredAt`: the message is in the worker's session now.
+   *
+   * Written whether or not this process sent it (`holds` already answers that), so a
+   * crash between the pass's commit and this delivery leaves `deliveredAt: null` and
+   * the next poll delivers again — a no-op if it landed, the actual delivery if not.
+   */
+  private async markDelivered(caseId: CaseId, trigger: TriggerKey): Promise<void> {
+    const id = inputIdOf(caseId, trigger)
+    const input = this.ledger.inputOf(id)
+    if (input === undefined || input.deliveredAt !== null) return
+    await this.ledger.writeInputs([{ ...input, deliveredAt: this.options.now() }])
   }
 
   /**

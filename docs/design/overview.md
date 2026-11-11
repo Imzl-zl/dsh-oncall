@@ -50,7 +50,7 @@ L5  faces     ingress / route / tool / panel
       ↓
 L4  runtime   pass、executor、sources、channels、notify
       ↓
-L3  state     六张表（progress / cases / threads / steps / replies / audit，域版本 1）
+L3  state     七张表（progress / cases / threads / inputs / steps / replies / audit，域版本 1）
       ↓
 L2  core      纯函数：闸门、状态派生、计划、路由决策
       ↓
@@ -89,7 +89,7 @@ L1  contract  类型、常量、默认值、配置 schema
 | `sources/github-http.ts` | 155 | fetch 实现，分页、错误映射、形状校验 | `github-http` |
 | `sources/github-issue.ts` | 193 | issue/评论 → Trigger，游标回看一分钟 | `github-issue` |
 | `runtime/ledger.ts` | 200 | 账本端口（命名操作）+ 内存实现 | `pass` / `executor` |
-| `runtime/durable-ledger.ts` | 470 | storageDomain 六张表 + 品牌还原，加表不升版本 | `ingress-loop` |
+| `runtime/durable-ledger.ts` | 500 | storageDomain 七张表 + 品牌还原，加表不升版本 | `ingress-loop` |
 | `runtime/pass.ts` | 258 | 一轮：读 → 归属 → 闸门 → 开 Case/扇出，一次提交 | `pass` |
 | `runtime/executor.ts` | 520 | 派工生命周期：起会话、投递、等回合、结算、重启恢复、层 B | `executor` / `oncall-loop` |
 | `runtime/outbox.ts` | 190 | 回执：一条一个 `caseId#seq`，重试/`gone`/重启补发 | `executor` |
@@ -105,7 +105,7 @@ L1  contract  类型、常量、默认值、配置 schema
 
 **接线**：`config.ts` 加 `ingress` 段（含 `baseUrl` / `workdir`），`index.ts` 的 `installIngress()` 装配 source、账本、executor、outbox 与 `oncall_report`。
 
-**测试**：13 套全绿。入口侧 7 套：`layers` 守卫、`ingress` 29、`github-issue` 16、`pass` 25、`github-http` 10、`ingress-loop` 18、`executor` 27；组合两套：`oncall-loop` 38（真实 web profile + 本地假 GitHub：@ 一次只开一个 Case、追问进同一会话、实时工具调用回执、重启带 recovery note）、`handoff-relay`（真实 web 组合的接力）；原有 `unit` 259 / `client-controller` 129 / `remote` 25 / `run` 37 场景不变。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
+**测试**：13 套全绿。入口侧 7 套：`layers` 守卫、`ingress` 29、`github-issue` 16、`pass` 27、`github-http` 10、`ingress-loop` 19、`executor` 28；组合两套：`oncall-loop` 38（真实 web profile + 本地假 GitHub：@ 一次只开一个 Case、追问进同一会话、实时工具调用回执、重启带 recovery note）、`handoff-relay`（真实 web 组合的接力）；原有 `unit` 259 / `client-controller` 129 / `remote` 25 / `run` 37 场景不变。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
 
 ## 五、未实现
 

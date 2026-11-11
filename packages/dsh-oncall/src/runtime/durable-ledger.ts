@@ -43,6 +43,7 @@ import type {
   CaseId,
   CaseRecord,
   ClosedReason,
+  InputRecord,
   ReplyRecord,
   SourceId,
   StepRecord,
@@ -81,6 +82,15 @@ const caseSchema = z.object({
   brief: z.string(),
   openedAt: z.number(),
   closed: z.object({ reason: z.enum(['completed', 'merged', 'stopped', 'failed', 'dropped']), at: z.number() }).nullable(),
+})
+
+const inputSchema = z.object({
+  id: z.string(),
+  caseId: z.string(),
+  trigger: z.string(),
+  text: z.string(),
+  at: z.number(),
+  deliveredAt: z.number().nullable(),
 })
 
 const threadSchema = z.object({
@@ -143,6 +153,7 @@ const auditSchema = z.object({
 
 type StoredCase = z.infer<typeof caseSchema>
 type StoredThread = z.infer<typeof threadSchema>
+type StoredInput = z.infer<typeof inputSchema>
 type StoredStep = z.infer<typeof stepSchema>
 type StoredReply = z.infer<typeof replySchema>
 type StoredAudit = z.infer<typeof auditSchema>
@@ -191,6 +202,7 @@ export class DurableLedger implements Ledger {
   private progressTable: IngressTable<Progress> | undefined
   private caseTable: IngressTable<StoredCase> | undefined
   private threadTable: IngressTable<StoredThread> | undefined
+  private inputTable: IngressTable<StoredInput> | undefined
   private stepTable: IngressTable<StoredStep> | undefined
   private replyTable: IngressTable<StoredReply> | undefined
   private auditTable: IngressTable<StoredAudit> | undefined
@@ -213,6 +225,11 @@ export class DurableLedger implements Ledger {
   caseOf(id: CaseId): CaseRecord | undefined {
     const stored = this.caseTable?.get(id)
     return stored === undefined ? undefined : fromStoredCase(stored)
+  }
+
+  inputOf(id: string): InputRecord | undefined {
+    const stored = this.inputTable?.get(id)
+    return stored === undefined ? undefined : fromStoredInput(stored)
   }
 
   threadOf(key: ThreadKey): ThreadRecord | undefined {
@@ -246,12 +263,19 @@ export class DurableLedger implements Ledger {
     await open.progress.put(batch.sourceId, batch.progress)
     for (const record of batch.cases) await open.cases.put(record.id, toStoredCase(record))
     for (const record of batch.threads) await open.threads.put(record.key, toStoredThread(record))
+    for (const record of batch.inputs) await open.inputs.put(record.id, toStoredInput(record))
     for (const event of batch.audit) await open.audit.put(globalThis.crypto.randomUUID(), toStoredAudit(event))
   }
 
   async writeSteps(records: readonly StepRecord[], audit: readonly AuditEvent[] = []): Promise<void> {
     const open = await this.opened()
     for (const record of records) await open.steps.put(sequenceKey(record.caseId, record.seq), toStoredStep(record))
+    for (const event of audit) await open.audit.put(globalThis.crypto.randomUUID(), toStoredAudit(event))
+  }
+
+  async writeInputs(records: readonly InputRecord[], audit: readonly AuditEvent[] = []): Promise<void> {
+    const open = await this.opened()
+    for (const record of records) await open.inputs.put(record.id, toStoredInput(record))
     for (const event of audit) await open.audit.put(globalThis.crypto.randomUUID(), toStoredAudit(event))
   }
 
@@ -303,17 +327,26 @@ export class DurableLedger implements Ledger {
     progress: IngressTable<Progress>
     cases: IngressTable<StoredCase>
     threads: IngressTable<StoredThread>
+    inputs: IngressTable<StoredInput>
     steps: IngressTable<StoredStep>
     replies: IngressTable<StoredReply>
     audit: IngressTable<StoredAudit>
   }> {
     await this.ready
-    const { progressTable, caseTable, threadTable, stepTable, replyTable, auditTable } = this
+    const { progressTable, caseTable, threadTable, inputTable, stepTable, replyTable, auditTable } = this
     if (progressTable === undefined || caseTable === undefined || threadTable === undefined
-      || stepTable === undefined || replyTable === undefined || auditTable === undefined || this.closed) {
+      || inputTable === undefined || stepTable === undefined || replyTable === undefined || auditTable === undefined || this.closed) {
       throw new Error('oncall: the ingress storage domain is not open; refusing to lose the pass')
     }
-    return { progress: progressTable, cases: caseTable, threads: threadTable, steps: stepTable, replies: replyTable, audit: auditTable }
+    return {
+      progress: progressTable,
+      cases: caseTable,
+      threads: threadTable,
+      inputs: inputTable,
+      steps: stepTable,
+      replies: replyTable,
+      audit: auditTable,
+    }
   }
 
   private async open(): Promise<void> {
@@ -327,6 +360,7 @@ export class DurableLedger implements Ledger {
       this.progressTable = domain.table('progress') as IngressTable<Progress>
       this.caseTable = domain.table('cases') as IngressTable<StoredCase>
       this.threadTable = domain.table('threads') as IngressTable<StoredThread>
+      this.inputTable = domain.table('inputs') as IngressTable<StoredInput>
       this.stepTable = domain.table('steps') as IngressTable<StoredStep>
       this.replyTable = domain.table('replies') as IngressTable<StoredReply>
       this.auditTable = domain.table('audit') as IngressTable<StoredAudit>
@@ -345,6 +379,7 @@ export const ingressDomain = defineDomain({
     progress: domainTable(progressSchema),
     cases: domainTable(caseSchema),
     threads: domainTable(threadSchema),
+    inputs: domainTable(inputSchema),
     steps: domainTable(stepSchema),
     replies: domainTable(replySchema),
     audit: domainTable(auditSchema),
@@ -380,6 +415,28 @@ function fromStoredCase(stored: StoredCase): CaseRecord {
     brief: stored.brief,
     openedAt: stored.openedAt,
     closed: stored.closed === null ? null : { reason: stored.closed.reason as ClosedReason, at: stored.closed.at },
+  }
+}
+
+function toStoredInput(record: InputRecord): StoredInput {
+  return {
+    id: record.id,
+    caseId: record.caseId,
+    trigger: record.trigger,
+    text: record.text,
+    at: record.at,
+    deliveredAt: record.deliveredAt,
+  }
+}
+
+function fromStoredInput(stored: StoredInput): InputRecord {
+  return {
+    id: stored.id,
+    caseId: asCaseId(stored.caseId),
+    trigger: asTriggerKey(stored.trigger),
+    text: stored.text,
+    at: stored.at,
+    deliveredAt: stored.deliveredAt,
   }
 }
 
