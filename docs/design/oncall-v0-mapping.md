@@ -50,7 +50,8 @@ last_updated: "2026-11-11"
 ## 四、必须精确对齐的六个细节
 
 **1. `steps` 的形状 = `Assignment` 的压缩版，不是新发明。**
-`caseId`、`seq`、`outcome`（可空）、`at`。开工写 `outcome: null`，结算写值；key `caseId#seq`。丢掉的 `state(pending)/idleAt/deliveredAt` 由"stage 派生 + 会话日志"承担，V1 恢复语义再补。**压缩点写进决策笔记**，不是抄漏。
+`caseId`、`seq`、`state(running|ended)`、`brief`、`report{state,summary,at}|null`、`at`、`endedAt?`；key `caseId#seq`。回合结束只写 `report`（派工仍 `running`），`ended` 只在 Case 关闭、重启顶掉上一刀、层 B 换新派工时写——与 `Assignment` 的 `running → ended` 独立于 Ticket 是同一条规则（`docs/001-domain.md:36`）。丢掉的 `pending` 是因为 V0 的 follow-up 直接投进活会话，不排队。
+（2026-11-11 更新：本文早前写的四列版 `outcome` 已被实现取代；现状见 `oncall-v0-architecture.md` §三。）
 
 **2. 投递的幂等键是消息 id，不是行锁。**
 `followup(freezeMessage({ id: MessageId('oncall:'+caseId+'#'+seq), … }))`；投递前用 `holds()` 同款判断（重放会话日志 + 看 `inbox.nextTurn/nextStep`）。这样"崩溃在投递与写表之间"不会重复投递。
@@ -66,17 +67,21 @@ last_updated: "2026-11-11"
 层 A（已有）：一次模型请求内，判 `LlmFailure.code` × `switchOn` × 立即切换白名单，账本是每候选 `maxRetries`。
 层 B（抄形状）：**只在层 A 报 `exhausted` 时开火**，退避用 `turn/end.error.providerRetryAfterMs` 优先（三方网关的 429 常带这个，`dsh-llm/lib/types/types.d.ts:34`），否则 30/60s，≤2 次，每次都是**新 step**。这样"一个 step 最多多少真实调用"仍只由层 A 决定，两笔账分开，不违背"不与 provider 重试、跨渠道 failover 混成一个次数"。
 
-**6. `thread` 用 `mandate.scope` 派生，不建第二张表。**
-V0 一个 Case 只覆盖一个 thread（`pass.ts` 的 `caseOf()` 就是 `scope: [trigger.thread]`），所以"这个 thread 归哪个 Case"= 扫 Case 表比 `scope`。建表会造成两个事实源（Case 的 scope 与 threads 行），漂移方向不可控。superagent 建 `Thread` 聚合是因为订阅是多对多且带 eval 状态（`docs/001-domain.md:37,43`），我们单值用不上。
-**代价**：以后要多对多就得建表并迁移——这与 `open-questions §14.2` 第 1 条是同一个裁定。
+**6. `thread` 用哪张表：最终建了 `threads`（本条早前的"不建表"已被裁定取代）。**
+早前的论据是"一个 Case 只覆盖一个 thread，扫 `mandate.scope` 就够"；`open-questions §14.2` 第 1 条最终按参考实现的形状定案——**订阅存在 Thread 上**（`subscriptions: caseId[]`），`mandate.scope` 只是授权范围。两个事实源的风险用"同一次 commit 写入 + 只有 pass 写订阅"消掉，不再靠派生。现状见 `oncall-v0-architecture.md` §三。
 
 ## 五、V0 落定的形状
 
 ```
-steps  (key=caseId#seq)   { caseId, seq, outcome|null, at }
-replies(key=caseId#seq)   { caseId, seq, state, at }
-audit（追加）              case.opened / case.followed-up / step.settled / step.interrupted / reply.settled
+threads(key=ThreadKey)    { key, subscriptions: caseId[], lastAt }
+inputs (key=caseId:trigger) { caseId, trigger, text, at, deliveredAt|null }
+steps  (key=caseId#seq)   { caseId, seq, state, brief, report|null, at, endedAt? }
+replies(key=caseId#seq)   { caseId, seq, intent, text, state, at }
+audit（追加）              case.opened / case.observed / case.followed-up /
+                          step.settled / step.interrupted / reply.settled /
+                          trigger.refused / poll.failed
 ```
+（2026-11-11 更新：上表是实施后的形状；本文早前的三行版少了 `threads`/`inputs`/`state`。）
 
 | 事件 | step outcome | 回执 | 下一步 |
 |---|---|---|---|
@@ -93,10 +98,10 @@ audit（追加）              case.opened / case.followed-up / step.settled / s
 
 不变量：状态派生不落库；机器态只有插件写；一次投递一个消息 id；一次外发一条 receipt；Case 不感知渠道（executor 不出现 provider/model）。
 
-## 六、仍需裁定的两处
+## 六、两处已裁定（原"仍需裁定"）
 
-1. **thread 单值**（第五节 6）：V0 收成单值，与 `docs/001-domain.md:55` 的"不建模一 thread 一 ticket"相反。这是验收要求带来的，代价是将来迁移。
-2. **终局失败要不要发 GitHub comment**：他们的 `result` 门禁不允许（`core/replies.ts`），我们偏发。理由是我们的读者在 GitHub，不在 DSH 主 Session。**这是全文唯一一处主动偏离参考实现**，请裁定。
+1. **thread 单值 / 要不要建表**：已裁定——**建 `threads` 表，存 `subscriptions`**（`open-questions §14.2` 第 1 条）。V0 的策略仍是"一个 thread 最多一个活 Case"，但那是策略不是表结构；接评估层时只改策略。与 `docs/001-domain.md`「Rejected concepts」的差异因此收窄成"策略更保守"，不再是模型差异。
+2. **终局失败要不要发 GitHub comment**：已裁定——**发**（`open-questions §14.2` 第 8 条）。理由：我们的读者在 GitHub，不在 DSH 主会话；参考实现把 `failed` 排在 `result` 门禁外，是因为它的 relay 已经说了。
 
 `oncall_report` 不再列为待裁定项：它是 superagent 已有的设计（`app/tools/executor.ts:75`），不加就只能从自由文本猜状态，而那正是他们明确拒绝的做法（`docs/001-domain.md:60`）。
 
@@ -107,3 +112,32 @@ superagent（`D:\sudy\github\dsh-superagent-prototype`）：`src/app/passes.ts:2
 comet（`D:\sudy\github\comet`）：`domains/comet-classic/classic-state.ts`（phase 枚举与字段）；`classic-transitions.ts`（转移表 + `guardRefs` + 非法 phase 抛错 + `effects[]`）；`classic-store.ts:123-129`（`run_id`/`skill_hash`/`current_step`/`iteration`）；`classic-state-events.ts:7-18`（`event/from/to/effects`）；`classic-state-command.ts:604-605`（machine-owned 拒绝写）；`docs/architecture/ARCHITECTURE.md:128,130,147`。
 
 DSH rc.3（本项目 `node_modules/@deepseek-ai/`）：`dsh-api-session-controller/lib/types/types.d.ts:284-293`；`.../index.d.ts:72,101,156`；`dsh-agent/lib/types/runtime-types.d.ts:164,192,200,209,219,252`；`dsh-agent-loop/lib/types/inbox.d.ts:44,46`；`dsh-session-persistence/lib/types/index.d.ts:126` 与 `handle.d.ts:75`；`dsh-session/lib/types/types.d.ts:167-206`（`TurnEndReasonMap`，`:183-186` error 带 `LlmFailure`，`:197` interrupted）；`dsh-llm/lib/types/types.d.ts:26-36,34`；`dsh-llm/lib/types/message.d.ts:190`；`dsh-tools/lib/types/index.d.ts:645,656`；`dsh-storage-json/lib/index.js:102,115-121`。
+
+## 八、参考实现对我们未决项与收窄项的现成答案（2026-11-11 实施后补）
+
+`open-questions.md` 登记的问题、以及架构文档里"有意收窄"的条目，逐条对到 `dsh-superagent` 的文档上。**没有一条是无人回答的**——区别只是我们要不要现在付代价。
+
+| 我们的项（出处） | 参考实现的答案 | 现在 |
+|---|---|---|
+| 没有评估层：同 thread 两件独立的活不分开（架构 §五 1） | `docs/001-domain.md`「Eval」；`docs/002-authorization.md:9-17` 两道闸；`docs/007-architecture.md:209` `MasterAssessor`、`:145` `assessmentOutcome`（每条启用规则一个判断、方向 settled、必须匹配规则与意图证据；非 auto 的推断接受只记 "would accept"） | V1 照抄。评估器就是主会话本身，我们没有那个人读的主会话——**唯一**"前提不同"的收窄 |
+| Input 只保留最小一列：不知道"读没读"、Case 结束不退回未读（架构 §五 2） | `docs/002-authorization.md:28-39`「Handing back and releasing follow-ups」；`core/tickets.ts:330` `requeueUntaken`、`:300` `letGo`；`docs/007-architecture.md:85` 定义"读"（进入 history 且随后有报告或回合结束） | 幂等骨架已抄（`inputs` + `deliveredAt`）；`readAt` 与退回随评估层一起补 |
+| 没有 comet 式检查点（架构 §五 4） | **superagent 也没有**：`docs/003-execution.md:144`「Restart」与我们同法（重开派工 + recovery note） | 不是对 superagent 的偏离（已改正架构文档措辞） |
+| 层 B 判据换成"层 A exhausted"、30/60s ≤2（架构 §五 3） | `docs/003-execution.md:120-134`：瞬态失败先重试三次、退避递增；`executor/dsh.ts` `TRANSIENT_TRIES=3`、15s 起 | 保留我们的判据（避免两套码表），参数待真实渠道数据再对齐 |
+| 同 thread 最多一个活 Case（架构 §五 1） | `docs/001-domain.md`「Rejected concepts」明确拒绝这条限制，由评估层去重 | 接评估层时拆掉 |
+| 并发上限（架构 §九） | `docs/003-execution.md:55`「Concurrency」：每工单一个槽，人的消息/状态请求额外一槽 | V1 照抄（含"人不会被新活挤掉"） |
+| handback（架构 §九） | `docs/002-authorization.md:28`、`docs/003-execution.md:108-116`：超出范围交还评估，每条只交还一次 | V1（依赖评估层） |
+| PR / CI 回到同一 Case（架构 §九） | `docs/003-execution.md:96-107`「Pull requests」：工单跟随自己开的 PR，PR 全关才算完 | V3 照抄 |
+| 派工重试（架构 §九） | `docs/003-execution.md:135-143`「Retry」：新派工，同会话/目录/分支/PR，带走等待的 Input | V1 照抄 |
+| 面板与任务线（架构 §九） | `docs/005-panel.md`：三个问题、六个页签、七条原则（"会给人的数字才显示""一个概念一个地方""诚实的计数 = 列表长度"） | V5 照抄结构与原则 |
+| 多仓库 / 飞书（架构 §九） | `docs/006-deployment.md`；`docs/007-architecture.md:183` Sources = 一种实现 + 一个实例配置 | V4 |
+
+### `open-questions.md` 里问过的问题
+
+| 问题（出处） | 参考实现的答案 | 结论 |
+|---|---|---|
+| §11 #5 是否显示 Token | `docs/005-panel.md` 原则 1："a number appears only when it changes what the supervisor does" | 保留"显示、缺失隐藏"，只留会改变人下一步动作的数字 |
+| §11 #7 "异常"怎么措辞 | `docs/005-panel.md` 原则 2："A label says whom a row waits for and what it needs, not an internal status code"；阶段名是 `person / answer` 这种 | 改成阶段式措辞时照这条 |
+| §11 #6 要不要 Nudge / 停止 | `docs/003-execution.md:135` Retry、`docs/002-authorization.md:125` stop、`docs/005-panel.md`"Ticket details show actions" | 两个动作可抄：Retry 与 stop，V1 |
+| §11 #2/#3/#4/#8（标签名、投影条数、配色、切会话回全局） | 无对应：他们的面板是整页，没有"右栏按会话加载"这个形态 | 确实是我们自己的决定 |
+| §12 #1 何时迁移 `agent/request` | `docs/003-execution.md:143`："The Executor model applies only when a Session is created; an existing Session keeps its model"；`docs/007-architecture.md:335` `role-models.ts` | 他们**从不**拦请求：模型按角色在创建会话时定，整段会话不变 |
+| §12 #2 迁到 step 边界后"逐候选预算"怎么定义 | 同上 + `docs/003-execution.md:120-134` 的按回合瞬态重试 | 逐候选预算随那个缝一起消失；剩下"角色模型 + 按回合瞬态重试"，没有第三个数字 |
