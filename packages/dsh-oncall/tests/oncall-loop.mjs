@@ -73,13 +73,26 @@ mkdirSync(HOME, { recursive: true })
 
 // ---------- the fake GitHub ----------
 
-/** Everything the source reads: the issues, and the comments of each issue. */
-const github = { issues: [], comments: new Map() }
+/**
+ * Everything the source reads and writes: the issues, their comments, and the POSTs.
+ * `gone` makes every comment POST answer 404, which is what a deleted issue does.
+ */
+const github = { issues: [], comments: new Map(), posted: [], gone: false }
 
 const server = createServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://127.0.0.1')
   const comments = /^\/repos\/[^/]+\/[^/]+\/issues\/(\d+)\/comments$/.exec(url.pathname)
   const issues = /^\/repos\/[^/]+\/[^/]+\/issues$/.exec(url.pathname)
+  if (request.method === 'POST' && comments !== null) {
+    let body = ''
+    request.on('data', chunk => { body += String(chunk) })
+    request.on('end', () => {
+      github.posted.push({ number: Number(comments[1]), body: JSON.parse(body).body })
+      response.writeHead(github.gone ? 404 : 201, { 'content-type': 'application/json' })
+      response.end('{}')
+    })
+    return
+  }
   const send = body => {
     response.writeHead(200, { 'content-type': 'application/json' })
     response.end(JSON.stringify(body))
@@ -167,9 +180,18 @@ const resolution = await createRuntimeResolution({
   profile: { ...profile, layers: [...profile.layers, ...moduleLayers] },
 })
 
+/**
+ * Dispose the in-process boot completely.
+ *
+ * `ctx.fiber.dispose()` is the root's own teardown (the `ctx.dispose()` shortcut some
+ * DSH versions expose is not part of this one). This has to be awaited and has to
+ * finish before the fixture edit and the child process: a still-running ingress keeps
+ * its storage unit in memory and rewrites the whole document on its next commit,
+ * which would silently undo the edit (`remote.mjs` uses the same call).
+ */
 const shutdown = async (instance) => {
-  if (typeof instance.dispose === 'function') await instance.dispose()
-  else await instance.fiber?.dispose?.()
+  if (instance?.fiber?.dispose !== undefined) await instance.fiber.dispose()
+  else if (typeof instance?.dispose === 'function') await instance.dispose()
 }
 
 // ---------- reading the durable facts ----------
@@ -193,6 +215,7 @@ const ledgerOf = () => {
   }
 }
 const rows = table => Object.entries(ledgerOf()?.[table] ?? {}).map(([key, record]) => ({ key, ...record }))
+const stepsOf = caseId => rows('steps').filter(step => step.caseId === caseId).sort((left, right) => left.seq - right.seq)
 
 /** One session's events, read straight out of the jsonl persistence root. */
 const sessionEvents = (sessionId) => {
@@ -228,6 +251,9 @@ const waitFor = async (label, probe, deadlineMs = 40_000) => {
 
 // ---------- phase 1: @ once, then a follow-up ----------
 
+let caseCount = 0
+/** The Case phase 2 recovers: the one left open by phase 1 (blocked, so still live). */
+let recoveryCase = ''
 let ctx = await boot(
   'oncall-loop-test',
   configPath,
@@ -281,28 +307,92 @@ try {
   // A second mention on the same issue must reach the SAME session; the thread's
   // subscription routes it, and no second Case may appear.
   github.comments.set(12, [comment(9001, `@${AGENT} 再补一个回归测试`)])
-  const followUp = await waitFor('the follow-up reached the same session', () => {
-    const found = ourMessages(sessionId)
-    return found.find(message => message.id.startsWith(`oncall:${caseId}#1:`))
-  })
+  const followUp = await waitFor('the follow-up reached the same session', () =>
+    ourMessages(sessionId).find(message => message.id === `oncall:${caseId}:${SRC}:comment-9001`))
   check('the follow-up carries its trigger in the message id', Boolean(followUp?.id), String(followUp?.id))
   check('the follow-up is the comment, not a copy of the brief', followUp?.text === `@${AGENT} 再补一个回归测试`,
     String(followUp?.text))
   check('the follow-up opened no second Case', rows('cases').length === 1, `${rows('cases').length} cases`)
-  check('the follow-up opened no second assignment', rows('steps').length === 1,
-    JSON.stringify(rows('steps').map(step => step.seq)))
+  check('the follow-up opened no second assignment', stepsOf(caseId).length === 1,
+    JSON.stringify(stepsOf(caseId).map(step => step.seq)))
   const followed = await waitFor('the follow-up was audited', () => rows('audit').find(event => event.kind === 'case.followed-up'))
   check('the audit names the owning Case and the trigger', followed?.caseId === caseId
     && followed?.trigger === `${SRC}:comment-9001`, JSON.stringify(followed))
+
+  // ---- the report tool, through the real registry ----
+  //
+  // Called on the worker's own agent (the stub adapter cannot emit a tool call),
+  // which is exactly the identity the handler checks.
+  const report = ctx.get('tools').get('oncall_report')
+  check('the report tool is registered globally', report !== undefined)
+  const workerAgent = ctx.get('agents').get(sessionId)
+  const call = args => report.execute(args, { agent: workerAgent, signal: new AbortController().signal })
+
+  const receipt = await call({ state: 'ready', summary: '修好了，回归也加了' })
+  check('the tool answers with the assignment it settled', receipt?.seq === 1 && receipt?.state === 'ready', JSON.stringify(receipt))
+  await waitFor('the receipt is on the issue', () => (github.posted.length > 0 ? github.posted[0] : undefined))
+  check('ready → one comment on the issue, with the marker', github.posted.length === 1
+    && github.posted[0].number === 12
+    && github.posted[0].body.includes(`<!-- oncall:${caseId}#1 -->`), JSON.stringify(github.posted))
+  check('the comment is the result, not progress chatter', github.posted[0]?.body.includes('## 完成了') === true,
+    String(github.posted[0]?.body).slice(0, 120))
+  check('ready closed the Case as completed', rows('cases').find(item => item.key === caseId)?.closed?.reason === 'completed',
+    JSON.stringify(rows('cases').find(item => item.key === caseId)?.closed))
+  check('the receipt is recorded as sent', rows('replies').find(item => item.key === `${caseId}#1`)?.state === 'sent',
+    JSON.stringify(rows('replies')))
+
+  const replay = await call({ state: 'progress', summary: '再来一次' }).then(
+    () => 'accepted',
+    error => String(error?.code ?? error),
+  )
+  check('a second report on a closed Case is refused', replay === 'ONCALL_REPORT_REFUSED', replay)
+  check('the replay posted nothing', github.posted.length === 1, `${github.posted.length} comments`)
+
+  // ---- a second issue, whose receipt cannot be posted (gone) ----
+  github.issues.push(issue(13, `@${AGENT} 看一下日志`))
+  const second = await waitFor('a second issue opened its own Case and assignment', () => {
+    const found = rows('cases').find(item => String(item.origin).endsWith('issue-13'))
+    const steps = found === undefined ? [] : stepsOf(found.key)
+    return found !== undefined && steps.length === 1 ? { found, steps } : undefined
+  })
+  const secondSession = caseSessionId(second.found.key)
+  await waitFor('the second worker session got its brief', () => {
+    const found = ourMessages(secondSession)
+    return found.length > 0 ? found[0] : undefined
+  })
+  github.gone = true
+  const blocked = await ctx.get('tools').get('oncall_report').execute(
+    { state: 'blocked', summary: '缺一个环境变量', question: 'CI 的 token 用哪个？' },
+    { agent: ctx.get('agents').get(secondSession), signal: new AbortController().signal },
+  )
+  check('the blocked report settled the second assignment', blocked?.seq === 1, JSON.stringify(blocked))
+  await waitFor('the gone receipt is recorded', () =>
+    rows('replies').find(item => item.key === `${second.found.key}#1` && item.state !== 'pending'))
+  check('a 404 from GitHub marks the receipt gone',
+    rows('replies').find(item => item.key === `${second.found.key}#1`)?.state === 'gone', JSON.stringify(rows('replies')))
+  check('gone is not retried: exactly one POST for that receipt',
+    github.posted.filter(item => item.number === 13).length === 1, JSON.stringify(github.posted.map(item => item.number)))
+  check('the second Case stays open (blocked waits for a person)',
+    rows('cases').find(item => item.key === second.found.key)?.closed === null,
+    JSON.stringify(rows('cases').find(item => item.key === second.found.key)?.closed))
+  check('both receipts are in the audit stream',
+    JSON.stringify(rows('audit').filter(event => event.kind === 'reply.settled').map(event => event.state))
+      === JSON.stringify(['sent', 'gone']),
+    JSON.stringify(rows('audit').filter(event => event.kind === 'reply.settled')))
+  caseCount = rows('cases').length
+  recoveryCase = second.found.key
 } finally {
   await shutdown(ctx)
   ctx = undefined
 }
 
 // ---- the durable state a process kill mid-turn leaves behind ----
+//
+// The open Case's step loses its report: exactly what a kill between the message
+// delivery and the settle writes. The closed Case keeps everything, so the restart
+// must leave it alone.
 const document = JSON.parse(readFileSync(DOMAIN, 'utf8'))
-const caseId = rows('cases')[0].key
-document.tables.steps[`${caseId}#1`].report = null
+document.tables.steps[`${recoveryCase}#1`].report = null
 writeFileSync(DOMAIN, `${JSON.stringify(document, null, 2)}\n`)
 
 // ---------- phase 2: a new process on the same home ----------
@@ -326,7 +416,7 @@ child.stderr.on('data', chunk => { childOutput += String(chunk) })
 
 try {
   const recovered = await waitFor('the restart scan started a second assignment', () => {
-    const steps = rows('steps')
+    const steps = stepsOf(recoveryCase)
     return steps.length === 2 ? steps : undefined
   }, 60_000)
   check('the orphaned assignment was ended, not deleted',
@@ -340,24 +430,30 @@ try {
     rows('audit').some(event => event.kind === 'step.interrupted' && event.seq === 1),
     JSON.stringify(rows('audit').map(event => event.kind)))
 
-  const sessionId = caseSessionId(caseId)
+  const sessionId = caseSessionId(recoveryCase)
   const recovery = await waitFor('the recovery note reached the same session', () =>
-    ourMessages(sessionId).find(message => message.id === `oncall:${caseId}#2`))
+    ourMessages(sessionId).find(message => message.id === `oncall:${recoveryCase}#2`))
   check('it is delivered under seq 2, in the same session', String(recovery?.text ?? '').includes(RECOVERY_NOTE),
     String(recovery?.text).slice(0, 160))
   check('it is still one session', readdirSync(SESSIONS, { recursive: true, withFileTypes: true })
     .filter(entry => entry.isDirectory() && entry.name === sessionId).length === 1)
 
   const settledAgain = await waitFor('the recovered assignment settled too', () => {
-    const steps = rows('steps')
+    const steps = stepsOf(recoveryCase)
     return steps.length === 2 && steps[1].report !== null ? steps[1] : undefined
   }, 60_000)
   check('the recovered step reports waiting, not done', settledAgain?.report?.state === 'waiting',
     JSON.stringify(settledAgain?.report))
-  check('the first pass after the restart opened no new Case (overlap window)', rows('cases').length === 1,
-    `${rows('cases').length} cases`)
+  check('the first pass after the restart opened no new Case (overlap window)', rows('cases').length === caseCount,
+    `${rows('cases').length} cases (was ${String(caseCount)})`)
   check('the thread still subscribes exactly one Case',
-    JSON.stringify(rows('threads')[0]?.subscriptions) === JSON.stringify([caseId]), JSON.stringify(rows('threads')[0]))
+    JSON.stringify(rows('threads').find(item => item.key === `${SRC}:issue-13`)?.subscriptions) === JSON.stringify([recoveryCase]),
+    JSON.stringify(rows('threads').find(item => item.key === `${SRC}:issue-13`)))
+  check('the closed Case stayed closed (the overlap window did not resume it)',
+    rows('cases').find(item => item.key !== recoveryCase)?.closed?.reason === 'completed',
+    JSON.stringify(rows('cases').map(item => [item.key, item.closed])))
+  check('the closed Case gained no assignment', stepsOf(rows('cases').find(item => item.key !== recoveryCase).key).length === 1,
+    JSON.stringify(rows('steps')))
 } finally {
   child.kill()
   writeFileSync(CHILD_LOG, childOutput)

@@ -26,3 +26,15 @@ export function triggerKey(source: SourceId, externalId: string): TriggerKey {
 export function threadKey(source: SourceId, external: string): ThreadKey {
   return `${source}:${external}` as ThreadKey
 }
+
+/**
+ * The external id inside a thread key, when the thread belongs to `source`.
+ *
+ * The inverse exists because a delivery has to address the conversation it answers:
+ * `undefined` for another source's thread is what keeps one source from posting into
+ * another's issue numbering.
+ */
+export function threadExternal(thread: ThreadKey, source: SourceId): string | undefined {
+  const prefix = `${source}:`
+  return thread.startsWith(prefix) ? thread.slice(prefix.length) : undefined
+}

@@ -20,6 +20,8 @@ import { readFileSync } from 'node:fs'
 
 import { caseSessionId, Executor, titleOf } from '../src/runtime/executor.ts'
 import { memoryLedger } from '../src/runtime/ledger.ts'
+import { Outbox } from '../src/runtime/outbox.ts'
+import { planReply, replyMarker } from '../src/core/reply-plan.ts'
 import { MAX_STEPS_PER_CASE, RECOVERY_NOTE } from '../src/contract/defaults.ts'
 
 const NOW = Date.parse('2026-11-12T09:00:00.000Z')
@@ -117,6 +119,11 @@ function fakeHost() {
     },
     idle(sessionId) { for (const listener of idleListeners) listener(sessionId) },
   }
+}
+
+const repliesOf = () => {
+  const queued = []
+  return { queued, queue: input => queued.push(input) }
 }
 
 async function executorOf(ledger, host, options = {}) {
@@ -323,6 +330,25 @@ await test('层 A 耗尽 + 终态码（auth）→ failed 报告，不排队', as
   executor.stop()
 })
 
+await test('回合失败（没有层 A 结论）→ 发 failed 回执', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { replier })
+  await executor.start()
+  executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-a` })
+  await settle()
+
+  const sessionId = caseSessionId(CASE)
+  fake.say(sessionId, { kind: 'turn-end', turn: 2, reason: { kind: 'error', code: 'SERVER', message: '502' } })
+  fake.idle(sessionId)
+  await settle()
+
+  eq(replier.queued.map(item => item.intent), ['failed'])
+  eq(replier.queued[0].text.includes('SERVER'), true)
+  executor.stop()
+})
+
 await test('层 A 耗尽 + 瞬态码 → 开了新派工（层 B），退避优先用渠道自己给的 retryAfterMs', async () => {
   const ledger = await openWithWaitingStep()
   const fake = fakeHost()
@@ -331,7 +357,8 @@ await test('层 A 耗尽 + 瞬态码 → 开了新派工（层 B），退避优�
     verdicts.push([turn, code])
     return 'transient'
   }
-  const executor = await executorOf(ledger, fake, { layerBDelaysMs: [60_000] })
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { layerBDelaysMs: [60_000], replier })
   await executor.start()
   executor.deliver({ caseId: CASE, text: '继续', trigger: `${SRC}:comment-6` })
   await settle()
@@ -351,6 +378,7 @@ await test('层 A 耗尽 + 瞬态码 → 开了新派工（层 B），退避优�
   await settle(10)
   eq(ledger.stepsOf(CASE).map(step => step.seq), [1, 2])
   eq(ledger.stepsOf(CASE)[1].brief, '修一下 flaky 测试')
+  eq(replier.queued, [], '层 B 接手时不发"卡住了"：静默重试比先报坏消息再修好更诚实')
   executor.stop()
 })
 
@@ -365,7 +393,7 @@ await test('追问投进同一个活着的派工：消息 id 带 trigger，不�
   await settle()
 
   eq(ledger.stepsOf(CASE).map(step => step.seq), [1])
-  eq(fake.state.followups.map(call => call.messageId), [`oncall:${CASE}#1:${SRC}:comment-7`])
+  eq(fake.state.followups.map(call => call.messageId), [`oncall:${CASE}:${SRC}:comment-7`])
   eq(fake.state.followups[0].text, '还有一个地方')
   executor.stop()
 })
@@ -404,7 +432,7 @@ await test('已完成的 Case 被追问 → 重开 + 新派工，brief 是这一
   eq(ledger.cases[0].closed, null, '恢复就是重开')
   eq(ledger.stepsOf(CASE).map(step => [step.seq, step.state]), [[1, 'ended'], [2, 'running']])
   eq(ledger.stepsOf(CASE)[1].brief, '再补个回归')
-  eq(fake.state.followups.map(call => call.messageId), [`oncall:${CASE}#2:${SRC}:comment-8`], '续的是同一个会话')
+  eq(fake.state.followups.map(call => call.messageId), [`oncall:${CASE}:${SRC}:comment-8`], '续的是同一个会话')
   eq(fake.state.created.length, 1)
   executor.stop()
 })
@@ -435,6 +463,192 @@ await test('步数用尽 → 关 stopped，不再派工也不再投递', async (
   eq(ledger.cases[0].closed, { reason: 'stopped', at: NOW })
   eq(fake.state.followups, [])
   executor.stop()
+})
+
+// ── oncall_report ──────────────────────────────────────────────
+await test('oncall_report{ready} → 写报告、关 completed、回执 result', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { replier })
+  await executor.start()
+
+  const verdict = await executor.submitReport({
+    sessionId: caseSessionId(CASE),
+    report: { state: 'ready', summary: '修好了，回归也加了' },
+  })
+
+  eq(verdict, { ok: true, seq: 1 })
+  const [step] = ledger.stepsOf(CASE)
+  eq(step.report, { state: 'ready', summary: '修好了，回归也加了', at: NOW })
+  eq(step.state, 'ended')
+  eq(ledger.cases[0].closed, { reason: 'completed', at: NOW })
+  eq(replier.queued.map(item => item.intent), ['result'])
+  eq(replier.queued[0].text.includes('修好了，回归也加了'), true)
+  eq(replier.queued[0].thread, THREAD)
+  executor.stop()
+})
+
+await test('oncall_report{blocked} → Case 留开、回执 attention；dropped → 关 dropped', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const replier = repliesOf()
+  const executor = await executorOf(ledger, fake, { replier })
+  await executor.start()
+
+  await executor.submitReport({
+    sessionId: caseSessionId(CASE),
+    report: { state: 'blocked', summary: '卡在选型', question: '用 A 还是 B？' },
+  })
+  eq(ledger.cases[0].closed, null)
+  eq(replier.queued.map(item => item.intent), ['attention'])
+
+  await executor.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'dropped', summary: '不做了' } })
+  eq(ledger.cases[0].closed.reason, 'dropped')
+  eq(replier.queued.map(item => item.intent), ['attention', 'result'])
+  executor.stop()
+})
+
+await test('oncall_report 拒绝陌生会话、已关闭的 Case、没有运行中的派工', async () => {
+  const ledger = await openWithWaitingStep()
+  const fake = fakeHost()
+  const executor = await executorOf(ledger, fake)
+  await executor.start()
+
+  const stranger = await executor.submitReport({ sessionId: 'someone-else', report: { state: 'ready', summary: 'x' } })
+  eq(stranger.ok, false)
+  eq(stranger.reason.includes('not working an on-call Case'), true)
+
+  await executor.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'ready', summary: 'x' } })
+  const again = await executor.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'progress', summary: 'y' } })
+  eq(again.ok, false)
+  eq(again.reason.includes('already ended'), true)
+
+  const empty = memoryLedger()
+  await empty.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    audit: [],
+  })
+  const noStep = await executorOf(empty, fakeHost())
+  const verdict = await noStep.submitReport({ sessionId: caseSessionId(CASE), report: { state: 'ready', summary: 'x' } })
+  eq(verdict.ok, false)
+  eq(verdict.reason.includes('no assignment is running'), true)
+  executor.stop()
+  noStep.stop()
+})
+
+// ── 回执：计划与投递 ────────────────────────────────────────────
+await test('reply-plan：ready/dropped → result，blocked → attention，failed → failed，progress/waiting 不发', () => {
+  const marker = replyMarker(CASE, 3)
+  eq(marker, `<!-- oncall:${CASE}#3 -->`)
+
+  const ready = planReply({ caseId: CASE, seq: 3, report: { state: 'ready', summary: '修好了' } })
+  eq(ready?.intent, 'result')
+  eq(ready.text.includes('## 完成了'), true)
+  eq(ready.text.includes('修好了'), true)
+  eq(ready.text.endsWith(marker), true)
+
+  const dropped = planReply({ caseId: CASE, seq: 3, report: { state: 'dropped', summary: '不做了' } })
+  eq(dropped?.intent, 'result')
+  eq(dropped.text.includes('## 已放弃'), true)
+
+  const blocked = planReply({ caseId: CASE, seq: 3, report: { state: 'blocked', summary: '卡在选型', question: '用 A 还是 B？' } })
+  eq(blocked?.intent, 'attention')
+  eq(blocked.text.includes('用 A 还是 B？'), true)
+
+  const failed = planReply({ caseId: CASE, seq: 3, report: { state: 'failed', summary: '网关挂了', code: 'SERVER' } })
+  eq(failed?.intent, 'failed')
+  eq(failed.text.includes('SERVER'), true)
+
+  eq(planReply({ caseId: CASE, seq: 3, report: { state: 'progress', summary: '一半' } }), undefined)
+  eq(planReply({ caseId: CASE, seq: 3, report: { state: 'waiting', summary: '还没说' } }), undefined)
+})
+
+const outboxOf = async (sender, over = {}) => {
+  const ledger = memoryLedger()
+  await ledger.commit({
+    sourceId: SRC,
+    progress: { cursor: null, lastError: null, lastPolledAt: NOW },
+    cases: [caseOf()],
+    threads: [],
+    audit: [],
+  })
+  const errors = []
+  const outbox = new Outbox({
+    ledger,
+    sender,
+    now: () => NOW,
+    logger: { warn() {}, error: message => errors.push(message) },
+    delaysMs: [0, 0],
+    ...over,
+  })
+  return { ledger, outbox, errors }
+}
+const receipt = (over = {}) => ({ caseId: CASE, seq: 1, thread: THREAD, intent: 'result', text: '## 完成了', ...over })
+
+await test('outbox：一条回执只发一次，重放不重发', async () => {
+  const sent = []
+  const { ledger, outbox } = await outboxOf({ async send(request) { sent.push(request); return 'sent' } })
+
+  outbox.queue(receipt())
+  outbox.queue(receipt())
+  await outbox.settled()
+  outbox.queue(receipt())
+  await outbox.settled()
+
+  eq(sent.length, 1)
+  eq(sent[0].thread, THREAD)
+  eq(ledger.replyOf(CASE, 1).state, 'sent')
+  eq(ledger.audit.filter(event => event.kind === 'reply.settled').map(event => [event.intent, event.state]), [['result', 'sent']])
+})
+
+await test('outbox：gone（issue 没了）不再试，直接结账', async () => {
+  const calls = []
+  const { ledger, outbox } = await outboxOf({ async send() { calls.push(1); return 'gone' } })
+
+  outbox.queue(receipt())
+  await outbox.settled()
+
+  eq(calls.length, 1)
+  eq(ledger.replyOf(CASE, 1).state, 'gone')
+  eq(ledger.audit.filter(event => event.kind === 'reply.settled')[0].state, 'gone')
+})
+
+await test('outbox：传输失败按次数重试，用尽后记 failed；成功一次就停', async () => {
+  let attempts = 0
+  const flaky = await outboxOf({
+    async send() {
+      attempts += 1
+      if (attempts < 3) throw new Error('502')
+      return 'sent'
+    },
+  })
+  flaky.outbox.queue(receipt())
+  await flaky.outbox.settled()
+  eq([attempts, flaky.ledger.replyOf(CASE, 1).state], [3, 'sent'])
+
+  const dead = await outboxOf({ async send() { throw new Error('502') } }, { attempts: 2 })
+  dead.outbox.queue(receipt())
+  await dead.outbox.settled()
+  eq(dead.ledger.replyOf(CASE, 1).state, 'failed')
+  eq(dead.errors.length, 1, '失败要说话，不吞掉')
+})
+
+await test('outbox：重启后只补 pending，sent/gone/failed 不再动', async () => {
+  const sent = []
+  const { ledger, outbox } = await outboxOf({ async send(request) { sent.push(request.text); return 'sent' } })
+  await ledger.writeReply({ caseId: CASE, seq: 1, intent: 'result', text: '旧的', state: 'pending', at: NOW })
+  await ledger.writeReply({ caseId: CASE, seq: 2, intent: 'result', text: '发过了', state: 'sent', at: NOW })
+  await ledger.writeReply({ caseId: CASE, seq: 3, intent: 'failed', text: '没了', state: 'gone', at: NOW })
+
+  await outbox.resume()
+  await outbox.settled()
+
+  eq(sent, ['旧的'])
+  eq([1, 2, 3].map(seq => ledger.replyOf(CASE, seq).state), ['sent', 'sent', 'gone'])
 })
 
 // ── 禁止清单 ────────────────────────────────────────────────────

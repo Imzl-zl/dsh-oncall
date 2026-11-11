@@ -27,8 +27,8 @@
  */
 
 import { mentions } from '../core/mentions.ts'
-import { threadKey, triggerKey } from '../core/trigger-key.ts'
-import type { Actor, SourceId, Trigger, TriggerKind } from '../contract/types.ts'
+import { threadExternal, threadKey, triggerKey } from '../core/trigger-key.ts'
+import type { Actor, SourceId, ThreadKey, Trigger, TriggerKind } from '../contract/types.ts'
 import type { GithubFace, RawUser } from './github-face.ts'
 import type { Cursor, PollInput, PollResult, Source } from './source.ts'
 
@@ -128,6 +128,19 @@ export function githubIssueSource(options: GithubIssueOptions): Source {
       return { triggers, cursor: encodeCursor({ since: input.now - OVERLAP_MS }) }
     },
   }
+}
+
+/**
+ * The issue number inside one of this source's thread keys, or `undefined`.
+ *
+ * Only this file knows that an issue thread is spelled `issue-<number>`, so only this
+ * file turns one back into a number. A reply sender that parsed it itself would be a
+ * second definition of the thread key's tail.
+ */
+export function issueNumberOf(thread: ThreadKey, sourceId: SourceId): number | undefined {
+  const external = threadExternal(thread, sourceId)
+  const match = external === undefined ? null : /^issue-(\d+)$/.exec(external)
+  return match === null ? undefined : Number(match[1])
 }
 
 /** One trigger, with its two keys built in exactly one place each. */

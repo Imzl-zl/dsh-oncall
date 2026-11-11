@@ -84,6 +84,9 @@ import { DEFAULT_INGRESS_POLL_SECONDS, INGRESS_POLICY_VERSION, INGRESS_TOKEN_ENV
 import type { Policy } from './contract/policy.ts'
 import { DurableLedger } from './runtime/durable-ledger.ts'
 import { Executor, type TurnEnd, type TurnFact, type TurnHost } from './runtime/executor.ts'
+import { Outbox } from './runtime/outbox.ts'
+import { registerReportTool } from './faces/reports.ts'
+import { githubReplySender } from './sources/github-reply.ts'
 import { startIngressLoop, type IngressLoopHandle } from './faces/ingress.ts'
 import { envOf } from './faces/env.ts'
 import { githubIssueSource, githubIssueSourceId, parseRepository } from './sources/github-issue.ts'
@@ -799,14 +802,10 @@ export default class OnCallDesk extends TypertRemoteService {
     }
 
     const sourceId = githubIssueSourceId(parsed.owner, parsed.repo)
-    const source = githubIssueSource({
-      // Empty means api.github.com; the setting exists for GitHub Enterprise and for
-      // a test that must not reach the network.
-      face: githubHttpFace({ token, baseUrl: ingress.baseUrl === '' ? undefined : ingress.baseUrl }),
-      owner: parsed.owner,
-      repo: parsed.repo,
-      login: ingress.agentLogin,
-    })
+    // Empty means api.github.com; the setting exists for GitHub Enterprise and for a
+    // test that must not reach the network.
+    const face = githubHttpFace({ token, baseUrl: ingress.baseUrl === '' ? undefined : ingress.baseUrl })
+    const source = githubIssueSource({ face, owner: parsed.owner, repo: parsed.repo, login: ingress.agentLogin })
     const ledger = new DurableLedger(ctx)
     const policy = (): Policy => ({
       version: INGRESS_POLICY_VERSION,
@@ -816,28 +815,37 @@ export default class OnCallDesk extends TypertRemoteService {
       disabledSources: [],
     })
 
+    const outbox = new Outbox({
+      ledger,
+      sender: githubReplySender({ face, sourceId, owner: parsed.owner, repo: parsed.repo }),
+      now: () => Date.now(),
+      logger: ctx.logger,
+    })
+
     let handle: IngressLoopHandle | undefined
     let executor: Executor | undefined
     let stopped = false
-    ctx.effect(() => () => { stopped = true; executor?.stop(); handle?.stop() }, 'oncall ingress')
+    ctx.effect(() => () => { stopped = true; executor?.stop(); outbox.stop(); handle?.stop() }, 'oncall ingress')
 
     // The executor needs the Session services, which this composition mounts later
     // than the plugin (measured in the web profile: `sessionController` lives in the
     // web app's own patch). `ctx.inject` is the sanctioned wait; the child fiber
     // dies with this one, so a config save re-registers exactly once.
-    ctx.inject(['sessionController', 'agents', 'sessionPersistence'], (child: Context) => {
+    ctx.inject(['sessionController', 'agents', 'sessionPersistence', 'tools'], (child: Context) => {
       const controller = child.get('sessionController') as SessionControllerService | undefined
       const agents = child.get('agents') as AgentRegistryService | undefined
       const persistence = child.get('sessionPersistence') as SessionPersistenceService | undefined
-      if (controller === undefined || agents === undefined || persistence === undefined) {
+      const tools = child.get('tools') as { register(definition: unknown): unknown } | undefined
+      if (controller === undefined || agents === undefined || persistence === undefined || tools === undefined) {
         child.logger.error(
-          'oncall: the ingress needs sessionController, agents and sessionPersistence; the loop stays off',
+          'oncall: the ingress needs sessionController, agents, sessionPersistence and tools; the loop stays off',
         )
         return
       }
       const worker = new Executor({
         ledger,
         host: this.turnHost({ child, controller, agents, persistence, logger: child.logger }),
+        replier: outbox,
         // V0: worker sessions run in the host process's directory; `ingress.workdir`
         // becomes the setting that overrides it.
         workdir: hostCwd(),
@@ -845,6 +853,8 @@ export default class OnCallDesk extends TypertRemoteService {
         logger: child.logger,
       })
       executor = worker
+      // Globally registered, per-session decided: see faces/reports.ts.
+      registerReportTool({ tools }, worker)
 
       void (async () => {
         await ledger.ready
@@ -856,6 +866,9 @@ export default class OnCallDesk extends TypertRemoteService {
         // Before the first pass: a restart must turn an orphaned assignment into a
         // recovery one before new work arrives on the same Case.
         await worker.start()
+        // ...and before it, the receipts a crash interrupted between the ledger write
+        // and the POST (one row per caseId#seq makes this safe to repeat).
+        await outbox.resume()
         if (stopped) return
         handle = startIngressLoop({
           sources: [source],

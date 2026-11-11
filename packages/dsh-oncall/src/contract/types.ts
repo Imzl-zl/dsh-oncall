@@ -233,5 +233,13 @@ export type AuditEvent =
       readonly code?: string
     }
   | { readonly kind: 'step.interrupted'; readonly at: number; readonly caseId: CaseId; readonly seq: number }
+  | {
+      readonly kind: 'reply.settled'
+      readonly at: number
+      readonly caseId: CaseId
+      readonly seq: number
+      readonly intent: ReplyIntent
+      readonly state: 'sent' | 'gone' | 'failed'
+    }
   | { readonly kind: 'trigger.refused'; readonly at: number; readonly trigger: TriggerKey; readonly reason: RefusalReason }
   | { readonly kind: 'poll.failed'; readonly at: number; readonly source: SourceId; readonly message: string }

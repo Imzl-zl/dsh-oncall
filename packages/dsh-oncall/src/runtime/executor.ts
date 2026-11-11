@@ -32,8 +32,19 @@
 
 import { briefOf } from '../core/brief.ts'
 import { budgetOf, planStep } from '../core/plan-step.ts'
+import { planReply, type ReplyPlan } from '../core/reply-plan.ts'
 import { LAYER_B_DELAYS_MS, MAX_SESSION_TITLE_CHARS, MAX_STEPS_PER_CASE, RECOVERY_NOTE } from '../contract/defaults.ts'
-import type { AuditEvent, CaseId, CaseRecord, ClosedReason, StepRecord, StampedReport } from '../contract/types.ts'
+import type {
+  AuditEvent,
+  CaseId,
+  CaseRecord,
+  ClosedReason,
+  ReplyIntent,
+  Report,
+  StepRecord,
+  StampedReport,
+  ThreadKey,
+} from '../contract/types.ts'
 import type { Ledger } from './ledger.ts'
 import type { FollowUpDelivery, FollowUpPort } from './pass.ts'
 
@@ -97,9 +108,27 @@ export interface TurnHost {
   exhausted(sessionId: string, turn: number, code: string): 'transient' | 'terminal' | undefined
 }
 
+/**
+ * Where a settled report's receipt goes.
+ *
+ * The executor decides *whether* a receipt is owed (`core/reply-plan.ts`) and the
+ * outbox decides *how* it lands; this port is the seam, so neither module knows the
+ * other's tables.
+ */
+export interface ReplyPort {
+  queue(input: {
+    readonly caseId: CaseId
+    readonly seq: number
+    readonly thread: ThreadKey
+    readonly intent: ReplyIntent
+    readonly text: string
+  }): void
+}
+
 export interface ExecutorOptions {
   readonly ledger: Ledger
   readonly host: TurnHost
+  readonly replier?: ReplyPort
   /** Working directory of the worker sessions. */
   readonly workdir: string
   readonly now: () => number
@@ -143,6 +172,11 @@ export function titleOf(theCase: CaseRecord): string {
   const firstLine = theCase.brief.split('\n').find(line => line.trim() !== '')?.trim() ?? ''
   if (firstLine === '') return `oncall ${theCase.id}`
   return firstLine.length <= MAX_SESSION_TITLE_CHARS ? firstLine : `${firstLine.slice(0, MAX_SESSION_TITLE_CHARS)}…`
+}
+
+/** The one message id a follow-up keeps for its whole life. */
+export function followUpMessageId(caseId: CaseId, trigger: string): string {
+  return `oncall:${caseId}:${trigger}`
 }
 
 /** What a new assignment says when the previous one never reported. */
@@ -286,6 +320,18 @@ export class Executor implements FollowUpPort {
     if (theCase === undefined) return
 
     const steps = this.ledger.stepsOf(input.caseId)
+    // The Case's own brief is what a first assignment works on — the message that
+    // opened the Case is not re-sent as a follow-up, or the worker would read it twice.
+    const opening = steps.length === 0 && input.text.trim() === theCase.brief.trim()
+
+    // A follow-up already delivered stays delivered, even across a close: the source
+    // re-reads a minute of history on every poll, and "the same comment resumed a
+    // finished Case" is the one duplicate a person would notice.
+    if (!opening) {
+      const existing = caseSessionId(theCase.id)
+      if (await this.host.resolveAgent(existing) && this.host.holds(existing, followUpMessageId(theCase.id, input.trigger))) return
+    }
+
     const running = steps[steps.length - 1]
     if (running?.state === 'running' && theCase.closed === null) {
       const sessionId = await this.ensureSession(theCase)
@@ -293,10 +339,7 @@ export class Executor implements FollowUpPort {
       return
     }
 
-    // Nothing is running: this message opens the next assignment. The Case's own
-    // brief is what a first assignment works on — the message that opened the Case
-    // is not re-sent as a follow-up, or the worker would read it twice.
-    const opening = steps.length === 0 && input.text.trim() === theCase.brief.trim()
+    // Nothing is running: this message opens the next assignment.
     const brief = opening ? theCase.brief : briefOf(input.text)
     const started = await this.startStep(theCase, brief)
     if (started === undefined) return
@@ -359,12 +402,15 @@ export class Executor implements FollowUpPort {
   /**
    * Deliver one message under an id that makes a replay a no-op.
    *
-   * The id is `oncall:<caseId>#<seq>` for an assignment's own message and gains
-   * `:<trigger>` for a follow-up, so the same comment re-read by the next poll (the
-   * source's overlap window) cannot reach the worker twice.
+   * An assignment's own message is `oncall:<caseId>#<seq>`, unique per assignment. A
+   * follow-up is `oncall:<caseId>:<trigger>` — **without** the seq, because a comment
+   * re-read by the next poll (the source's 60-second overlap window) must stay
+   * recognised even after the assignment that consumed it closed the Case. With the
+   * seq in the id, a re-read would look new, reopen the Case and wake the worker for
+   * a comment it already handled (measured in `oncall-loop.mjs` phase 2).
    */
   private deliverTurn(sessionId: string, caseId: CaseId, seq: number, text: string, trigger?: string): void {
-    const messageId = `oncall:${caseId}#${seq}${trigger === undefined ? '' : `:${trigger}`}`
+    const messageId = trigger === undefined ? `oncall:${caseId}#${seq}` : `oncall:${caseId}:${trigger}`
     if (!this.host.holds(sessionId, messageId)) {
       this.host.followup({ sessionId, messageId, text })
       // The message has to outlive the process that queued it before the step does,
@@ -430,7 +476,14 @@ export class Executor implements FollowUpPort {
     this.settledTurn.set(sessionId, end.turn)
 
     const now = this.options.now()
-    const report = reportOfTurn(end.reason, lastTextOf(facts, end.turn), now)
+    const fromTurn = reportOfTurn(end.reason, lastTextOf(facts, end.turn), now)
+    if (fromTurn === null) return
+    // A silent turn must not erase a claim the worker already made (`progress`,
+    // `blocked`, `failed`): those still describe the work. Two silent turns in a row
+    // are the same fact with a newer sentence, so `waiting` may replace `waiting`.
+    const report = fromTurn.state === 'waiting' && last.report !== null && last.report.state !== 'waiting'
+      ? null
+      : fromTurn
     if (report === null) return
 
     const verdict = report.state === 'failed' ? this.host.exhausted(sessionId, end.turn, report.code) : undefined
@@ -457,7 +510,84 @@ export class Executor implements FollowUpPort {
     )
     if (closing !== undefined) await this.ledger.closeCase(caseId, closing, now)
 
-    if (verdict === 'transient') this.scheduleRetry(theCase, end.reason)
+    // A failed assignment speaks on the issue unless layer B is about to try again:
+    // telling a person "卡住了" and then fixing it silently is worse than either.
+    if (report.state === 'failed' && verdict === 'transient') {
+      this.scheduleRetry(theCase, end.reason)
+      return
+    }
+    this.queueReply(theCase, last.seq, planReply({ caseId, seq: last.seq, report }))
+  }
+
+  /**
+   * The worker's own report (`oncall_report`).
+   *
+   * Written when it arrives, not at turn end: `ready` closes the Case and the receipt
+   * goes out while the turn is still finishing, which is what the person reading the
+   * issue needs. The later settle sees a closed Case and does nothing.
+   */
+  async submitReport(input: { readonly sessionId: string; readonly report: Report }): Promise<
+    { readonly ok: true; readonly seq: number } | { readonly ok: false; readonly reason: string }
+  > {
+    const caseId = this.caseFor(input.sessionId)
+    if (caseId === undefined) {
+      return { ok: false, reason: 'this session is not working an on-call Case; nothing to report on.' }
+    }
+    const theCase = this.ledger.caseOf(caseId)
+    if (theCase === undefined) return { ok: false, reason: `the Case ${caseId} no longer exists.` }
+    if (theCase.closed !== null) return { ok: false, reason: `the Case already ended (${theCase.closed.reason}).` }
+
+    const steps = this.ledger.stepsOf(caseId)
+    const last = steps[steps.length - 1]
+    if (last === undefined || last.state !== 'running') {
+      return { ok: false, reason: 'no assignment is running for this Case right now.' }
+    }
+
+    const now = this.options.now()
+    const report: StampedReport = { ...input.report, at: now } as StampedReport
+    const plan = planStep({
+      theCase,
+      steps: [...steps.slice(0, -1), { ...last, report, state: 'ended', endedAt: now }],
+      budget: budgetOf(steps.length, MAX_STEPS_PER_CASE),
+      brief: last.brief,
+    })
+    const closing = plan.kind === 'close' ? plan.reason : undefined
+    await this.ledger.writeSteps(
+      [closing === undefined ? { ...last, report } : { ...last, report, state: 'ended', endedAt: now }],
+      [{
+        kind: 'step.settled',
+        at: now,
+        caseId,
+        seq: last.seq,
+        state: report.state,
+        ...(report.state === 'failed' ? { code: report.code } : {}),
+      }],
+    )
+    if (closing !== undefined) await this.ledger.closeCase(caseId, closing, now)
+    this.queueReply(theCase, last.seq, planReply({ caseId, seq: last.seq, report }))
+    return { ok: true, seq: last.seq }
+  }
+
+  private queueReply(theCase: CaseRecord, seq: number, plan: ReplyPlan | undefined): void {
+    if (plan === undefined) return
+    const thread = theCase.mandate.scope[0]
+    if (thread === undefined) {
+      this.logger.warn(`oncall: ${theCase.id} has no thread to answer on; the receipt stays unsent`)
+      return
+    }
+    this.options.replier?.queue({ caseId: theCase.id, seq, thread, intent: plan.intent, text: plan.text })
+  }
+
+  /** The Case a session works, mapping first and then by derivation (the restart path). */
+  private caseFor(sessionId: string): CaseId | undefined {
+    const known = this.caseOfSession.get(sessionId)
+    if (known !== undefined) return known
+    for (const theCase of this.ledger.allCases()) {
+      if (caseSessionId(theCase.id) !== sessionId) continue
+      this.caseOfSession.set(sessionId, theCase.id)
+      return theCase.id
+    }
+    return undefined
   }
 
   /**

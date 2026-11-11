@@ -123,6 +123,7 @@ const auditSchema = z.object({
     'case.followed-up',
     'step.settled',
     'step.interrupted',
+    'reply.settled',
     'trigger.refused',
     'poll.failed',
   ]),
@@ -137,6 +138,7 @@ const auditSchema = z.object({
   seq: z.number().optional(),
   state: z.string().optional(),
   code: z.string().optional(),
+  intent: z.string().optional(),
 })
 
 type StoredCase = z.infer<typeof caseSchema>
@@ -499,6 +501,8 @@ function toStoredAudit(event: AuditEvent): StoredAudit {
       }
     case 'step.interrupted':
       return { kind: event.kind, at: event.at, caseId: event.caseId, seq: event.seq }
+    case 'reply.settled':
+      return { kind: event.kind, at: event.at, caseId: event.caseId, seq: event.seq, intent: event.intent, state: event.state }
     case 'trigger.refused':
       return { kind: event.kind, at: event.at, trigger: event.trigger, reason: event.reason }
     case 'poll.failed':

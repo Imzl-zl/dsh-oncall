@@ -27,7 +27,12 @@ import type { GithubFace, RawComment, RawIssue } from './github-face.ts'
 /** The narrow fetch shape this module uses; the test supplies its own. */
 export type FetchFace = (
   url: string,
-  init: { readonly headers: Readonly<Record<string, string>>; readonly signal: AbortSignal },
+  init: {
+    readonly method?: string
+    readonly headers: Readonly<Record<string, string>>
+    readonly body?: string
+    readonly signal: AbortSignal
+  },
 ) => Promise<{
   readonly ok: boolean
   readonly status: number
@@ -87,6 +92,21 @@ export function githubHttpFace(options: GithubHttpOptions): GithubFace {
     async listComments({ owner, repo, number, since, signal }) {
       const path = `/repos/${enc(owner)}/${enc(repo)}/issues/${number}/comments?since=${encodeURIComponent(since)}`
       return (await read(path, signal)).map(rawComment)
+    },
+
+    async createComment({ owner, repo, number, body, signal }) {
+      const path = `/repos/${enc(owner)}/${enc(repo)}/issues/${number}/comments`
+      const response = await call(`${base}${path}`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ body }),
+        signal,
+      })
+      // A deleted or transferred issue answers 404/410 forever: retrying it would
+      // leave the receipt pending for the life of the deployment.
+      if (response.status === 404 || response.status === 410) return 'gone'
+      if (!response.ok) throw new Error(`GitHub ${response.status} ${response.statusText} on ${path}`)
+      return 'sent'
     },
   }
 }

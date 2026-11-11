@@ -65,7 +65,26 @@ export interface ListCommentsInput {
   readonly signal: AbortSignal
 }
 
+export interface CreateCommentInput {
+  readonly owner: string
+  readonly repo: string
+  /** The issue the comment lands on. */
+  readonly number: number
+  readonly body: string
+  readonly signal: AbortSignal
+}
+
+/**
+ * Why a write ended the way it did.
+ *
+ * `gone` is not a transport failure: the issue was deleted or transferred, and no
+ * retry will ever reach it. Everything else throws, so the outbox retries it.
+ */
+export type CommentOutcome = 'sent' | 'gone'
+
 export interface GithubFace {
   listIssues(input: ListIssuesInput): Promise<readonly RawIssue[]>
   listComments(input: ListCommentsInput): Promise<readonly RawComment[]>
+  /** Post one comment. The caller owns the text; this only moves it. */
+  createComment(input: CreateCommentInput): Promise<CommentOutcome>
 }
