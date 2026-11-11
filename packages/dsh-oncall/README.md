@@ -29,7 +29,7 @@
 - **条件路由** —— 按候选的 `images` / `minContextTokens` 条件，以及按失败码的 `switchOn`。
 - **渠道健康工作台** —— 零 Token 的被动延迟与吞吐、按需的 1-token 探测、按路由/按渠道的熔断，以及从 durable 会话日志折叠出的转移历史。
 - **中英双语界面** —— 带未保存修改提示条。
-- **入口（值班）** —— 盯一个 GitHub 仓库的 issue，把被授权的要求变成 Case；令牌走环境变量 `GITHUB_TOKEN`，不落配置。默认关，开启后只建 Case，执行器仍在下一刀。
+- **入口（值班）** —— 盯一个 GitHub 仓库的 issue，把被授权的要求变成 Case，交给一个 worker 会话去干，干完把结果回在 issue 里；同一个 issue 的追问进同一个会话，重启后接着上一刀继续。令牌走环境变量 `GITHUB_TOKEN`，不落配置。默认关。
 
 ## 截图
 
@@ -122,13 +122,22 @@ ingress:
   bots: [ci-bot]                 # 可以产生候选的机器人
   acceptMode: observe             # off / observe / auto；auto 才真干
   pollSeconds: 60
+  baseUrl: ''                     # 空 = api.github.com；企业版或测试填别的根地址
+  workdir: ''                     # 空 = DSH 进程自己的工作目录；agent 在哪份代码上干活
 ```
 
 令牌只从环境变量读：`GITHUB_TOKEN`，不存配置——配置会落进 profile 的 `cordis.patch.yml`，也会出现在每次打印配置的日志里。
 
 判定规则：人在 issue 里 @ `agentLogin`、或 issue 指派给 `agentLogin`，才算候选；陌生人的不点名消息直接拒；`observe` 只记下本来会做什么。游标回看一分钟，靠 `case:<trigger>` 幂等，同一事件重读不会开第二个 Case。
 
-**现在只建 Case，不执行。** 打开入口后你会在日志里看到 `oncall: ingress ... opened/observed/refused`，但还没有会话被开出来——executor 与回评论是下一刀。
+`auto` 下事情是这样走的：
+
+1. **开 Case，起一个 worker 会话**（会话 id 由 Case 推导，所以重启后还是那一个会话），把 issue 原文投进去。
+2. **同一 issue 的追问进同一个会话**，不再开第二个 Case；被停掉的 Case 不复活，新人 @ 一次就是新的 Case。
+3. **worker 用 `oncall_report` 说话**：`ready` 收工并回一条评论、`blocked` 问一个问题、`failed` 说做不到、`progress` 只更新进度、`dropped` 放弃。没调用它就结束回合，算"还没做完"，不冒充完成。
+4. **评论只发一次**：一条回执一个 `caseId#seq`，写进账本再发；重启只补没发出去的，issue 被删（404/410）就不再试。
+5. **翻车分两层**：一次请求内换渠道由路由层负责（见上）；整条链都没接住且是瞬态失败时，入口层隔 30/60 秒再派一次，最多两次，然后回一条"卡住了"。`auth`/`quota` 这类重试注定同一个答案的失败不排队。
+6. **重启知道断在哪**：上一刀没交报告的派工会被顶掉，新派工带一句"宿主重启过，先看现状、别重复已完成的外部动作"。
 
 ## 工作原理
 
@@ -144,7 +153,7 @@ ingress:
 | 路径 | 是什么 |
 |---|---|
 | `packages/dsh-oncall/src/` | 插件：Host 半包（`index.ts`、`router.ts`、`bindings.ts`、`chain.ts`…）与浏览器半包（`src/client/`）。 |
-| `packages/dsh-oncall/tests/` | 11 套：`layers`（分层守卫）、`ingress`、`github-issue`、`pass`、`github-http`、`ingress-loop`、`unit`、`client-controller`、`remote`（进程内生产组合）、`handoff-relay`（真实 web 组合的接力）、`run`（真 headless Loader 组合，逐场景）。 |
+| `packages/dsh-oncall/tests/` | 13 套：`layers`（分层守卫）、`ingress`、`github-issue`、`pass`、`github-http`、`ingress-loop`（账本与循环）、`executor`（派工生命周期，假 TurnHost）、`unit`、`client-controller`、`remote`（进程内生产组合）、`handoff-relay`（真实 web 组合的接力）、`oncall-loop`（真实 web 组合的入口闭环，本地假 GitHub）、`run`（真 headless Loader 组合，逐场景）。 |
 | `docs/design/` | 当前设计：路由提案、源码地图、能力边界、按会话选链、发布说明策略。 |
 | `.agents/notes/` | 决策笔记（为什么、否掉了什么、代价是什么）。状态就是目录。 |
 | `spike/` | Phase 1 实证产物，原样保留；不属于包。 |

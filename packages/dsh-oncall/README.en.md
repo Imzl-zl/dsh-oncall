@@ -119,13 +119,22 @@ ingress:
   bots: [ci-bot]                  # bots that may produce candidates
   acceptMode: observe             # off / observe / auto; only auto acts
   pollSeconds: 60
+  baseUrl: ''                     # empty = api.github.com; Enterprise or a test points elsewhere
+  workdir: ''                     # empty = the DSH process's own directory; where the worker edits
 ```
 
 The token is read from `GITHUB_TOKEN` only — never stored in config, which would land in the profile's `cordis.patch.yml` and in every config dump.
 
 A message is a candidate when a human @-mentions `agentLogin` on an issue, or the issue is assigned to it. A stranger's un-mentioned message is refused; `observe` records what it would have done. The cursor looks back one minute and `case:<trigger>` makes it idempotent, so a re-read never opens a second Case.
 
-**It only opens Cases today, it does not execute them.** You will see `oncall: ingress ... opened/observed/refused` in the log, but no session is started yet — the executor and the comment back are the next slice.
+Under `auto` it runs the whole loop:
+
+1. **Open a Case, start one worker session** (the session id is derived from the Case, so a restart resumes the same one) and deliver the issue text.
+2. **A follow-up on the same issue goes into that session** — no second Case. A Case someone stopped is not resumed; a fresh @ opens a new Case.
+3. **The worker speaks through `oncall_report`**: `ready` finishes and comments back, `blocked` asks one question, `failed` says it cannot, `progress` only updates, `dropped` gives up. Ending a turn without a report means "not done yet" — it never counts as finished.
+4. **One comment per assignment**: a receipt is written before it is posted, keyed by `caseId#seq`; a restart only retries what was never sent, and a deleted issue (404/410) is not retried.
+5. **Two failure layers**: swapping channels inside one request belongs to the router (above); when the whole chain is spent on a transient failure, the ingress re-assigns after 30/60 seconds, at most twice, then says it is stuck. Failures that would answer the same way (`auth`, `quota`) are not retried.
+6. **A restart knows where it stopped**: an assignment that never reported is replaced, and the new one carries "the host restarted — look at the current state, do not repeat finished external actions".
 
 ## How it works
 
@@ -141,7 +150,7 @@ Every switch is folded from the durable session log into a `oncall/failover-hist
 | Path | What it is |
 |---|---|
 | `packages/dsh-oncall/src/` | The plugin: Host half (`index.ts`, `router.ts`, `bindings.ts`, `chain.ts`, …) and browser half (`src/client/`). |
-| `packages/dsh-oncall/tests/` | Four suites: `unit`, `client-controller`, `remote` (in-process production profile) and `run` (real headless Loader composition per scenario). |
+| `packages/dsh-oncall/tests/` | 13 suites: `layers` (layer guard), `ingress`, `github-issue`, `pass`, `github-http`, `ingress-loop` (ledger and loop), `executor` (assignment lifecycle, fake TurnHost), `unit`, `client-controller`, `remote` (in-process production profile), `handoff-relay` (the relay against a real web composition), `oncall-loop` (the ingress loop end to end, fake GitHub), `run` (real headless Loader composition per scenario). |
 | `docs/design/` | Current design: routing proposal, source map, capability boundary, per-session chains, release notes policy. |
 | `.agents/notes/` | Decision notes (why, what was rejected, what it cost). Status is the directory. |
 | `spike/` | Phase 1 evidence kept as-is; not part of the package. |

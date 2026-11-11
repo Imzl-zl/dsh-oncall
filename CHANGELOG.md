@@ -7,6 +7,41 @@
 `1.0.0` 之前 minor 位是交付里程碑，插件对 DSH 的 peer 范围（当前 `^0.2.1-rc.3`）
 随之移动。
 
+## [Unreleased]
+
+入口（值班）从「只建 Case」接通到「@ 一次就干、干完回评论、重启知道断在哪」。
+
+### 新增
+
+- **executor**：Case 一开就起一个 worker 会话（会话 id 由 Case 推导，重启续同一个），
+  把 issue 原文投进去；回合结束按 `turn/end` 结算派工；上一刀没交报告的派工在重启时被
+  顶掉，新派工带一句 recovery note（先看现状、别重复已完成的外部动作）。
+- **`oncall_report` 工具**：worker 唯一能改状态的入口——`ready` 收工并回评论、`blocked`
+  问一个问题、`failed` 说做不到、`progress` 只更新进度、`dropped` 放弃。没调用它就结束
+  回合算「还没做完」，不冒充完成。
+- **回执**：一个派工一条评论，`caseId#seq` 先写账本再发；重启只补没发出去的；issue 被删
+  （404/410）记 `gone` 不再试。终局失败也回一条——我们的读者在 GitHub，不在主会话里。
+- **归属与扇出**：`threads` 表存订阅，同一 issue 的追问进同一个 Case（不再开第二个）；
+  被停掉的 Case 不复活；订阅投递绕过闸门（归属不是一次新的授权）。
+- **层 B**：整条链耗尽且是瞬态失败时，隔 30/60 秒（或渠道自己给的 `retryAfterMs`）
+  再派一次，最多两次；`auth`/`quota` 这类不排队。
+- **配置**：`ingress.baseUrl`（企业版/测试的 API 根地址）与 `ingress.workdir`（worker 在
+  哪份代码上干活）。
+
+### 变更
+
+- **`steps` 表改成 `Assignment` 形状**（`state: running|ended` + `brief` + `report`），
+  回合结束只写报告、派工仍是 running；`threads`/`steps`/`replies` 三张新表加在域版本 1
+  上（不升版本，旧部署按空表读）。
+- **follow-up 的消息 id 是 `oncall:<case>:<trigger>`（不含 seq）**：60 秒重叠窗口会重读
+  同一句评论，带 seq 的 id 会让它看起来是新的，把已关闭的 Case 重新唤醒。
+- 审计流新增 `case.followed-up` / `step.settled` / `step.interrupted` / `reply.settled`。
+
+### 修复
+
+- 入口之前只把 Case 写进账本，没有任何人接着干——现在 `pass` 在提交之后把新 Case 交给
+  executor（提交前交会读不到它）。
+
 ## [0.6.0] — 2026-11-11
 
 插件改名为 `dsh-oncall`（中文「值班台」）。这是**破坏性改名**：包名、bundle 行 id / 配置 ns（`model-desk` → `oncall`）、Cordis service key（`modelDesk` → `oncall`）、Typert ns（`deskHealth` → `oncallHealth`）、CSS 前缀（`dsh-router-*` → `dsh-oncall-*`）、持久化标识（`model_router_sessions` → `oncall_sessions`，`router/*` → `oncall/*`）全部改了。

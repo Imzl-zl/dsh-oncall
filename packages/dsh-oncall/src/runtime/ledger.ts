@@ -65,8 +65,6 @@ export interface Commit {
 
 export interface Ledger {
   readProgress(sourceId: SourceId): Progress
-  /** Whether this Case already exists — the dedupe that makes repeats harmless. */
-  hasCase(id: CaseId): boolean
   /** One Case's record, or `undefined` when the id is unknown. */
   caseOf(id: CaseId): CaseRecord | undefined
   /** One thread's subscriptions, or `undefined` when no Case was ever opened on it. */
@@ -136,8 +134,6 @@ export function memoryLedger(): MemoryLedger {
     get audit() { return [...audit] },
 
     readProgress(sourceId) { return progress.get(sourceId) ?? NO_PROGRESS },
-
-    hasCase(id) { return cases.has(id) },
 
     caseOf(id) { return cases.get(id) },
 

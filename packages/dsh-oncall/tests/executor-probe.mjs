@@ -50,7 +50,11 @@ for (const dir of [HOME, WORK, SESSIONS]) mkdirSync(dir, { recursive: true })
 for (const file of [OUT_A, OUT_B]) if (existsSync(file)) writeFileSync(file, '{}')
 
 const forward = path => path.replaceAll('\\', '/')
-const sessionId = 'oncall-probe-1'
+// Unique per run: `create({sessionId})` only reuses a session that is still blank, so a
+// fixed id makes the *second* run of this probe fail at fact 3 with a `session-<uuid>`
+// instead of the id we chose. The home directory is reused on purpose (the run is
+// cheap); the id is not.
+const sessionId = `oncall-probe-${Date.now().toString(36)}`
 
 // The provider is declared here rather than in a committed fixture: the key comes
 // from the caller's environment, never from a file in the repository.

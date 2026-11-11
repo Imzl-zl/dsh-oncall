@@ -128,7 +128,16 @@ github.issues.push(issue(12, `@${AGENT} 修一下 flaky 测试`))
 
 // ---------- the overlay ----------
 
-writeFileSync(SCRIPT, JSON.stringify({ 'stub-primary': { outcomes: ['ok'] } }, null, 2))
+// The primary fails once, so the FIRST worker request has to be switched by the
+// router: the acceptance row "渠道挂了换路且审计可见" is about an on-call session
+// being an ordinary routed session, not a special one.
+// `maxRetries: 0` keeps DSH's own `llm-retry` from healing the same route first: the
+// point is the plugin's cross-channel switch, not the inner retry budget.
+writeFileSync(SCRIPT, JSON.stringify({
+  policy: { maxRetries: 0, retryableCodes: ['SERVER'] },
+  'stub-primary': { outcomes: ['fail:SERVER'] },
+  'stub-backup': { outcomes: ['ok'] },
+}, null, 2))
 writeFileSync(OVERLAY, `- id: llm-deepseek
   disabled: true
 
@@ -153,9 +162,10 @@ writeFileSync(OVERLAY, `- id: llm-deepseek
       config:
         enabled: true
         policyVersion: 2
-        # 空链 = 插件不接管路由：这一套验证的是 executor，不是切换。
         chain:
-          candidates: []
+          candidates:
+            - { provider: stub-backup, model: stub-model, maxRetries: 0 }
+          switchOn: { rateLimit: true, server: true, timeout: true, transport: true, emptyResponse: true, invalidRequest: true, auth: true, quota: true, other: true }
         ingress:
           enabled: true
           repository: '${REPO}'
@@ -318,6 +328,25 @@ try {
   const followed = await waitFor('the follow-up was audited', () => rows('audit').find(event => event.kind === 'case.followed-up'))
   check('the audit names the owning Case and the trigger', followed?.caseId === caseId
     && followed?.trigger === `${SRC}:comment-9001`, JSON.stringify(followed))
+
+  // ---- the worker session is an ordinary routed session ----
+  //
+  // The stub's primary always fails; only a cross-candidate switch can produce the
+  // backup's answer. That answer in the session log is the durable fact the
+  // `oncall/failover-history` projection folds (its own fold is covered by `run.mjs`).
+  const answered = sessionEvents(sessionId)
+    .filter(event => event.type === 'assistant/message')
+    .map(event => (event.data?.message?.content ?? []).map(block => block.text ?? '').join(''))
+  check('a failing route did not stop the worker: the fallback answered',
+    answered.some(text => text.includes('STUB_OK:stub-backup')), JSON.stringify(answered))
+  const switched = sessionEvents(sessionId).filter(event => event.type === 'request/header')
+    .map(event => ({
+      route: `${String(event.data?.header?.config?.provider)}/${String(event.data?.header?.config?.model)}`,
+      // `reason` sits next to the header, not inside it (`SessionEventMap['request/header']`).
+      reason: event.data?.reason,
+    }))
+  check('the durable log records the switch', switched.at(-1)?.route === 'stub-backup/stub-model'
+    && switched.at(-1)?.reason === 'change', JSON.stringify(switched))
 
   // ---- the report tool, through the real registry ----
   //

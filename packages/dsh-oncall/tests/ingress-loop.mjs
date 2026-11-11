@@ -113,7 +113,7 @@ await test('打开后 persistent 为真，读到的空进度是默认值', async
 
   eq(ledger.persistent, true)
   eq(ledger.readProgress(SRC), { cursor: null, lastError: null, lastPolledAt: null })
-  eq(ledger.hasCase(`case:${SRC}:comment-1`), false)
+  eq(ledger.caseOf(`case:${SRC}:comment-1`), undefined)
 })
 
 await test('一次 commit 同时写进度、Case、thread 与审计', async () => {
@@ -130,7 +130,7 @@ await test('一次 commit 同时写进度、Case、thread 与审计', async () =
   })
 
   eq(ledger.readProgress(SRC), { cursor: 'c1', lastError: null, lastPolledAt: NOW })
-  eq(ledger.hasCase(`case:${SRC}:comment-1`), true)
+  eq(ledger.caseOf(`case:${SRC}:comment-1`), caseOf())
   eq(ledger.threadOf(thread.key), thread)
   eq(ctx.tables.audit.rows.size, 1)
 })
@@ -321,7 +321,6 @@ const sourceOf = (calls, result = { triggers: [], cursor: 'c1' }) => ({
 
 const ledgerOf = () => ({
   readProgress: () => ({ cursor: null, lastError: null, lastPolledAt: null }),
-  hasCase: () => false,
   allCases: () => [],
   threadOf: () => undefined,
   commit: async () => {},
@@ -414,8 +413,7 @@ await test('pass 抛错走 onError，并且下一轮照排——不能因为一�
     sources: [sourceOf([])],
     ledger: {
       readProgress: () => { throw new Error('ledger gone') },
-      hasCase: () => false,
-      commit: async () => {},
+          commit: async () => {},
     },
     policy,
     intervalMs: 10,

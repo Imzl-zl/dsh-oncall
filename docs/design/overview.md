@@ -13,7 +13,7 @@ last_updated: "2026-11-11"
 
 **它解决的问题不是"让模型更聪明"，是"没人盯着的时候，活还能不能干完"。** 人盯着时，429 只是重试一下；没人盯着时，429 就是任务卡到早上。所以"能自动接活"和"挂了能换路"不是两个功能，是同一个产品。
 
-现有实现（1681 行、19 个模块）已经把这套的**眼睛**装好了：读 GitHub、判授权、开 Case、落库、循环。还差**手**：开会话干活、回评论。
+现有实现已经把这套的**眼睛与手**都装好了：读 GitHub、判授权、开 Case、起 worker 会话干活、等回合结束、写报告、回评论、重启接着上一刀；渠道挂了在请求内换路。
 
 ## 一、名字
 
@@ -38,7 +38,7 @@ last_updated: "2026-11-11"
 | 粒度 | 是什么 | 唯一所有者 | 活多久 | 状态 |
 |---|---|---|---|---|
 | **Case** | 一件被授权的工作 | 授权与生命周期 | 永久 | ✅ 已实现 |
-| **Step** | Case 里的一次推进 | 确定性决定下一步 | 随 Case | 🟡 类型已定，未接线 |
+| **Step** | Case 里的一次推进（= `Assignment`） | executor 写、core 决定下一步 | 随 Case | ✅ 已实现 |
 | **Attempt** | 一次模型调用 | 选渠道、失败切换 | 有界（审计流） | 🟡 复用现有路由 |
 
 superagent 只设计到 Case，comet 只设计到 Step，原路由插件（路由核现仍在同包内）只设计到 Attempt。三家各占一层，谁也不吞并谁——这是能合成一个包而不打架的原因。
@@ -50,7 +50,7 @@ L5  faces     ingress / route / tool / panel
       ↓
 L4  runtime   pass、executor、sources、channels、notify
       ↓
-L3  state     五张表（目标；当前落地三张：progress / cases / audit）+ 审计流（ledger）
+L3  state     六张表（progress / cases / threads / steps / replies / audit，域版本 1）
       ↓
 L2  core      纯函数：闸门、状态派生、计划、路由决策
       ↓
@@ -76,7 +76,9 @@ L1  contract  类型、常量、默认值、配置 schema
 | `core/mentions.ts` | 39 | `@login` 判定（避开 `@alice-bot`、邮箱） | `github-issue` |
 | `core/case-id.ts` | 18 | Case 身份 = `case:<trigger>`，幂等 | `pass` |
 | `core/brief.ts` | 23 | 请求正文的边界与截断标记 | `pass` |
-| `core/trigger-key.ts` | 28 | 两个键的唯一构造点 | `ingress` |
+| `core/trigger-key.ts` | 44 | 两个键的唯一构造点（含反向取 external id） | `ingress` |
+| `core/thread-owner.ts` | 47 | 「这条消息归谁」：thread 最新订阅，`stopped` 不恢复 | `pass` |
+| `core/reply-plan.ts` | 63 | report → 回执意图与正文（回执门禁） | `executor` |
 
 ### 入口与运行时（L4）
 
@@ -86,32 +88,35 @@ L1  contract  类型、常量、默认值、配置 schema
 | `sources/github-face.ts` | 71 | 自己声明的窄接口（不依赖 Octokit 类型） | — |
 | `sources/github-http.ts` | 155 | fetch 实现，分页、错误映射、形状校验 | `github-http` |
 | `sources/github-issue.ts` | 193 | issue/评论 → Trigger，游标回看一分钟 | `github-issue` |
-| `runtime/ledger.ts` | 89 | 账本端口 + 内存实现 | `pass` |
-| `runtime/durable-ledger.ts` | 237 | storageDomain 三张表 + 品牌还原 | `ingress-loop` |
-| `runtime/pass.ts` | 171 | 一轮：读 → 判 → 开 → 记，一次提交 | `pass` |
+| `runtime/ledger.ts` | 200 | 账本端口（命名操作）+ 内存实现 | `pass` / `executor` |
+| `runtime/durable-ledger.ts` | 470 | storageDomain 六张表 + 品牌还原，加表不升版本 | `ingress-loop` |
+| `runtime/pass.ts` | 258 | 一轮：读 → 归属 → 闸门 → 开 Case/扇出，一次提交 | `pass` |
+| `runtime/executor.ts` | 520 | 派工生命周期：起会话、投递、等回合、结算、重启恢复、层 B | `executor` / `oncall-loop` |
+| `runtime/outbox.ts` | 190 | 回执：一条一个 `caseId#seq`，重试/`gone`/重启补发 | `executor` |
+| `sources/github-reply.ts` | 55 | 回执发到 issue（`ReplySender` 的 GitHub 实现） | `executor` / `oncall-loop` |
 
 ### 面（L5）
 
 | 模块 | 行 | 职责 | 测试 |
 |---|---|---|---|
-| `faces/ingress.ts` | 104 | 自调度循环（timeout 非 interval） | `ingress-loop` |
+| `faces/ingress.ts` | 110 | 自调度循环（timeout 非 interval） | `ingress-loop` |
 | `faces/env.ts` | 18 | 唯一的 `process.env` 读取点 | — |
+| `faces/reports.ts` | 130 | `oncall_report` 工具：全局注册、按会话判归属 | `executor` / `oncall-loop` |
 
-**接线**：`config.ts` 加 `ingress` 段，`index.ts` 加 `installIngress()`；`index.ts` 新增 92 行，原有行**一行未删改**（1167 → 1258 行）。
+**接线**：`config.ts` 加 `ingress` 段（含 `baseUrl` / `workdir`），`index.ts` 的 `installIngress()` 装配 source、账本、executor、outbox 与 `oncall_report`。
 
-**测试**：11 套全绿。新增 6 套：`layers` 守卫 + 5 个计数套件（ingress 25 / github-issue 16 / pass 13 / github-http 10 / ingress-loop 11 = 75 条）；原有 5 套数字不变（unit 259 / client-controller 129 / remote 25 / handoff-relay 20 / run 37 场景）。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
+**测试**：13 套全绿。入口侧 7 套：`layers` 守卫、`ingress` 29、`github-issue` 16、`pass` 21、`github-http` 10、`ingress-loop` 18、`executor` 25；组合两套：`oncall-loop` 38（真实 web profile + 本地假 GitHub：@ 一次只开一个 Case、追问进同一会话、实时工具调用回执、重启带 recovery note）、`handoff-relay`（真实 web 组合的接力）；原有 `unit` 259 / `client-controller` 129 / `remote` 25 / `run` 37 场景不变。一个用例常同时覆盖两个模块，所以上表只标套件，不按模块拆条数。
 
 ## 五、未实现
 
 | 缺什么 | 影响 | 在哪个阶段 |
 |---|---|---|
-| **executor** | Case 开出来后没人干——现在打开入口，它只会默默建 Case | V0 |
-| 回评论 / 开 PR | 干完了没法交付 | V0 |
-| 最小 `step` 表（`caseId + seq + outcome + at`） | executor 写 outcome 时没有归属；不加，V1 要迁表并重解释历史 | V0（2026-11-11 从 V1 提前） |
-| `thread` 映射（`threadKey → caseId`） | 幂等键是 trigger 级，同一 issue 的追问会开第二个 Case，两个 Case 抢同一分支 | V0（2026-11-11 从 V3 提前） |
+| 评估层（一张 issue 两件独立的活自动分开） | 同 thread 的补充与新活由 worker 自己判，判不了就都算补充 | V1 |
+| comet 式检查点（精确回到断点） | 重启是「重开一次派工 + recovery note」，长任务的恢复质量有限 | V1 |
 | attempt 审计表 | 切换记录目前折在会话投影里，没有跨 Case 的审计流 | V1 |
-| 恢复与检查点 | 中断就丢进度 | V1 |
-| 路由接进 Case | 渠道挂了任务还是停 | V2 |
+| 回执的重试上限与退避可配 | 现在是固定 3 次 / 1s、2s | V1 |
+| PR / CI 结果回到同一 Case | 只能认评论 | V3 |
+| 面板、任务线 | 只能翻日志 | V5 |
 | thread 订阅（PR / CI 结果回到同一 Case） | 只能认评论，PR 与 CI 不回写 | V3 |
 | PR / 飞书 Source | 只能盯 issue | V3 / V4 |
 | 面板、任务线 | 只能翻日志 | V5 |

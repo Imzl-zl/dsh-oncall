@@ -210,10 +210,6 @@ export class DurableLedger implements Ledger {
     return this.progressTable?.get(sourceId) ?? NO_PROGRESS
   }
 
-  hasCase(id: CaseId): boolean {
-    return this.caseTable?.get(id) !== undefined
-  }
-
   caseOf(id: CaseId): CaseRecord | undefined {
     const stored = this.caseTable?.get(id)
     return stored === undefined ? undefined : fromStoredCase(stored)

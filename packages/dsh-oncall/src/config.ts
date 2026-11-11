@@ -387,6 +387,8 @@ const ingressSchema = z.object({
   bots: z.array(z.string()).default([]),
   acceptMode: z.union(['off', 'observe', 'auto']).default('off'),
   pollSeconds: z.number().step(1).min(5).max(3_600).default(DEFAULT_INGRESS_POLL_SECONDS),
+  workdir: z.string().default('')
+    .description('worker 会话在哪个目录里干活。空 = DSH 进程自己的工作目录；指向仓库副本时，worker 改的是那一份'),
 })
 
 /** Plugin Config. Every field is volatile: all of them reach the settings form. */
@@ -677,6 +679,8 @@ export interface IngressConfig {
   bots: string[]
   acceptMode: 'off' | 'observe' | 'auto'
   pollSeconds: number
+  /** worker 会话的工作目录。空 = 进程自己的工作目录。 */
+  workdir: string
 }
 
 

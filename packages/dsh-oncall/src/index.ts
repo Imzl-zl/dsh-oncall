@@ -785,6 +785,7 @@ export default class OnCallDesk extends TypertRemoteService {
       bots: string[]
       acceptMode: 'off' | 'observe' | 'auto'
       pollSeconds: number
+      workdir: string
     }
     if (!ingress.enabled) return
 
@@ -846,9 +847,10 @@ export default class OnCallDesk extends TypertRemoteService {
         ledger,
         host: this.turnHost({ child, controller, agents, persistence, logger: child.logger }),
         replier: outbox,
-        // V0: worker sessions run in the host process's directory; `ingress.workdir`
-        // becomes the setting that overrides it.
-        workdir: hostCwd(),
+        // Empty means "wherever the host runs": a worker on the host's own directory
+        // is the default, and a checkout of the repository is what an operator
+        // normally points it at.
+        workdir: ingress.workdir.trim() === '' ? hostCwd() : ingress.workdir.trim(),
         now: () => Date.now(),
         logger: child.logger,
       })

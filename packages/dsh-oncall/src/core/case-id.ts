@@ -3,7 +3,7 @@
  *
  * `case:<trigger key>` rather than a counter, for one reason: a Case id that is a
  * function of the event is idempotent for free. A retried pass computes the same
- * id, `Ledger.hasCase` answers true, and no second Case can exist for one comment —
+ * id, the ledger already has that Case, and no second one can exist for one comment —
  * without a uniqueness constraint, a sequence generator or a lock.
  *
  * The cost is that ids are long and unreadable in a URL. The panel shows the brief
