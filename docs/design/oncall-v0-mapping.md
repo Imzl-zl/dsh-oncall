@@ -25,7 +25,7 @@ last_updated: "2026-11-11"
 |---|---|---|
 | 入口循环 | `src/app/passes.ts:28` 定时、`:64` 只 `effects.kick()` + `evaluateDue()`；pass 不干活 | 已实现，且用 timeout 链而非 interval（不叠跑） |
 | 工作单元 | `Assignment`：`state: pending→running→ended`（`core/model.ts:36`）、`report{state,summary,at}` / `deliveredAt` / `idleAt`（`:104-115`）；comet 的 `run-state` 存 `current_step` / `iteration`（`classic-store.ts:123-129`） | `steps` 表按此压缩（见第四节 1） |
-| 谁判结束 | **引擎判**：`assignments.report()` 里 `ready` → 以 `completed` 结束工单，`dropped` → 以 `dropped` 结束（`core/assignments.ts:132`）；executor 只报事实 | 我们照抄：executor 只写 step，关 Case 由 core 决定 |
+| 谁判结束 | **引擎判**：`assignments.report()` 里 `dropped` → 以 `dropped` 结束；`ready` → 不跟 PR 时以 `completed` 结束，跟 PR 时等 `followsDone()`（`core/assignments.ts:129-132`）；executor 只报事实 | 我们照抄：executor 只写 step，关 Case 由 core 决定 |
 | 执行会话 | `src/executor/dsh.ts:24` 的 `workerSessionId = 'worker-' + ticketId`（纯函数）；`src/app/sessions.ts:138-153` 的 `ensure()`：`resolveAgent` → 没有才 `create({ sessionId, workspaceId, agentPreset })`（`:144`）→ 再 `resolveAgent` → `rename`（`:153`） | 会话 id `oncall-case-<id>`；不设 `danger-full-access`（`sessions.ts:152` 那条我们不要，见第五节） |
 | 等回合结束 | `dsh.ts:479-486`：订阅 `agent/status`，`status === 'idle'` 时**在后台任务里**跑 `workerIdle`，里面 `await agent.whenIdle()`（`:602`） | 无（照抄） |
 | 投递幂等 | `delivery.ts:16` `messageId = MessageId('dsh-superagent:' + requestId)`；`:40` 从 `sessionPersistence.open(id,'read')` 重放已投递 id；`:61` `holds()` 并上 `inbox.nextTurn/nextStep`（`:74`）；`:81` `followup` 后 `flush` | 无（照抄；我们的 request id = `caseId#seq`） |
@@ -42,7 +42,7 @@ last_updated: "2026-11-11"
 |---|---|---|
 | 1 | 等结束挂 `session/event` 听 `turn/end`、自设回合超时 | 接缝是 `agent/status` 的 `idle`（`dsh.ts:479-486`），`whenIdle()` 在后台任务里确认；回合无超时，只有准备 10min（`:28`）与后台 30min（`docs/003`） |
 | 2 | 回执幂等一张表就够 | 分两层：会话投递的幂等在会话日志里（`delivery.ts:40,61`），对外发出的幂等在 receipt（`outbox.ts:31`） |
-| 3 | 回合正常结束 = `done`，summary 取末条 assistant 文本 | **错**：没有 report 工具调用时，回合结束他们报的是 `waiting`（`dsh.ts:659,665`：`engine.report(..., {state:'waiting', summary: said})`）；`done(ready)` 只来自 `orchestrator_report`（`app/tools/executor.ts:75`） |
+| 3 | 回合正常结束 = `done`，summary 取末条 assistant 文本 | **错**：没有 report 工具调用时，回合结束他们报的是 `waiting`（`dsh.ts:601-666` 的 `workerIdle`：`:661` 先判 `handedOff` 提前返回，`:666` 写 `engine.report(..., {state:'waiting', summary: said || before})`）；`done(ready)` 只来自 `orchestrator_report`（`app/tools/executor.ts:75`） |
 | 4 | 已关闭 Case 收到追问"只记审计、不重开" | `docs/001-domain.md:37`：ended Ticket 保留订阅，人的消息以同一 Mandate 恢复它 |
 | 5 | 两层重试重复，不该抄 | 主体不同：层 A 是"一次请求"，层 B 是"一次回合收尾"；`turn/end.error` 里带的就是 `LlmFailure` 原文（`dsh-session/lib/types/types.d.ts:183-186`、`dsh-llm/lib/types/types.d.ts:26-36`），两张表共用一套码 |
 | 6 | 加表要升 domain 版本 | **升版本会砸掉现场**：`single` 布局下版本不等直接 `version-mismatch`（`node_modules/@deepseek-ai/dsh-storage-json/lib/index.js:102`）；而 `parse()` 对"文档里没有这张表"按空表处理（同文件 `:115-121`）。所以加表**保持 version 1**，不迁移 |
@@ -122,7 +122,7 @@ DSH rc.3（本项目 `node_modules/@deepseek-ai/`）：`dsh-api-session-controll
 | 没有评估层：同 thread 两件独立的活不分开（架构 §五 1） | `docs/001-domain.md`「Eval」；`docs/002-authorization.md:9-17` 两道闸；`docs/007-architecture.md:209` `MasterAssessor`、`:145` `assessmentOutcome`（每条启用规则一个判断、方向 settled、必须匹配规则与意图证据；非 auto 的推断接受只记 "would accept"） | V1 照抄。评估器就是主会话本身，我们没有那个人读的主会话——**唯一**"前提不同"的收窄 |
 | Input 只保留最小一列：不知道"读没读"、Case 结束不退回未读（架构 §五 2） | `docs/002-authorization.md:28-39`「Handing back and releasing follow-ups」；`core/tickets.ts:330` `requeueUntaken`、`:300` `letGo`；`docs/007-architecture.md:85` 定义"读"（进入 history 且随后有报告或回合结束） | 幂等骨架已抄（`inputs` + `deliveredAt`）；`readAt` 与退回随评估层一起补 |
 | 没有 comet 式检查点（架构 §五 4） | **superagent 也没有**：`docs/003-execution.md:144`「Restart」与我们同法（重开派工 + recovery note） | 不是对 superagent 的偏离（已改正架构文档措辞） |
-| 层 B | `docs/003-execution.md:120-134`、`executor/dsh.ts:26,548-576,606`：**同一个派工**再收一句"从中断处继续"，≤3 次、15/30/60s，正常收尾清零；不是新派工 | 判据用我们的（层 A 报 exhausted），**形状已照抄**（同一派工 + retry 消息）；渠道给的 `retryAfterMs` 只把等待拉长 |
+| 层 B | `docs/003-execution.md:120-134`、`executor/dsh.ts:30,548-576,606`：**同一个派工**再收一句"从中断处继续"，≤3 次、15/30/60s，正常收尾清零；不是新派工 | 判据用我们的（层 A 报 exhausted），**形状已照抄**（同一派工 + retry 消息）；渠道给的 `retryAfterMs` 只把等待拉长 |
 | 同 thread 最多一个活 Case（架构 §五 1） | `docs/001-domain.md`「Rejected concepts」明确拒绝这条限制，由评估层去重 | 接评估层时拆掉 |
 | 并发上限（架构 §九） | `docs/003-execution.md:55`「Concurrency」：每工单一个槽，人的消息/状态请求额外一槽 | V1 照抄（含"人不会被新活挤掉"） |
 | handback（架构 §九） | `docs/002-authorization.md:28`、`docs/003-execution.md:108-116`：超出范围交还评估，每条只交还一次 | V1（依赖评估层） |
@@ -148,20 +148,20 @@ DSH rc.3（本项目 `node_modules/@deepseek-ai/`）：`dsh-api-session-controll
 
 | 行为 | 参考实现的出处（原文要点） | 我们的落点 |
 |---|---|---|
-| 谁判 Case 结束 | `core/assignments.ts:132`：`report()` 里 `ready` → `completed`、`dropped` → `dropped`，executor 只报事实 | `Executor.submitReport` / `settle` 调 `planStep` 后 `closeCase` |
-| 回合结束算不算完成 | `executor/dsh.ts:659,665`：没有 `orchestrator_report` 时写 `{state:'waiting', summary: said}`，不是 done | `reportOfTurn` 的 `completed → waiting` |
+| 谁判 Case 结束 | `core/assignments.ts:129-132`：`dropped` → `dropped`；`ready` → 不跟 PR 时 `completed`，跟 PR 时用 `followsDone()` 的结论；executor 只报事实 | `Executor.submitReport` / `settle` 调 `planStep` 后 `closeCase` |
+| 回合结束算不算完成 | `executor/dsh.ts:661,666`：没有 `orchestrator_report` 时写 `{state:'waiting', summary: said}`，不是 done | `reportOfTurn` 的 `completed → waiting` |
 | 静默回合的 summary | `executor/dsh.ts:666`：`said \|\| before` | `settle` 里 waiting 保留上一条 summary |
 | `turn/end{blocked}` | 参考**不看** `turn/end`，只跟 `agent/status` idle；`turn/end{blocked}` = pre-step 拒绝（`agent-loop/src/agent.ts:349`），没跑模型 | 映射成 `waiting`（不当失败） |
-| 瞬时失败重试 | `executor/dsh.ts:26,548-576`：同一派工再投一句"继续"，≤3 次，15s×2^(n-1)；`:606` 正常收尾清零 | `retryTurn` / `retryNow` |
+| 瞬时失败重试 | `executor/dsh.ts:30,548-576`：同一派工再投一句"继续"，≤3 次，15s×2^(n-1)；`:606` 正常收尾清零 | `retryTurn` / `retryNow` |
 | 重启后怎么恢复 | `core/assignments.ts:83-92`：running 派工有报告且**报告后没有新消息**才算结算，否则带 `RECOVERY_NOTE` 重开 | `start()` 的扫描 + `busyAfter()` |
 | 重启不重开已结束的派工 | `executor/dsh.ts:535`：只启动 `pending` 的派工 | `start()` 里 `if (last !== undefined) continue` |
 | 什么时候唤醒已结束的 Case | `docs/002:125-146`：只有人的消息，且按当前 Policy 重新校验 Mandate；机器人/CI 不唤醒 | `mayWake` + `pass` |
-| 订阅投递要不要过闸门 | `docs/002:18-27`：订阅投递绕过闸门、不授予新权限；活着的工单收任何人的消息 | `pass` 里有主即不走 `admit` |
-| 一条消息算不算"读过了" | `docs/002:28-39` + `docs/007:85`：进入会话 history 且随后有报告或回合结束；Case 结束时未读的退回评估 | V0 只做幂等骨架（`inputs.deliveredAt`）；`readAt` 与退回属 V1 |
+| 订阅投递要不要过闸门 | `docs/002:18-20`：订阅投递绕过闸门、不授予新权限，含机器人/CI 的消息；活着的工单收任何人的消息 | `pass` 里有主即不走 `admit` |
+| 一条消息算不算"读过了" | `docs/002:28-39`（`Handing back and releasing follow-ups`）+ `docs/007:85`（`inputsRead`）：进入会话 history 且随后有报告或回合结束；Case 结束时未读的退回评估 | V0 只做幂等骨架（`inputs.deliveredAt`）；`readAt` 与退回属 V1 |
 | 投递幂等 | `app/delivery.ts:16`：一条输入一个稳定 `MessageId` | `oncall:<case>#<seq>` / `oncall:<case>:<trigger>`（不含 seq） |
 | 回执先落账再发、按序 | `app/store.ts` `receipts.add`/`settle`/`behind`；`app/outbox.ts:31` | `runtime/outbox.ts`（先 `pending`、按 `caseId` 串行） |
-| 回执重试节奏 | `docs/003:183`：5s 起翻倍到 300s | `REPLY_RETRY_DELAYS_MS`（有上限，V0 没有"系统问题"面板） |
-| 报告的自洽校验 | `core/assignments.ts:96,101`：问题只能配 `blocked`，`ready` 带问题要抛 | `faces/reports.ts` 的 `ONCALL_REPORT_QUESTION_WITH_RESULT` |
+| 回执重试节奏 | `docs/003:177`：5s 起翻倍到 300s（`:179` 同一会话按序；`:183` 失败三次即系统问题） | `REPLY_RETRY_DELAYS_MS`（有上限，V0 没有"系统问题"面板） |
+| 报告的自洽校验 | `core/assignments.ts:101`：问题只能配 `blocked`，`ready` 带问题抛 `questionWithResult`（JSDoc 在 `:96`） | `faces/reports.ts` 的 `ONCALL_REPORT_QUESTION_WITH_RESULT` |
 | 步数上限 | **没有**（全树 grep 无 `maxSteps`）；防自转靠：输入才能开回合、瞬态 3 次、后台 30 分钟、`waitsForPerson` 扣住自动输入（`core/model.ts:349`） | 已删 `MAX_STEPS_PER_CASE`（见架构文档"没有步数上限"一节） |
 | 会话 id | `executor/dsh.ts:24`：`worker-<ticketId>` 纯函数 | `oncall-case-<尾巴>-<64 位摘要>`（Case id 来自 trigger key，要净化） |
 | 并发 | `docs/003:55`：每工单一个槽，人的消息额外一槽 | V1 |

@@ -214,7 +214,7 @@ follow-up 投递：该 case 有 running step 且会话活着 → 直接 followup
 上一版有 `MAX_STEPS_PER_CASE = 40`：第 40 个派工之后关成 `stopped`。**参考实现没有这个数**，它也不需要：
 
 - worker 不能给自己开回合——回合只由一条输入触发；我们的输入来自 pass（人/@/CI）或重启扫描。
-- 瞬态失败最多重试 3 次（`executor/dsh.ts:26,548-576`），后台工作 30 分钟封顶。
+- 瞬态失败最多重试 3 次（`executor/dsh.ts:30,548-576`），后台工作 30 分钟封顶。
 - `blocked`/`failed` 之后自动输入被扣住，直到有人说话（`core/model.ts:349` `waitsForPerson`）。
 
 所以"一个 Case 无限滚"在这套状态机里不成立，那个 40 只会在第 40 次"卡住了/问人"时把 Case 关掉——第一个 bug 就是这么来的。已删：`contract/defaults.ts` 的常量、`plan-step.ts` 的 `Budget`/`budgetOf`/预算分支、executor 里两处预算判断。`stopped` 这个关闭原因保留（人停、重新校验失败），只是不再由计数产生。

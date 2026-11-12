@@ -33,7 +33,7 @@ Status: implemented
 | 会话 id 是 Case 的纯函数 | `executor/dsh.ts:24`：`worker-<ticketId>` + `ticketOfSession` 前缀反解 | `oncall-case-<净化尾巴>-<fnv1a>` | **有意收窄**：ticket id 是生成的短 id，我们的 Case id 来自 trigger key（含 `:`/`#`），必须净化；代价是反解改成扫描（只在 `submitReport` 用） |
 | 输入账本：一条消息一行，重读不再路由 | `core/tickets.ts:231` `addInput`（幂等、`undelivered`）、`app/store.ts` | **取幂等骨架**：`inputs` 表按 `caseId:trigger` 一行、`deliveredAt` 空即欠投；重读不再审计也不再投 | 先漏后补：第一版靠会话消息 id 兜底，代价是每轮多一条 `case.followed-up` 审计（实测 16 条/分钟）；补上后 `oncall-loop` 里整轮只剩 1 条 |
 | "没读到的消息在 Case 结束时退回评估" | `core/tickets.ts:330` `requeueUntaken`、`inputsRead` | 没有（V0 无评估层），`readAt` 也不记 | **有意收窄**：写进设计 §五 2 的代价，V1 接评估层时补 |
-| 层 B：瞬态正则 + 3 次 + 15s×2^(n-1)，**同一个派工**再收一句"从中断处继续"，正常收尾清零 | `executor/dsh.ts:26,548-576,606` | 判据用层 A 的 `exhausted`，形状已照抄（同派工 + retry 消息 + 三次 + 清零）；`retryAfterMs` 只拉长等待 | **先写错后照抄**：第一版是"新 step + 30/60s ≤2 次 + 先落 failed"，与源码不符 |
+| 层 B：瞬态正则 + 3 次 + 15s×2^(n-1)，**同一个派工**再收一句"从中断处继续"，正常收尾清零 | `executor/dsh.ts:30,548-576,606` | 判据用层 A 的 `exhausted`，形状已照抄（同派工 + retry 消息 + 三次 + 清零）；`retryAfterMs` 只拉长等待 | **先写错后照抄**：第一版是"新 step + 30/60s ≤2 次 + 先落 failed"，与源码不符 |
 | 重启判定：报告之后有消息送进会话 → 仍算未处理 | `core/assignments.ts:83-92`（`busy` = deliveredAt ≥ report.at） | `executor.busyAfter()` 读输入账本 | **先漏后补** |
 | `waiting` 的 summary = `said \|\| before` | `executor/dsh.ts:666` | 同 | **先漏后补** |
 | **已结束的 Case 只有人的消息能醒**，且醒之前要按当前 Policy 重新校验 Mandate | `docs/001-domain.md:37`、`docs/002-authorization.md:127`（"Bots and CI do not wake ended Tickets"）、`002:131`（"Revalidation before resume"）、`core/tickets.ts` `wake()` | `core/thread-owner.ts` 的 `mayWake` + `pass` | **先漏了**：第一版任何 trigger 都能复活已关闭的 Case；补上后人/机器人/名单外四条用例在 `pass.mjs`（21 → 25），并做了红抽样（去掉 `mayWake` 立刻红） |

@@ -7,7 +7,7 @@
  *
  * **There is no step allowance.** The reference has none either: a worker cannot
  * start its own turn (a turn begins from an input), transient failures are retried
- * at most three times (`executor/dsh.ts:26`), background work is capped at 30
+ * at most three times (`executor/dsh.ts:30`), background work is capped at 30
  * minutes, and after a `blocked`/`failed` report automatic inputs are held until a
  * person speaks (`core/model.ts:349` `waitsForPerson`). A count here would only be a
  * second, invented limit — and it closed Cases that were still waiting for a person

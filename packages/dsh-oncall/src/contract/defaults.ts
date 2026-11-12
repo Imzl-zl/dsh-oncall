@@ -53,7 +53,7 @@ export const RECOVERY_NOTE =
 /**
  * How a passing (transient) failure is retried: how many times, and the first wait.
  *
- * The shape is the reference implementation's (`executor/dsh.ts:26` `TRANSIENT_TRIES=3`,
+ * The shape is the reference implementation's (`executor/dsh.ts:30` `TRANSIENT_TRIES=3`,
  * `:548-576` `retries`/`resumeAfter`): the **same assignment** continues after a
  * backoff of `15s × 2^(n-1)`, by a message telling the worker to go on from where it
  * stopped — it is not a report and not a new assignment. A provider that named its own
