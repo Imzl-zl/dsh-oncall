@@ -141,3 +141,28 @@ DSH rc.3（本项目 `node_modules/@deepseek-ai/`）：`dsh-api-session-controll
 | §11 #2/#3/#4/#8（标签名、投影条数、配色、切会话回全局） | 无对应：他们的面板是整页，没有"右栏按会话加载"这个形态 | 确实是我们自己的决定 |
 | §12 #1 何时迁移 `agent/request` | `docs/003-execution.md:143`："The Executor model applies only when a Session is created; an existing Session keeps its model"；`docs/007-architecture.md:335` `role-models.ts` | 他们**从不**拦请求：模型按角色在创建会话时定，整段会话不变 |
 | §12 #2 迁到 step 边界后"逐候选预算"怎么定义 | 同上 + `docs/003-execution.md:120-134` 的按回合瞬态重试 | 逐候选预算随那个缝一起消失；剩下"角色模型 + 按回合瞬态重试"，没有第三个数字 |
+
+## 九、行为事实表：先看这里，别自己定
+
+每一条都是"我们的做法 = 参考实现的哪一段"。要改其中任何一条，先回原处读；参考实现没有的，在第三列写清"我们为什么加"。
+
+| 行为 | 参考实现的出处（原文要点） | 我们的落点 |
+|---|---|---|
+| 谁判 Case 结束 | `core/assignments.ts:132`：`report()` 里 `ready` → `completed`、`dropped` → `dropped`，executor 只报事实 | `Executor.submitReport` / `settle` 调 `planStep` 后 `closeCase` |
+| 回合结束算不算完成 | `executor/dsh.ts:659,665`：没有 `orchestrator_report` 时写 `{state:'waiting', summary: said}`，不是 done | `reportOfTurn` 的 `completed → waiting` |
+| 静默回合的 summary | `executor/dsh.ts:666`：`said \|\| before` | `settle` 里 waiting 保留上一条 summary |
+| `turn/end{blocked}` | 参考**不看** `turn/end`，只跟 `agent/status` idle；`turn/end{blocked}` = pre-step 拒绝（`agent-loop/src/agent.ts:349`），没跑模型 | 映射成 `waiting`（不当失败） |
+| 瞬时失败重试 | `executor/dsh.ts:26,548-576`：同一派工再投一句"继续"，≤3 次，15s×2^(n-1)；`:606` 正常收尾清零 | `retryTurn` / `retryNow` |
+| 重启后怎么恢复 | `core/assignments.ts:83-92`：running 派工有报告且**报告后没有新消息**才算结算，否则带 `RECOVERY_NOTE` 重开 | `start()` 的扫描 + `busyAfter()` |
+| 重启不重开已结束的派工 | `executor/dsh.ts:535`：只启动 `pending` 的派工 | `start()` 里 `if (last !== undefined) continue` |
+| 什么时候唤醒已结束的 Case | `docs/002:125-146`：只有人的消息，且按当前 Policy 重新校验 Mandate；机器人/CI 不唤醒 | `mayWake` + `pass` |
+| 订阅投递要不要过闸门 | `docs/002:18-27`：订阅投递绕过闸门、不授予新权限；活着的工单收任何人的消息 | `pass` 里有主即不走 `admit` |
+| 一条消息算不算"读过了" | `docs/002:28-39` + `docs/007:85`：进入会话 history 且随后有报告或回合结束；Case 结束时未读的退回评估 | V0 只做幂等骨架（`inputs.deliveredAt`）；`readAt` 与退回属 V1 |
+| 投递幂等 | `app/delivery.ts:16`：一条输入一个稳定 `MessageId` | `oncall:<case>#<seq>` / `oncall:<case>:<trigger>`（不含 seq） |
+| 回执先落账再发、按序 | `app/store.ts` `receipts.add`/`settle`/`behind`；`app/outbox.ts:31` | `runtime/outbox.ts`（先 `pending`、按 `caseId` 串行） |
+| 回执重试节奏 | `docs/003:183`：5s 起翻倍到 300s | `REPLY_RETRY_DELAYS_MS`（有上限，V0 没有"系统问题"面板） |
+| 报告的自洽校验 | `core/assignments.ts:96,101`：问题只能配 `blocked`，`ready` 带问题要抛 | `faces/reports.ts` 的 `ONCALL_REPORT_QUESTION_WITH_RESULT` |
+| 步数上限 | **没有**（全树 grep 无 `maxSteps`）；防自转靠：输入才能开回合、瞬态 3 次、后台 30 分钟、`waitsForPerson` 扣住自动输入（`core/model.ts:349`） | 已删 `MAX_STEPS_PER_CASE`（见架构文档"没有步数上限"一节） |
+| 会话 id | `executor/dsh.ts:24`：`worker-<ticketId>` 纯函数 | `oncall-case-<尾巴>-<64 位摘要>`（Case id 来自 trigger key，要净化） |
+| 并发 | `docs/003:55`：每工单一个槽，人的消息额外一槽 | V1 |
+| 面板信息架构 | `docs/005`：三个问题、六个页签、七条原则 | V5 |

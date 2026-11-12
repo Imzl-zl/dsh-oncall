@@ -3,6 +3,7 @@
 ## 常驻军规
 
 - 未经用户明确要求，不修改 DSH 源码树 `D:\sudy\github\deepseek-harness`；仅将其作为只读事实来源。
+- **入口与执行行为先查参考实现，不许自造。** `D:\sudy\github\dsh-superagent-prototype`（文档 `docs/000`–`008`、代码 `src/`）与 `D:\sudy\github\comet` 是只读事实来源；凡是"该不该有上限""失败怎么重试""什么算读完""谁判结束"这类行为，先在那里找到出处（写进提交说明或决策笔记的 `file:line`），找不到才允许自定，并把"参考实现没有，我们为什么加"写进同一处。用户已经三次因为"我又自造了一个数/一条规则"返工。
 - 将已核实的源码事实、路由方案和用户待决事项分别写入 `docs/design/` 对应文档，不互相伪装。
 - 非平凡改动须记录决策笔记；实现代码与笔记同批提交，格式及判定见 `decision-notes` 技能。
 - 不将 provider 重试、跨渠道 failover 和跨请求健康状态混成同一个次数或状态。
@@ -11,9 +12,9 @@
 
 - 环境：Windows；参考 DSH checkout 为 `D:\sudy\github\deepseek-harness`（只读）。
 - 语言/运行时：设计文档以中文为主；插件技术栈遵循 DSH 当前 Cordis/TypeScript 包规范（schemastery Config、函数插件形态、`Volatile` 配置访问）。
-- 当前交付：Markdown 设计 + 插件实现（`packages/dsh-oncall/`：命名链与按会话绑定、失败切换与插件自有重试、立即切换白名单、截断续跑、候选预校验、渠道健康与探测、中文通知、Agent Fleet 右栏、委派名册与交接（handoff）、入口（GitHub issue → 授权 → Case → 落库 → 自循环）；37 个真实 Loader 组合场景 0 失败）。
+- 当前交付：Markdown 设计 + 插件实现（`packages/dsh-oncall/`：命名链与按会话绑定、失败切换与插件自有重试、立即切换白名单、截断续跑、候选预校验、渠道健康与探测、中文通知、Agent Fleet 右栏、委派名册与交接（handoff）、入口（GitHub issue → 授权 → Case → worker 会话 → 报告 → 回评论 → 重启恢复）；13 套测试全绿，37 个真实 Loader 组合场景 0 失败）。
 - 配置根目录：插件经 cordis overlay（开发）或 `dsh.bundle`（交付）安装；配置 ns = bundle patch 行 id（`oncall`）。
-- 标准验证命令：`npm test`（11 套：layers / ingress / github-issue / pass / github-http / ingress-loop / unit / client-controller / remote / handoff-relay / run；`layers` 是分层守卫，`handoff-relay` 用独立 DSH_HOME 起 shipped `web` profile，是唯一能到 `newSession` 的组合）；`npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-oncall/src/index.ts`（类型检查）；交付前逐项核对 Markdown 本地链接、官方来源和 DSH 源码引用。
+- 标准验证命令：`npm test`（13 套：layers / ingress / github-issue / pass / github-http / ingress-loop / executor / unit / client-controller / remote / handoff-relay / oncall-loop / run；`layers` 是分层守卫，`handoff-relay` 用独立 DSH_HOME 起 shipped `web` profile，是唯一能到 `newSession` 的组合）；`npx tsc --noEmit --skipLibCheck --strict --module nodenext --moduleResolution nodenext --target es2022 --allowImportingTsExtensions packages/dsh-oncall/src/index.ts`（类型检查）；交付前逐项核对 Markdown 本地链接、官方来源和 DSH 源码引用。
 
 ## 1. 作用
 
@@ -44,7 +45,7 @@
 - 外部先例：[主流方案对照](docs/references/prior-art.md)。
 - 用户待决问题：[未决事项](docs/design/open-questions.md)。
 - DSH 参考 checkout：`D:\sudy\github\deepseek-harness`。
-- 组合测试已实跑（37/37 场景 0 失败，`packages/dsh-oncall/tests/run.mjs`；合计 unit 259 / client-controller 129 / remote 25 / handoff-relay 20 / ingress 25 / github-issue 16 / pass 13 / github-http 10 / ingress-loop 11 项检查，另加 `layers` 分层守卫）；不得声称运行过尚未编写的测试。真实渠道的两个手动套件（`tests/real-run.mjs` 失败切换、`tests/real-handoff.mjs` 派子代理与会话切换）不进 `npm test`，跑法与坑见 `tools.md`。
+- 组合测试已实跑（37/37 场景 0 失败，`packages/dsh-oncall/tests/run.mjs`；合计 unit 259 / client-controller 129 / remote 25 / ingress 29 / github-issue 16 / pass 27 / github-http 10 / ingress-loop 19 / executor 37 / oncall-loop 41 项检查，另加 `layers` 分层守卫）；不得声称运行过尚未编写的测试。真实渠道的手动套件（`tests/real-run.mjs` 失败切换、`tests/real-handoff.mjs` 派子代理与会话切换、`tests/executor-probe.mjs` 四条运行时事实）不进 `npm test`，跑法与坑见 `tools.md`。
 
 ## 6. 项目特定规则
 

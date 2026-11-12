@@ -6,6 +6,18 @@
 - 核心请求链：Agent `agent/request` → adapter `prepareCall()` → prepared dispatch → Agent failure recovery `agent/request-error`。
 - 物理执行身份是 DSH provider/model；逻辑 route profile 是本项目提案中的独立身份，尚未成为 DSH selector 能识别的模型。
 
+## 行为先查参考实现（硬规矩）
+
+任何"该不该有上限""失败怎么重试""什么算读完""谁判结束""什么时候唤醒"这类行为，**先读**：
+
+- `D:\sudy\github\dsh-superagent-prototype\docs\000`–`008`（设计：领域模型、授权、执行、面板、部署、架构）
+- 它的 `src/`（实现：`core/tickets.ts`、`core/assignments.ts`、`core/model.ts`、`core/replies.ts`、`executor/dsh.ts`、`app/passes.ts`、`app/outbox.ts`、`app/store.ts`、`app/delivery.ts`、`app/sessions.ts`）
+- `D:\sudy\github\comet`（状态机与 machine-owned 字段的先例）
+
+找到出处就写 `file:line`；**找不到才允许自定**，并把"参考实现没有、我们为什么加"写在同一个提交说明或决策笔记里。`docs/design/oncall-v0-mapping.md` §八是这张对照表的常驻位置。
+
+为什么写成硬规矩：`MAX_STEPS_PER_CASE=40`（自造，参考实现没有，还制造了一个关掉"问人"Case 的 bug）、`turn/end{blocked}` 映射成失败（参考实现根本不看 `turn/end`）、回执只写终态（参考实现先落 `pending`）、follow-up 消息 id 掺派工序号（参考实现用稳定 id）——四处自造全部返工。
+
 ## Read First
 
 - [`docs/architecture.md`](docs/architecture.md) — 项目设计总入口。
